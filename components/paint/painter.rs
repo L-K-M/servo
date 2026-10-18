@@ -425,11 +425,13 @@ impl Painter {
                 }
 
                 // Paint the scene.
-                // TODO(gw): Take notice of any errors the renderer returns!
                 self.clear_background();
                 if let Some(renderer) = self.webrender_renderer.as_mut() {
                     let size = self.rendering_context.size2d().to_i32();
-                    renderer.render(size, 0 /* buffer_age */).ok();
+                    // A failed render leaves the previous frame on screen; make it visible.
+                    if let Err(errors) = renderer.render(size, 0 /* buffer_age */) {
+                        warn!("WebRender failed to render a frame: {errors:?}");
+                    }
                 }
             }
         );
