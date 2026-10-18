@@ -252,6 +252,14 @@ impl SiteDataManager {
         }
     }
 
+    /// Write cookies, HSTS entries and the HTTP auth cache to the profile now, as Servo does at
+    /// exit. Embedders whose process can be killed without a clean shutdown (Android) call this
+    /// so logins survive. Blocks until written and returns whether every file was written;
+    /// private browsing state is never written.
+    pub fn persist_to_disk(&self) -> bool {
+        self.public_resource_threads.persist_state()
+    }
+
     /// Delete all session cookies (cookies that have no expiry or max-age).
     ///
     /// Session cookies from both the public and private browsing session cookies are removed.

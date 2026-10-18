@@ -400,6 +400,21 @@ impl ResourceChannelManager {
         }
     }
 
+    /// Writes the profile state that must survive a restart. Returns whether every file was
+    /// written (true without a profile directory: there is nothing to write).
+    fn persist_state(&self, http_state: &Arc<HttpState>) -> bool {
+        let Some(ref config_dir) = self.config_dir else {
+            return true;
+        };
+        let auth_cache = http_state.auth_cache.read();
+        let auth_written = servo_base::write_json_to_file(&*auth_cache, config_dir, "auth_cache.json");
+        let jar = http_state.cookie_jar.read();
+        let jar_written = servo_base::write_json_to_file(&*jar, config_dir, "cookie_jar.json");
+        let hsts = http_state.hsts_list.read();
+        let hsts_written = servo_base::write_json_to_file(&*hsts, config_dir, "hsts_list.json");
+        auth_written && jar_written && hsts_written
+    }
+
     /// Returns false if the thread should exit.
     fn process_msg(
         &mut self,
@@ -464,6 +479,9 @@ impl ResourceChannelManager {
             CoreResourceMsg::DeleteSessionCookies(sender) => {
                 http_state.cookie_jar.write().clear_session_cookies();
                 let _ = sender.send(());
+            },
+            CoreResourceMsg::PersistState(sender) => {
+                let _ = sender.send(self.persist_state(http_state));
             },
             CoreResourceMsg::DeleteCookies(request, sender) => {
                 http_state
@@ -663,14 +681,7 @@ impl ResourceChannelManager {
                 sender.send_or_ignore(total);
             },
             CoreResourceMsg::Exit(sender) => {
-                if let Some(ref config_dir) = self.config_dir {
-                    let auth_cache = http_state.auth_cache.read();
-                    servo_base::write_json_to_file(&*auth_cache, config_dir, "auth_cache.json");
-                    let jar = http_state.cookie_jar.read();
-                    servo_base::write_json_to_file(&*jar, config_dir, "cookie_jar.json");
-                    let hsts = http_state.hsts_list.read();
-                    servo_base::write_json_to_file(&*hsts, config_dir, "hsts_list.json");
-                }
+                self.persist_state(http_state);
                 self.resource_manager.exit();
 
                 let _ = sender.send(());

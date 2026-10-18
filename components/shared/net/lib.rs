@@ -569,6 +569,15 @@ impl ResourceThreads {
         let _ = receiver.recv();
     }
 
+    /// Write cookies, HSTS entries and the HTTP auth cache to the profile directory now, and
+    /// wait until they are written. Without this they are only written at exit. Returns whether
+    /// every file was written.
+    pub fn persist_state(&self) -> bool {
+        let (sender, receiver) = generic_channel::channel().unwrap();
+        let _ = self.core_thread.send(CoreResourceMsg::PersistState(sender));
+        receiver.recv().unwrap_or(false)
+    }
+
     pub fn set_cookie_for_url(&self, url: ServoUrl, cookie: Cookie<'static>, source: CookieSource) {
         let _ = self.core_thread.send(CoreResourceMsg::SetCookieForUrl(
             url,
@@ -746,6 +755,9 @@ pub enum CoreResourceMsg {
     DeleteCookies(Option<ServoUrl>, Option<GenericSender<()>>),
     /// Delete all session cookies (cookies without an expiry or max-age).
     DeleteSessionCookies(GenericSender<()>),
+    /// Write the profile state written at exit (cookies, HSTS, auth cache) without exiting;
+    /// answers whether every file was written.
+    PersistState(GenericSender<bool>),
     DeleteCookie(ServoUrl, String),
     DeleteCookieAsync(CookieStoreId, ServoUrl, String),
     NewCookieListener(

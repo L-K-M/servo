@@ -19,8 +19,8 @@ pub mod threadboost;
 pub mod threadpool;
 mod unicode_block;
 
-use std::fs::File;
-use std::io::{BufWriter, Read};
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 
 use ipc_channel::IpcError;
@@ -58,20 +58,33 @@ where
     }
 }
 
-pub fn write_json_to_file<T>(data: &T, config_dir: &Path, filename: &str)
+/// Returns whether the file was written; failures are logged, never a panic.
+pub fn write_json_to_file<T>(data: &T, config_dir: &Path, filename: &str) -> bool
 where
     T: Serialize,
 {
     let path = config_dir.join(filename);
-    let display = path.display();
-
-    let mut file = match File::create(&path) {
-        Err(why) => panic!("couldn't create {}: {}", display, why),
-        Ok(file) => file,
-    };
-    let mut writer = BufWriter::new(&mut file);
-    serde_json::to_writer_pretty(&mut writer, data).expect("Could not serialize to file");
-    trace!("successfully wrote to {display}");
+    // Write a sibling file and rename it over the old one: a process killed mid-write (as
+    // Android kills background apps) then leaves the previous file intact, not a truncated one.
+    let temporary = config_dir.join(format!("{filename}.tmp"));
+    let written = File::create(&temporary)
+        .and_then(|file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, data).map_err(io::Error::other)?;
+            writer.flush()?;
+            writer.get_ref().sync_all()
+        })
+        .and_then(|()| fs::rename(&temporary, &path));
+    match written {
+        Ok(()) => {
+            trace!("successfully wrote to {}", path.display());
+            true
+        },
+        Err(why) => {
+            warn!("couldn't write {}: {}", path.display(), why);
+            false
+        },
+    }
 }
 
 /// A struct for denoting the age of messages; prevents race conditions.
