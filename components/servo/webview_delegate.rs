@@ -942,6 +942,27 @@ pub trait WebViewDelegate {
     /// The `LoadStatus` of the currently loading or loaded page in this [`WebView`] has changed. The new
     /// status can accessed via [`WebView::load_status`].
     fn notify_load_status_changed(&self, _webview: WebView, _status: LoadStatus) {}
+    /// A top-level document of this [`WebView`] reported a load status. Unlike
+    /// [`Self::notify_load_status_changed`], this is called for every report, tagged with the
+    /// reporting document, including repeated values and reports from a document that is no
+    /// longer active. Compare with [`WebView::active_document_id`] to discard stale reports.
+    fn notify_document_load_status_changed(
+        &self,
+        _webview: WebView,
+        _document_id: PipelineId,
+        _status: LoadStatus,
+    ) {
+    }
+    /// A top-level document of this [`WebView`] reported its title. Unlike
+    /// [`Self::notify_page_title_changed`], this is called for every report, tagged with the
+    /// reporting document, including reports from a document that is no longer active.
+    fn notify_document_title_changed(
+        &self,
+        _webview: WebView,
+        _document_id: PipelineId,
+        _title: Option<String>,
+    ) {
+    }
     /// The [`Cursor`] of the currently loaded page in this [`WebView`] has changed. The new
     /// cursor can accessed via [`WebView::cursor`].
     fn notify_cursor_changed(&self, _webview: WebView, _cursor: Cursor) {}

@@ -24,7 +24,7 @@ use paint_api::WebViewTrait;
 use paint_api::rendering_context::RenderingContext;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
-use servo_base::id::WebViewId;
+use servo_base::id::{PipelineId, WebViewId};
 use servo_config::pref;
 use servo_constellation_traits::{
     EmbedderToConstellationMessage, HistoryTraversalSource, SessionHistoryTraversalRequest,
@@ -137,6 +137,9 @@ pub(crate) struct WebViewInner {
     /// The back / forward list of this WebView.
     back_forward_list: Vec<Url>,
 
+    /// The active top-level document, as of the last history change reported by Servo.
+    active_document_id: Option<PipelineId>,
+
     /// The current index in the back / forward list.
     back_forward_list_index: usize,
 }
@@ -183,6 +186,7 @@ impl WebView {
             animating: false,
             cursor: Cursor::Pointer,
             back_forward_list: Default::default(),
+            active_document_id: None,
             back_forward_list_index: 0,
             user_content_manager: builder.user_content_manager.clone(),
         })));
@@ -317,7 +321,10 @@ impl WebView {
         self.inner().load_status
     }
 
-    pub(crate) fn set_load_status(self, new_value: LoadStatus) {
+    pub(crate) fn set_load_status(self, document_id: PipelineId, new_value: LoadStatus) {
+        self.delegate()
+            .notify_document_load_status_changed(self.clone(), document_id, new_value);
+
         if self.inner().load_status == new_value {
             return;
         }
@@ -361,7 +368,10 @@ impl WebView {
         self.inner().page_title.clone()
     }
 
-    pub(crate) fn set_page_title(self, new_value: Option<String>) {
+    pub(crate) fn set_page_title(self, document_id: PipelineId, new_value: Option<String>) {
+        self.delegate()
+            .notify_document_title_changed(self.clone(), document_id, new_value.clone());
+
         if self.inner().page_title == new_value {
             return;
         }
@@ -773,6 +783,35 @@ impl WebView {
     ) {
         self.inner().servo.javascript_evaluator_mut().evaluate(
             self.id(),
+            None,
+            script.to_string(),
+            Box::new(callback),
+        );
+    }
+
+    /// The active top-level document of this [`WebView`], as of the last history change.
+    ///
+    /// The value changes before [`WebViewDelegate::notify_url_changed`] and
+    /// [`WebViewDelegate::notify_history_changed`] are called. A new value means a new
+    /// document, even when the URL is unchanged (for instance after a reload).
+    pub fn active_document_id(&self) -> Option<PipelineId> {
+        self.inner().active_document_id
+    }
+
+    /// Like [`Self::evaluate_javascript`], but only runs `script` in the given document.
+    ///
+    /// If `document_id` is no longer the active top-level document when Servo processes the
+    /// request, `callback` receives `JavaScriptEvaluationError::DocumentNotFound` and no script
+    /// runs. A successful result therefore always comes from `document_id`.
+    pub fn evaluate_javascript_in_document<T: ToString>(
+        &self,
+        document_id: PipelineId,
+        script: T,
+        callback: impl FnOnce(Result<JSValue, JavaScriptEvaluationError>) + 'static,
+    ) {
+        self.inner().servo.javascript_evaluator_mut().evaluate(
+            self.id(),
+            Some(document_id),
             script.to_string(),
             Box::new(callback),
         );
@@ -806,9 +845,15 @@ impl WebView {
             .request_screenshot(self.id(), rect, Box::new(callback));
     }
 
-    pub(crate) fn set_history(self, new_back_forward_list: Vec<ServoUrl>, new_index: usize) {
+    pub(crate) fn set_history(
+        self,
+        active_document_id: PipelineId,
+        new_back_forward_list: Vec<ServoUrl>,
+        new_index: usize,
+    ) {
         {
             let mut inner_mut = self.inner_mut();
+            inner_mut.active_document_id = Some(active_document_id);
             inner_mut.back_forward_list_index = new_index;
             inner_mut.back_forward_list = new_back_forward_list
                 .into_iter()

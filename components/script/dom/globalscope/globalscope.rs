@@ -2945,7 +2945,12 @@ impl GlobalScope {
         introduction_type: Option<&'static CStr>,
         rval: Option<MutableHandleValue>,
     ) -> Result<(), JavaScriptEvaluationError> {
-        assert!(self.can_run_script());
+        // <https://html.spec.whatwg.org/multipage/#check-if-we-can-run-script>: "do not run".
+        // The document may have been replaced or deactivated after this evaluation was routed
+        // to it; report that instead of asserting, which would take down the script thread.
+        if !self.can_run_script() {
+            return Err(JavaScriptEvaluationError::DocumentNotFound);
+        }
 
         run_a_script::<DomTypeHolder, _, _>(cx, self, |cx| {
             let url = self.api_base_url();

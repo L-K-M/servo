@@ -474,9 +474,9 @@ impl ServoInner {
                     webview.set_status_text(status_text);
                 }
             },
-            EmbedderMsg::ChangePageTitle(webview_id, title) => {
+            EmbedderMsg::ChangePageTitle(webview_id, document_id, title) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_page_title(title);
+                    webview.set_page_title(document_id, title);
                 }
             },
             EmbedderMsg::MoveTo(webview_id, position) => {
@@ -585,9 +585,9 @@ impl ServoInner {
                     webview.set_favicon(image);
                 }
             },
-            EmbedderMsg::NotifyLoadStatusChanged(webview_id, load_status) => {
+            EmbedderMsg::NotifyLoadStatusChanged(webview_id, document_id, load_status) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_load_status(load_status);
+                    webview.set_load_status(document_id, load_status);
                 }
             },
             EmbedderMsg::NotifyFullscreenStateChanged(webview_id, fullscreen) => {
@@ -849,11 +849,16 @@ impl ServoInner {
             },
             ConstellationToEmbedderMsg::HistoryChanged(
                 webview_id,
+                active_document_id,
                 new_back_forward_list,
                 current_list_index,
             ) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_history(new_back_forward_list, current_list_index);
+                    webview.set_history(
+                        active_document_id,
+                        new_back_forward_list,
+                        current_list_index,
+                    );
                 }
             },
             ConstellationToEmbedderMsg::Panic(webview_id, reason, backtrace) => {

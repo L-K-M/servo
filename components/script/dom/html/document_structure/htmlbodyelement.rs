@@ -128,6 +128,7 @@ impl VirtualMethods for HTMLBodyElement {
         if window.is_top_level() {
             window.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
                 window.webview_id(),
+                window.pipeline_id(),
                 LoadStatus::HeadParsed,
             ));
         }

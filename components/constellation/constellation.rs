@@ -1403,10 +1403,16 @@ where
             },
             EmbedderToConstellationMessage::EvaluateJavaScript(
                 webview_id,
+                expected_pipeline_id,
                 evaluation_id,
                 script,
             ) => {
-                self.handle_evaluate_javascript(webview_id, evaluation_id, script);
+                self.handle_evaluate_javascript(
+                    webview_id,
+                    expected_pipeline_id,
+                    evaluation_id,
+                    script,
+                );
             },
             EmbedderToConstellationMessage::CreateMemoryReport(sender) => {
                 self.mem_profiler_chan.send(ProfilerMsg::Report(sender));
@@ -1565,6 +1571,7 @@ where
     fn handle_evaluate_javascript(
         &mut self,
         webview_id: WebViewId,
+        expected_pipeline_id: Option<PipelineId>,
         evaluation_id: JavaScriptEvaluationId,
         script: String,
     ) {
@@ -1580,6 +1587,15 @@ where
             );
             return;
         };
+
+        // The embedder asked for a specific document: never run the script in a newer one.
+        if expected_pipeline_id.is_some_and(|expected| expected != pipeline.id) {
+            self.handle_finish_javascript_evaluation(
+                evaluation_id,
+                Err(JavaScriptEvaluationError::DocumentNotFound),
+            );
+            return;
+        }
 
         if pipeline
             .event_loop
@@ -5313,6 +5329,7 @@ where
         let Some(browsing_context) = self.browsing_contexts.get(&browsing_context_id) else {
             return warn!("notify_history_changed error after top-level browsing context closed.");
         };
+        let active_pipeline_id = browsing_context.pipeline_id;
 
         let current_url = match self.pipelines.get(&browsing_context.pipeline_id) {
             Some(pipeline) => pipeline.url.clone(),
@@ -5404,6 +5421,7 @@ where
         self.constellation_to_embedder_proxy
             .send(ConstellationToEmbedderMsg::HistoryChanged(
                 webview_id,
+                active_pipeline_id,
                 entries,
                 current_index,
             ));

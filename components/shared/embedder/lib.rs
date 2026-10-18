@@ -470,7 +470,7 @@ pub enum EmbedderMsg {
     /// A status message to be displayed by the browser chrome.
     Status(WebViewId, Option<String>),
     /// Alerts the embedder that the current page has changed its title.
-    ChangePageTitle(WebViewId, Option<String>),
+    ChangePageTitle(WebViewId, PipelineId, Option<String>),
     /// Move the window to a point
     MoveTo(WebViewId, DeviceIntPoint),
     /// Resize the window to size
@@ -504,7 +504,7 @@ pub enum EmbedderMsg {
     /// Entered or exited fullscreen.
     NotifyFullscreenStateChanged(WebViewId, bool),
     /// The [`LoadStatus`] of the Given `WebView` has changed.
-    NotifyLoadStatusChanged(WebViewId, LoadStatus),
+    NotifyLoadStatusChanged(WebViewId, PipelineId, LoadStatus),
     /// Open dialog to select bluetooth device.
     GetSelectedBluetoothDevice(
         WebViewId,

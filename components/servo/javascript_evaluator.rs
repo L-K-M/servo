@@ -4,7 +4,7 @@
 
 use embedder_traits::{JSValue, JavaScriptEvaluationError, JavaScriptEvaluationId};
 use rustc_hash::FxHashMap;
-use servo_base::id::WebViewId;
+use servo_base::id::{PipelineId, WebViewId};
 use servo_constellation_traits::EmbedderToConstellationMessage;
 
 use crate::proxies::ConstellationProxy;
@@ -36,6 +36,7 @@ impl JavaScriptEvaluator {
     pub(crate) fn evaluate(
         &mut self,
         webview_id: WebViewId,
+        expected_document: Option<PipelineId>,
         script: String,
         callback: Box<dyn FnOnce(Result<JSValue, JavaScriptEvaluationError>)>,
     ) {
@@ -43,6 +44,7 @@ impl JavaScriptEvaluator {
         self.constellation_proxy
             .send(EmbedderToConstellationMessage::EvaluateJavaScript(
                 webview_id,
+                expected_document,
                 evaluation_id,
                 script,
             ));

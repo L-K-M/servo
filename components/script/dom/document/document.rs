@@ -1453,6 +1453,7 @@ impl Document {
         if self.window().is_top_level() {
             self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
                 self.webview_id(),
+                self.window().pipeline_id(),
                 LoadStatus::Complete,
             ));
         }
@@ -1479,6 +1480,7 @@ impl Document {
             let webview_id = self.webview_id();
             self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
                 webview_id,
+                self.window.pipeline_id(),
                 LoadStatus::Started,
             ));
             self.send_to_embedder(EmbedderMsg::Status(webview_id, None));
@@ -1598,7 +1600,11 @@ impl Document {
         let window = self.window();
         if window.is_top_level() {
             let title = self.title().map(String::from);
-            self.send_to_embedder(EmbedderMsg::ChangePageTitle(self.webview_id(), title));
+            self.send_to_embedder(EmbedderMsg::ChangePageTitle(
+                self.webview_id(),
+                window.pipeline_id(),
+                title,
+            ));
         }
     }
 
