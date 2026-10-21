@@ -7129,19 +7129,17 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         target: DOMString,
         features: DOMString,
     ) -> Fallible<Option<DomRoot<WindowProxy>>> {
-        // Step 1. If this is not fully active, then throw an "InvalidAccessError" DOMException.
-        // A replaced initial about:blank document still has a browsing context, but is not
-        // fully active; opening `_self` from it would navigate away its replacement.
-        let browsing_context = self
-            .browsing_context()
-            .filter(|_| self.is_fully_active())
-            .ok_or(Error::InvalidAccess(Some(
+        if self.is_fully_active() {
+            self.browsing_context()
+                .ok_or(Error::InvalidAccess(Some(
+                    "Failed to get browsing context".into(),
+                )))?
+                .open(cx, url, target, features)
+        } else {
+            Err(Error::InvalidAccess(Some(
                 "Document is not fully active".into(),
-            )))?;
-
-        // Step 2. Return the result of running the window open steps with url, name, and
-        // features.
-        browsing_context.open(cx, url, target, features)
+            )))
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-document-write>
