@@ -29,6 +29,7 @@ mod fetch;
 #[macro_use]
 mod dom;
 pub(crate) use dom::canvas_context;
+mod dom_selector_parser;
 mod drag;
 mod engine;
 mod event_loop;

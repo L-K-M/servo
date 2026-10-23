@@ -11,7 +11,6 @@ use servo_arc::Arc;
 use style;
 use style::dom::{NodeInfo, TNode};
 use style::dom_apis::{MayUseInvalidation, SelectorQuery, query_selector};
-use style::selector_parser::SelectorParser;
 use style::stylesheets::UrlExtraData;
 use url::Url;
 
@@ -19,6 +18,7 @@ use super::{ServoDangerousStyleDocument, ServoDangerousStyleShadowRoot};
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::root::LayoutDom;
 use crate::dom::node::{Node, NodeFlags};
+use crate::dom_selector_parser::parse_dom_selectors;
 use crate::layout_dom::{ServoDangerousStyleElement, ServoLayoutDomTypeBundle, ServoLayoutNode};
 
 /// A wrapper around [`LayoutDom<_, Node>`] to be used with `stylo` and `selectors`.
@@ -47,8 +47,7 @@ impl<'dom> ServoDangerousStyleNode<'dom> {
         let mut result = Query::Output::default();
 
         // Step 1. Let selector be the result of parse a selector selectors.
-        let selector_or_error =
-            SelectorParser::parse_author_origin_no_namespace(selector, &UrlExtraData(document_url));
+        let selector_or_error = parse_dom_selectors(selector, &UrlExtraData(document_url));
 
         // Step 2. If selector is failure, then throw a "SyntaxError" DOMException.
         let Ok(selector_list) = selector_or_error else {
