@@ -52,7 +52,7 @@ use style::properties::{
     parse_style_attribute,
 };
 use style::rule_tree::{CascadeLevel, CascadeOrigin};
-use style::selector_parser::{RestyleDamage, SelectorParser, Snapshot};
+use style::selector_parser::{RestyleDamage, Snapshot};
 use style::shared_lock::Locked;
 use style::stylesheets::layer_rule::LayerOrder;
 use style::stylesheets::{CssRuleType, UrlExtraData};
@@ -181,6 +181,7 @@ use crate::dom::validation::Validatable;
 use crate::dom::validitystate::ValidationFlags;
 use crate::dom::window::Window;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollingBox};
+use crate::dom_selector_parser::parse_dom_selectors;
 use crate::event_loop::script_thread::ScriptThread;
 use crate::layout_dom::ServoDangerousStyleElement;
 use crate::realms::enter_auto_realm;
@@ -3925,10 +3926,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     fn Matches(&self, selectors: DOMString) -> Fallible<bool> {
         let document = self.owner_document();
         let url = document.url();
-        let selectors = match SelectorParser::parse_author_origin_no_namespace(
-            &selectors.str(),
-            &UrlExtraData(url.get_arc()),
-        ) {
+        let selectors = match parse_dom_selectors(&selectors.str(), &UrlExtraData(url.get_arc())) {
             Err(_) => {
                 return Err(Error::Syntax(
                     format!("'{selectors}' is not a valid selector").into(),
@@ -3961,10 +3959,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     fn Closest(&self, selectors: DOMString) -> Fallible<Option<DomRoot<Element>>> {
         let document = self.owner_document();
         let url = document.url();
-        let selectors = match SelectorParser::parse_author_origin_no_namespace(
-            &selectors.str(),
-            &UrlExtraData(url.get_arc()),
-        ) {
+        let selectors = match parse_dom_selectors(&selectors.str(), &UrlExtraData(url.get_arc())) {
             Err(_) => return Err(Error::Syntax(None)),
             Ok(selectors) => selectors,
         };
