@@ -1,3 +1,17 @@
+# Servo for Combray
+
+Independent downstream source for [Combray](https://github.com/L-K-M/Combray),
+based on Servo v0.6.0 (`c78d2c206f80a1c8b67eefa97f773bba513205d3`).
+The app pins a tested commit from `combray/0.6`. Its build instructions,
+native bridge and validation evidence live in the Combray repository.
+
+**Upstream is source pulls only.** `servo/servo` rejects AI-generated
+contributions. Never contact it or send issues, PRs, comments or other
+contributions. All AI-assisted work stays downstream. See [AGENTS.md](AGENTS.md).
+
+Upstream's README follows as reference. Its contribution invitations do not
+apply to this downstream project. The original licenses remain in force.
+
 # The Servo Parallel Browser Engine Project
 
 Servo is a prototype web browser engine written in the
