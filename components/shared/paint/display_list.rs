@@ -598,7 +598,7 @@ impl ScrollTree {
         let result = self
             .scroll_node_or_ancestor_inner(scroll_node_id, scroll_location, context)
             .or_else(|| {
-                if context != ScrollType::InputEvents {
+                if context != ScrollType::InputEvents && context != ScrollType::Touch {
                     return None;
                 }
 

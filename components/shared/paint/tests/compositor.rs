@@ -223,6 +223,15 @@ fn test_scroll_tree_chain_through_overflow_hidden() {
 
 #[test]
 fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
+    check_fixed_drawer_chaining(ScrollType::InputEvents);
+}
+
+#[test]
+fn test_touch_scroll_tree_chain_from_fixed_drawer_to_viewport() {
+    check_fixed_drawer_chaining(ScrollType::Touch);
+}
+
+fn check_fixed_drawer_chaining(context: ScrollType) {
     // Fixed descendants are siblings of the viewport scroll node, not its children.
     let mut tree = ScrollTree::default();
     let pipeline = PipelineId(0, 0);
@@ -244,8 +253,8 @@ fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
                 content_rect: Size2D::new(100.0, height).into(),
                 clip_rect: Size2D::new(100.0, 100.0).into(),
                 scroll_sensitivity: AxesScrollSensitivity {
-                    x: ScrollType::Script | ScrollType::InputEvents,
-                    y: ScrollType::Script | ScrollType::InputEvents,
+                    x: ScrollType::Script | ScrollType::InputEvents | ScrollType::Touch,
+                    y: ScrollType::Script | ScrollType::InputEvents | ScrollType::Touch,
                 },
                 touch_action: TouchAction::Auto,
                 offset: LayoutVector2D::zero(),
@@ -265,7 +274,7 @@ fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
             .is_none()
     );
     assert_eq!(
-        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents),
+        tree.scroll_node_or_ancestor(drawer, delta, context),
         Some((viewport, LayoutVector2D::new(0.0, 40.0)))
     );
     assert_eq!(
@@ -276,7 +285,7 @@ fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
     // At the page edge, an unconsumed swipe stays unconsumed.
     tree.scroll_node_or_ancestor(viewport, ScrollLocation::End, ScrollType::Script);
     assert!(
-        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents)
+        tree.scroll_node_or_ancestor(drawer, delta, context)
             .is_none()
     );
     tree.scroll_node_or_ancestor(viewport, ScrollLocation::Start, ScrollType::Script);
@@ -286,7 +295,7 @@ fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
         info.content_rect = Size2D::new(100.0, 300.0).into();
     }
     assert_eq!(
-        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents),
+        tree.scroll_node_or_ancestor(drawer, delta, context),
         Some((drawer, LayoutVector2D::new(0.0, 40.0)))
     );
     assert_eq!(
@@ -295,7 +304,7 @@ fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
     );
     tree.scroll_node_or_ancestor(drawer, ScrollLocation::End, ScrollType::Script);
     assert_eq!(
-        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents),
+        tree.scroll_node_or_ancestor(drawer, delta, context),
         Some((viewport, LayoutVector2D::new(0.0, 40.0)))
     );
 
@@ -304,20 +313,20 @@ fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
         info.scroll_sensitivity.y = ScrollType::Script;
     }
     assert!(
-        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents)
+        tree.scroll_node_or_ancestor(drawer, delta, context)
             .is_none()
     );
 
     // A drawer in another document must never borrow this document's viewport.
     if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(viewport_node).info {
-        info.scroll_sensitivity.y |= ScrollType::InputEvents;
+        info.scroll_sensitivity.y |= context;
     }
     let other_drawer = ExternalScrollId(1, PipelineId(0, 1));
     if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(drawer_node).info {
         info.external_id = other_drawer;
     }
     assert!(
-        tree.scroll_node_or_ancestor(other_drawer, delta, ScrollType::InputEvents)
+        tree.scroll_node_or_ancestor(other_drawer, delta, context)
             .is_none()
     );
 }
