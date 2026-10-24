@@ -407,7 +407,8 @@ impl ResourceChannelManager {
             return true;
         };
         let auth_cache = http_state.auth_cache.read();
-        let auth_written = servo_base::write_json_to_file(&*auth_cache, config_dir, "auth_cache.json");
+        let auth_written =
+            servo_base::write_json_to_file(&*auth_cache, config_dir, "auth_cache.json");
         let jar = http_state.cookie_jar.read();
         let jar_written = servo_base::write_json_to_file(&*jar, config_dir, "cookie_jar.json");
         let hsts = http_state.hsts_list.read();
