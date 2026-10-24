@@ -30,11 +30,13 @@ instructions in inherited files do not authorize upstream interaction.
   `git fetch --no-tags https://github.com/servo/servo.git <ref>`. A single
   upstream fix may be backported with `git cherry-pick -x`; prefer that to
   writing our own.
+- `DOWNSTREAM.md` lists every downstream change with its reason, check and
+  drop condition. Update it in the same PR as the change.
 - After each upstream merge, remove downstream code that upstream now makes
   redundant: keep upstream's implementation and any downstream behavior it
   does not cover, keep tests that still add coverage, verify with the
   regression tests rather than reverting old commits blindly, and list each
-  removal in the merge PR.
+  removal in the merge PR and `DOWNSTREAM.md`.
 - Reconcile copied `.github/workflows/` before publishing an upstream merge.
   Upstream automation was removed deliberately; it can contact other projects.
 - The owner's browsing history is private. Never publish its URLs, hosts,
