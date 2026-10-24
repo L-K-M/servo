@@ -18,7 +18,7 @@ use std::borrow::ToOwned;
 use std::cell::LazyCell;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use std::{env, fmt, process, thread};
@@ -134,6 +134,14 @@ fn cookie_msg_to_cookie(cookie: cookie::Cookie) -> Cookie {
     }
 }
 
+/// The address the WebDriver server listens on. Only this machine may connect: a
+/// WebDriver client controls the browser and reads every page it loads, local
+/// `file:` URLs included, so it must not be reachable from the network. Remote
+/// setups forward a local port instead, as `hdc fport` does for OpenHarmony.
+fn listen_address(port: u16) -> SocketAddr {
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
+}
+
 pub fn start_server(
     port: u16,
     embedder_sender: Sender<WebDriverCommandMsg>,
@@ -145,9 +153,8 @@ pub fn start_server(
     thread::Builder::new()
         .name("WebDriverHttpServer".to_owned())
         .spawn(move || {
-            let address = SocketAddrV4::new("0.0.0.0".parse().unwrap(), port);
             match server::start(
-                SocketAddr::V4(address),
+                listen_address(port),
                 vec![],
                 vec![],
                 handler,
@@ -2941,5 +2948,17 @@ fn convert_keyboard_event_to_string(event: &KeyboardEvent) -> String {
                 '\u{E000}'.to_string()
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listen_address;
+
+    #[test]
+    fn listens_on_loopback_only() {
+        let address = listen_address(7000);
+        assert!(address.ip().is_loopback());
+        assert_eq!(address.port(), 7000);
     }
 }
