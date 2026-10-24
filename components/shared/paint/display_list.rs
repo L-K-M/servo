@@ -595,7 +595,19 @@ impl ScrollTree {
         context: ScrollType,
     ) -> Option<(ExternalScrollId, LayoutVector2D)> {
         let scroll_node_id = self.node_with_external_scroll_node_id(external_id)?;
-        let result = self.scroll_node_or_ancestor_inner(scroll_node_id, scroll_location, context);
+        let result = self
+            .scroll_node_or_ancestor_inner(scroll_node_id, scroll_location, context)
+            .or_else(|| {
+                if context != ScrollType::InputEvents && context != ScrollType::Touch {
+                    return None;
+                }
+
+                // Fixed descendants hang beside the viewport in the spatial tree. Chain an
+                // unconsumed gesture to their document's viewport, preserving its sensitivity.
+                let viewport =
+                    self.node_with_external_scroll_node_id(ExternalScrollId(0, external_id.1))?;
+                self.get_node_mut(viewport).scroll(scroll_location, context)
+            });
         if result.is_some() {
             self.invalidate_cached_transforms();
         }
