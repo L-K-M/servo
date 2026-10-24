@@ -6,12 +6,15 @@ use std::cell::Cell;
 
 use euclid::Size2D;
 use paint_api::display_list::{
-    AxesScrollSensitivity, ScrollTree, ScrollType, ScrollableNodeInfo, SpatialTreeNodeInfo,
-    TouchAction,
+    AxesScrollSensitivity, ReferenceFrameNodeInfo, ScrollTree, ScrollType, ScrollableNodeInfo,
+    SpatialTreeNodeInfo, TouchAction,
 };
 use servo_base::id::ScrollTreeNodeId;
+use servo_geometry::FastLayoutTransform;
 use webrender_api::units::LayoutVector2D;
-use webrender_api::{ExternalScrollId, PipelineId, ScrollLocation};
+use webrender_api::{
+    ExternalScrollId, PipelineId, ReferenceFrameKind, ScrollLocation, TransformStyle,
+};
 
 fn add_mock_scroll_node(tree: &mut ScrollTree) -> (ScrollTreeNodeId, ExternalScrollId) {
     let pipeline_id = PipelineId(0, 0);
@@ -215,5 +218,106 @@ fn test_scroll_tree_chain_through_overflow_hidden() {
     assert_eq!(
         scroll_tree.get_node(overflow_hidden_id).offset(),
         Some(LayoutVector2D::new(0.0, 0.0))
+    );
+}
+
+#[test]
+fn test_scroll_tree_chain_from_fixed_drawer_to_viewport() {
+    // Fixed descendants are siblings of the viewport scroll node, not its children.
+    let mut tree = ScrollTree::default();
+    let pipeline = PipelineId(0, 0);
+    let reference = tree.add_scroll_tree_node(
+        None,
+        SpatialTreeNodeInfo::ReferenceFrame(ReferenceFrameNodeInfo {
+            origin: Default::default(),
+            frame_origin_for_query: Default::default(),
+            transform_style: TransformStyle::Flat,
+            transform: FastLayoutTransform::identity(),
+            kind: ReferenceFrameKind::default(),
+        }),
+    );
+    let add_sibling = |tree: &mut ScrollTree, external_id, height| {
+        tree.add_scroll_tree_node(
+            Some(reference),
+            SpatialTreeNodeInfo::Scroll(ScrollableNodeInfo {
+                external_id,
+                content_rect: Size2D::new(100.0, height).into(),
+                clip_rect: Size2D::new(100.0, 100.0).into(),
+                scroll_sensitivity: AxesScrollSensitivity {
+                    x: ScrollType::Script | ScrollType::InputEvents,
+                    y: ScrollType::Script | ScrollType::InputEvents,
+                },
+                touch_action: TouchAction::Auto,
+                offset: LayoutVector2D::zero(),
+                offset_changed: Cell::new(false),
+            }),
+        )
+    };
+    let viewport = ExternalScrollId(0, pipeline);
+    let viewport_node = add_sibling(&mut tree, viewport, 300.0);
+    let drawer = ExternalScrollId(1, pipeline);
+    let drawer_node = add_sibling(&mut tree, drawer, 100.0);
+    let delta = ScrollLocation::Delta(LayoutVector2D::new(0.0, 40.0));
+
+    // A script scrolling an empty drawer must not move the page.
+    assert!(
+        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::Script)
+            .is_none()
+    );
+    assert_eq!(
+        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents),
+        Some((viewport, LayoutVector2D::new(0.0, 40.0)))
+    );
+    assert_eq!(
+        tree.get_node(drawer_node).offset(),
+        Some(LayoutVector2D::zero())
+    );
+
+    // At the page edge, an unconsumed swipe stays unconsumed.
+    tree.scroll_node_or_ancestor(viewport, ScrollLocation::End, ScrollType::Script);
+    assert!(
+        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents)
+            .is_none()
+    );
+    tree.scroll_node_or_ancestor(viewport, ScrollLocation::Start, ScrollType::Script);
+
+    // A scrollable drawer consumes input itself until it reaches its own edge.
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(drawer_node).info {
+        info.content_rect = Size2D::new(100.0, 300.0).into();
+    }
+    assert_eq!(
+        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents),
+        Some((drawer, LayoutVector2D::new(0.0, 40.0)))
+    );
+    assert_eq!(
+        tree.get_node(viewport_node).offset(),
+        Some(LayoutVector2D::zero())
+    );
+    tree.scroll_node_or_ancestor(drawer, ScrollLocation::End, ScrollType::Script);
+    assert_eq!(
+        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents),
+        Some((viewport, LayoutVector2D::new(0.0, 40.0)))
+    );
+
+    // Root overflow:hidden still forbids input scrolling.
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(viewport_node).info {
+        info.scroll_sensitivity.y = ScrollType::Script;
+    }
+    assert!(
+        tree.scroll_node_or_ancestor(drawer, delta, ScrollType::InputEvents)
+            .is_none()
+    );
+
+    // A drawer in another document must never borrow this document's viewport.
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(viewport_node).info {
+        info.scroll_sensitivity.y |= ScrollType::InputEvents;
+    }
+    let other_drawer = ExternalScrollId(1, PipelineId(0, 1));
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(drawer_node).info {
+        info.external_id = other_drawer;
+    }
+    assert!(
+        tree.scroll_node_or_ancestor(other_drawer, delta, ScrollType::InputEvents)
+            .is_none()
     );
 }
