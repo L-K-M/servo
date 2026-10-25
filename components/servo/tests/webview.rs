@@ -333,6 +333,50 @@ fn test_theme_change() {
 }
 
 #[test]
+fn test_dark_theme_keeps_unstyled_page_colors_light() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <meta name=color-scheme content=dark><body>text</body>",
+            )
+            .unwrap(),
+        )
+        .build();
+    webview.notify_theme_change(Theme::Dark);
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    let text_color = "getComputedStyle(document.body).color";
+    let light_text = Ok(JSValue::String("rgb(0, 0, 0)".into()));
+
+    // A page that opts into a dark color scheme gets dark default colors.
+    let dark_text = evaluate_javascript(&servo_test, webview.clone(), text_color);
+    assert_ne!(dark_text, light_text);
+
+    // Opting out again restores light default colors, although the theme stays dark.
+    let result = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.querySelector('meta').content = 'light'; \
+         getComputedStyle(document.body).color",
+    );
+    assert_eq!(result, light_text);
+
+    // A page without color-scheme metadata keeps light default colors under a dark theme.
+    delegate.reset();
+    webview.load(Url::parse("data:text/html,<!DOCTYPE html><body>text</body>").unwrap());
+    servo_test.spin(move || !delegate.url_changed.get());
+    let is_dark_theme_script = "window.matchMedia('(prefers-color-scheme: dark)').matches";
+    let result = evaluate_javascript(&servo_test, webview.clone(), is_dark_theme_script);
+    assert_eq!(result, Ok(JSValue::Boolean(true)));
+    let result = evaluate_javascript(&servo_test, webview.clone(), text_color);
+    assert_eq!(result, light_text);
+}
+
+#[test]
 fn test_theme_change_media_query_event() {
     let servo_test = ServoTest::new();
     let delegate = Rc::new(WebViewDelegateImpl::default());
