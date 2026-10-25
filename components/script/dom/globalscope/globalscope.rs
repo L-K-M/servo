@@ -2574,6 +2574,16 @@ impl GlobalScope {
         introduction_type: Option<&'static CStr>,
         rval: Option<MutableHandleValue>,
     ) -> Result<(), JavaScriptEvaluationError> {
+        // The document may have been replaced or deactivated after this evaluation was routed
+        // to it. Only full activity is checked: embedder scripts may run where page scripts are
+        // disabled.
+        if self
+            .downcast::<Window>()
+            .is_some_and(|window| !window.Document().is_fully_active())
+        {
+            return Err(JavaScriptEvaluationError::DocumentNotFound);
+        }
+
         run_a_script::<DomTypeHolder, _, _>(cx, self, |cx| {
             let url = self.api_base_url();
             let fetch_options = ScriptFetchOptions::default_classic_script();
