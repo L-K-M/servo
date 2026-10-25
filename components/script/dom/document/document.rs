@@ -3778,6 +3778,10 @@ impl<'dom> LayoutDom<'dom, Document> {
         self.unsafe_get().quirks_mode.get()
     }
 
+    pub(crate) fn theme_for_layout(self) -> Option<Theme> {
+        self.unsafe_get().theme.get()
+    }
+
     #[inline]
     pub(crate) fn shared_style_locks(self) -> &'dom SharedRwLocks {
         self.unsafe_get().shared_style_locks()
@@ -5219,7 +5223,12 @@ impl Document {
     }
 
     pub(crate) fn set_theme(&self, new_theme: Option<Theme>) {
-        self.theme.set(new_theme);
+        if self.theme.replace(new_theme) == new_theme {
+            return;
+        }
+
+        // Metadata also changes the root's color-scheme hint, even if the preference is unchanged.
+        self.add_restyle_reason(RestyleReason::ThemeChanged);
         self.window.refresh_theme();
     }
 }
