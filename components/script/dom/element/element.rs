@@ -16,6 +16,7 @@ use app_units::Au;
 use cssparser::match_ignore_ascii_case;
 use devtools_traits::{AttrInfo, DomMutation, ScriptToDevtoolsControlMsg};
 use dom_struct::dom_struct;
+use embedder_traits::Theme;
 use euclid::Rect;
 use html5ever::serialize::TraversalScope;
 use html5ever::serialize::TraversalScope::{ChildrenOnly, IncludeNode};
@@ -1252,7 +1253,22 @@ impl<'dom> LayoutDom<'dom, Element> {
         // TODO: Move HTML presentational hints handling into
         // HTMLElement::synthesize_presentational_hints_for_legacy_attributes
         let document = self.upcast::<Node>().owner_doc_for_layout();
-        let mut property_declaration_block = None;
+
+        // A dark preference alone must not give a light page dark-mode system colors.
+        // Metadata opts in here; author CSS can override this presentational hint.
+        let mut property_declaration_block = self.is_root().then(|| {
+            let scheme = match document.theme_for_layout() {
+                Some(Theme::Dark) => "color-scheme: dark",
+                _ => "color-scheme: light",
+            };
+            parse_style_attribute(
+                scheme,
+                &UrlExtraData(document.url_for_layout().get_arc()),
+                None,
+                document.quirks_mode(),
+                CssRuleType::Style,
+            )
+        });
         let mut push = |declaration| {
             property_declaration_block
                 .get_or_insert_with(PropertyDeclarationBlock::default)
