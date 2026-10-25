@@ -39,7 +39,7 @@ use webrender_api::units::{DeviceIntRect, DevicePixel, DevicePoint, DeviceSize};
 use crate::clipboard_delegate::{ClipboardDelegate, DefaultClipboardDelegate};
 #[cfg(feature = "gamepad")]
 use crate::gamepad_delegate::{DefaultGamepadDelegate, GamepadDelegate};
-use crate::responders::IpcResponder;
+use crate::responders::AutomaticResponder;
 use crate::servo::PendingHandledInputEvent;
 use crate::webview_delegate::{CreateNewWebViewRequest, DefaultWebViewDelegate, WebViewDelegate};
 use crate::{
@@ -182,7 +182,7 @@ impl WebView {
             status_text: None,
             page_title: None,
             favicon: None,
-            focused: false,
+            focused: true,
             animating: false,
             cursor: Cursor::Pointer,
             back_forward_list: Default::default(),
@@ -250,13 +250,17 @@ impl WebView {
         self.0.borrow_mut()
     }
 
+    fn servo(&self) -> Servo {
+        self.0.borrow().servo.clone()
+    }
+
     pub(crate) fn request_create_new(
         &self,
         response_sender: GenericSender<Option<NewWebViewDetails>>,
     ) {
         let request = CreateNewWebViewRequest {
-            servo: self.inner().servo.clone(),
-            responder: IpcResponder::new(response_sender, None),
+            servo: self.servo(),
+            responder: AutomaticResponder::new(response_sender, None),
         };
         self.delegate().request_create_new(self.clone(), request);
     }
@@ -394,20 +398,9 @@ impl WebView {
         self.delegate().notify_favicon_changed(self);
     }
 
-    /// Whether or not this [`WebView`] currently has the keyboard focus.
-    ///
-    /// The embedder can use [`WebViewDelegate::notify_focus_changed`] to subscribe
-    /// to changes in the  [`WebView`]'s focus state.
+    /// Whether or not this [`WebView`] currently has system focus.
     pub fn focused(&self) -> bool {
         self.inner().focused
-    }
-
-    pub(crate) fn set_focused(self, new_value: bool) {
-        if self.inner().focused == new_value {
-            return;
-        }
-        self.inner_mut().focused = new_value;
-        self.delegate().notify_focus_changed(self, new_value);
     }
 
     /// Get the current [`Cursor`] for this [`WebView`].
@@ -427,20 +420,18 @@ impl WebView {
         self.delegate().notify_cursor_changed(self, new_value);
     }
 
-    /// Notify Servo that this [`WebView`] has gained keyboard focus.
-    pub fn focus(&self) {
-        self.inner()
-            .servo
-            .constellation_proxy()
-            .send(EmbedderToConstellationMessage::FocusWebView(self.id()));
-    }
-
-    /// Notify Servo that this [`WebView`] has lost keyboard focus.
-    pub fn blur(&self) {
-        self.inner()
-            .servo
-            .constellation_proxy()
-            .send(EmbedderToConstellationMessage::BlurWebView);
+    /// Notify Servo that this [`WebView`] has gained or lost system focus.
+    ///
+    /// All [`WebView`]s start with system focus activated, so embedders are
+    /// expected to explicitly set this to false when the containing view loses
+    /// focus.
+    pub fn set_focused(&self, focused: bool) {
+        let old_focused = std::mem::replace(&mut self.inner_mut().focused, focused);
+        if old_focused != focused {
+            self.servo().constellation_proxy().send(
+                EmbedderToConstellationMessage::SetWebViewHasSystemFocus(self.id(), focused),
+            );
+        }
     }
 
     /// Whether or not this [`WebView`] has animating content, such as a CSS animation or
@@ -476,8 +467,7 @@ impl WebView {
             height: new_size.height.max(MINIMUM_WEBVIEW_SIZE.height as u32),
         };
 
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .resize_rendering_context(self.id(), new_size);
     }
@@ -500,16 +490,14 @@ impl WebView {
         }
 
         self.inner_mut().hidpi_scale_factor = new_scale_factor;
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .set_hidpi_scale_factor(self.id(), new_scale_factor);
     }
 
     /// Make this [`WebView`] visible within its [`RenderingContext`].
     pub fn show(&self) {
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .show_webview(self.id())
             .expect("BUG: invalid WebView instance");
@@ -517,8 +505,7 @@ impl WebView {
 
     /// Hide this [`WebView`] within its [`RenderingContext`].
     pub fn hide(&self) {
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .hide_webview(self.id())
             .expect("BUG: invalid WebView instance");
@@ -526,8 +513,7 @@ impl WebView {
 
     /// Notify this [`WebView`] of a change to the system theme (e.g. light or dark mode).
     pub fn notify_theme_change(&self, theme: Theme) {
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::ThemeChange(
                 self.id(),
@@ -540,8 +526,7 @@ impl WebView {
     /// This pushes a new entry onto the navigation history, so the user can navigate
     /// back to the previous page.
     pub fn load(&self, url: Url) {
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::LoadUrl(
                 self.id(),
@@ -554,8 +539,7 @@ impl WebView {
     /// This pushes a new entry onto the navigation history, so the user can navigate
     /// back to the previous page.
     pub fn load_request(&self, url_request: UrlRequest) {
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::LoadUrl(
                 self.id(),
@@ -566,8 +550,7 @@ impl WebView {
     /// Reload the currently loaded page in this [`WebView`].
     pub fn reload(&self) {
         self.inner_mut().load_status = LoadStatus::Started;
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::Reload(self.id()))
     }
@@ -592,8 +575,7 @@ impl WebView {
             HistoryTraversalSource::Embedder,
         );
         let traversal_id = request.id.clone();
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::TraverseHistory(request));
         traversal_id
@@ -620,8 +602,7 @@ impl WebView {
             HistoryTraversalSource::Embedder,
         );
         let traversal_id = request.id.clone();
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::TraverseHistory(request));
         traversal_id
@@ -630,8 +611,7 @@ impl WebView {
     /// Ask the [`WebView`] to scroll the scrollable area under `point` to the
     /// given `scroll` destination.
     pub fn notify_scroll_event(&self, scroll: Scroll, point: WebViewPoint) {
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .notify_scroll_event(self.id(), scroll, point);
     }
@@ -647,6 +627,7 @@ impl WebView {
         let event_id = event.id;
         let webview_id = self.id();
         let servo = &self.inner().servo;
+
         // Events with a `point` first go to `Paint` for hit testing.
         if event.event.point().is_some() {
             if !servo.paint().notify_input_event(self.id(), event) {
@@ -669,8 +650,7 @@ impl WebView {
 
     /// Notify this [`WebView`] about a media session event (e.g. play, pause, next track).
     pub fn notify_media_session_action_event(&self, event: MediaSessionActionType) {
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::MediaSessionAction(event));
     }
@@ -685,15 +665,12 @@ impl WebView {
     ///
     /// These values will be clamped internally to the inclusive range [0.1, 10.0]).
     pub fn set_page_zoom(&self, new_zoom: f32) {
-        self.inner()
-            .servo
-            .paint()
-            .set_page_zoom(self.id(), new_zoom);
+        self.servo().paint().set_page_zoom(self.id(), new_zoom);
     }
 
     /// Get the page zoom of the [`WebView`].
     pub fn page_zoom(&self) -> f32 {
-        self.inner().servo.paint().page_zoom(self.id())
+        self.servo().paint().page_zoom(self.id())
     }
 
     /// Adjust the pinch zoom on this [`WebView`] multiplying the current pinch zoom
@@ -707,15 +684,14 @@ impl WebView {
     /// The values used for clamping can be adjusted by page content when `<meta viewport>`
     /// parsing is enabled via `Prefs::viewport_meta_enabled`, exclusively on mobile devices.
     pub fn adjust_pinch_zoom(&self, pinch_zoom_delta: f32, center: DevicePoint) {
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .adjust_pinch_zoom(self.id(), pinch_zoom_delta, center);
     }
 
     /// Get the pinch zoom of the [`WebView`].
     pub fn pinch_zoom(&self) -> f32 {
-        self.inner().servo.paint().pinch_zoom(self.id())
+        self.servo().paint().pinch_zoom(self.id())
     }
 
     /// Get the ratio of physical device pixels to CSS pixels for this [`WebView`].
@@ -723,28 +699,14 @@ impl WebView {
     /// The returned scale factor takes into account page zoom, pinch zoom and the
     /// HiDPI scaling factor.
     pub fn device_pixels_per_css_pixel(&self) -> Scale<f32, CSSPixel, DevicePixel> {
-        self.inner()
-            .servo
-            .paint()
-            .device_pixels_per_page_pixel(self.id())
+        self.servo().paint().device_pixels_per_page_pixel(self.id())
     }
 
     /// Tell the currently active page in this [`WebView`] to exit fullscreen mode.
     pub fn exit_fullscreen(&self) {
-        self.inner()
-            .servo
+        self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::ExitFullScreen(self.id()));
-    }
-
-    /// Set whether resource usage of this [`WebView`] should be throttled or not.
-    ///
-    /// A throttled [`WebView`] attempts to use less system resources by stopping
-    /// animations and running timers at a heavily limited rate.
-    pub fn set_throttled(&self, throttled: bool) {
-        self.inner().servo.constellation_proxy().send(
-            EmbedderToConstellationMessage::SetWebViewThrottled(self.id(), throttled),
-        );
     }
 
     /// Toggle the given [`WebRenderDebugOption`] from its current state.
@@ -753,7 +715,7 @@ impl WebView {
     /// all [`WebView`]s managed by Servo and not just the [`WebView`] on which
     /// this method is invoked.
     pub fn toggle_webrender_debugging(&self, debugging: WebRenderDebugOption) {
-        self.inner().servo.paint().toggle_webrender_debug(debugging);
+        self.servo().paint().toggle_webrender_debug(debugging);
     }
 
     /// Capture the current WebRender state for this [`WebView`] for debugging.
@@ -761,12 +723,12 @@ impl WebView {
     /// Note that the captured state includes information about all [`WebView`]s
     /// that share this [`WebView`]'s [`RenderingContext`].
     pub fn capture_webrender(&self) {
-        self.inner().servo.paint().capture_webrender(self.id());
+        self.servo().paint().capture_webrender(self.id());
     }
 
     /// Paint the contents of this [`WebView`] into its [`RenderingContext`].
     pub fn paint(&self) {
-        self.inner().servo.paint().render(self.id());
+        self.servo().paint().render(self.id());
     }
 
     /// Get the [`UserContentManager`] associated with this [`WebView`].
@@ -781,7 +743,7 @@ impl WebView {
         script: T,
         callback: impl FnOnce(Result<JSValue, JavaScriptEvaluationError>) + 'static,
     ) {
-        self.inner().servo.javascript_evaluator_mut().evaluate(
+        self.servo().javascript_evaluator_mut().evaluate(
             self.id(),
             None,
             script.to_string(),
@@ -839,8 +801,7 @@ impl WebView {
         rect: Option<WebViewRect>,
         callback: impl FnOnce(Result<RgbaImage, ScreenshotCaptureError>) + 'static,
     ) {
-        self.inner()
-            .servo
+        self.servo()
             .paint()
             .request_screenshot(self.id(), rect, Box::new(callback));
     }
@@ -880,7 +841,7 @@ impl WebView {
         position: DeviceIntRect,
         embedder_control_request: EmbedderControlRequest,
     ) {
-        let constellation_proxy = self.inner().servo.constellation_proxy().clone();
+        let constellation_proxy = self.servo().constellation_proxy().clone();
         let embedder_control = match embedder_control_request {
             EmbedderControlRequest::SelectElement(request) => {
                 EmbedderControl::SelectElement(SelectElement {
@@ -982,7 +943,7 @@ impl WebView {
             self.inner_mut().grafted_accesskit_tree_epoch = None;
         }
 
-        self.inner().servo.constellation_proxy().send(
+        self.servo().constellation_proxy().send(
             EmbedderToConstellationMessage::SetAccessibilityActive(self.id(), active),
         );
 
@@ -1102,6 +1063,16 @@ impl WebView {
         self.delegate()
             .notify_accessibility_tree_update(self.clone(), tree_update);
     }
+
+    /// Clear the session history of this [`WebView`]. The session history is also known
+    /// as the back-forward cache. Once cleared, [`WebViewDelegate::notify_history`]
+    /// will be called asynchronously and the resulting session history will contain only
+    /// a single item with the current URL.
+    pub fn clear_session_history(&self) {
+        self.servo().constellation_proxy().send(
+            EmbedderToConstellationMessage::ClearSessionHistory(self.id()),
+        );
+    }
 }
 
 /// A structure used to expose a view of the [`WebView`] to the Servo
@@ -1141,7 +1112,7 @@ pub struct WebViewBuilder {
     delegate: Rc<dyn WebViewDelegate>,
     url: Option<Url>,
     hidpi_scale_factor: Scale<f32, DeviceIndependentPixel, DevicePixel>,
-    create_new_webview_responder: Option<IpcResponder<Option<NewWebViewDetails>>>,
+    create_new_webview_responder: Option<AutomaticResponder<Option<NewWebViewDetails>>>,
     user_content_manager: Option<Rc<UserContentManager>>,
     clipboard_delegate: Option<Rc<dyn ClipboardDelegate>>,
     #[cfg(feature = "gamepad")]
@@ -1171,7 +1142,7 @@ impl WebViewBuilder {
     pub(crate) fn new_for_create_request(
         servo: &Servo,
         rendering_context: Rc<dyn RenderingContext>,
-        responder: IpcResponder<Option<NewWebViewDetails>>,
+        responder: AutomaticResponder<Option<NewWebViewDetails>>,
     ) -> Self {
         let mut builder = Self::new(servo, rendering_context);
         builder.create_new_webview_responder = Some(responder);

@@ -1623,7 +1623,7 @@ fn test_fetch_compressed_response_update_count() {
         sender: Some(sender),
         update_count: 0,
     };
-    let response_update_count = spawn_blocking_task::<_, Response>(async move {
+    let response_update_count = spawn_blocking_task(async move {
         methods::fetch(request, &mut target, &mut new_fetch_context(None, None)).await;
         receiver.await.unwrap()
     });
@@ -2054,8 +2054,8 @@ fn test_security_info_for_https_connection() {
 
     let protocol = tls_info.protocol_version.as_ref().unwrap();
     assert!(
-        protocol.starts_with("TLS"),
-        "Expected TLS protocol version, got: {}",
+        format!("{:?}", protocol).starts_with("TLS"),
+        "Expected TLS protocol version, got: {:?}",
         protocol
     );
 

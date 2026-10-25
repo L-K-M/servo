@@ -13,10 +13,11 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
     GPUSupportedLimitsMethods, GPUSupportedLimitsWrap,
 };
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_wrap};
-use wgpu_types::Limits;
+use webgpu_traits::Limits;
 
 use crate::JSTraceable;
 use crate::dom::bindings::root::DomRoot;
+use crate::traits::Equivalence;
 
 /// <https://gpuweb.github.io/gpuweb/#gpusupportedlimits>
 #[dom_struct]
@@ -29,10 +30,7 @@ pub struct GPUSupportedLimits<D: DomTypes> {
     phantom: PhantomData<D>,
 }
 
-impl<D> GPUSupportedLimits<D>
-where
-    D: DomTypes<GPUSupportedLimits = GPUSupportedLimits<D>>,
-{
+impl<D: Equivalence> GPUSupportedLimits<D> {
     fn new_inherited(limits: Limits) -> Self {
         Self {
             reflector_: Reflector::new(),
@@ -41,11 +39,15 @@ where
         }
     }
 
-    pub fn new(cx: &mut JSContext, global: &D::GlobalScope, limits: Limits) -> DomRoot<Self> {
+    pub(crate) fn new(
+        cx: &mut JSContext,
+        global: &D::GlobalScope,
+        limits: Limits,
+    ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(Self::new_inherited(limits)),
             global,
-            cx,
             GPUSupportedLimitsWrap::<D>,
         )
     }

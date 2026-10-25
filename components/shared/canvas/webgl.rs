@@ -490,6 +490,7 @@ pub enum WebGLCommand {
     GetParameterBool(ParameterBool, GenericSender<bool>),
     GetParameterBool4(ParameterBool4, GenericSender<[bool; 4]>),
     GetParameterInt(ParameterInt, GenericSender<i32>),
+    GetParameterUInt(ParameterUInt, GenericSender<u32>),
     GetParameterInt2(ParameterInt2, GenericSender<[i32; 2]>),
     GetParameterInt4(ParameterInt4, GenericSender<[i32; 4]>),
     GetParameterFloat(ParameterFloat, GenericSender<f32>),
@@ -897,8 +898,6 @@ parameters! {
             StencilBackPassDepthFail = gl::STENCIL_BACK_PASS_DEPTH_FAIL,
             StencilBackPassDepthPass = gl::STENCIL_BACK_PASS_DEPTH_PASS,
             StencilBackRef = gl::STENCIL_BACK_REF,
-            StencilBackValueMask = gl::STENCIL_BACK_VALUE_MASK,
-            StencilBackWritemask = gl::STENCIL_BACK_WRITEMASK,
             StencilBits = gl::STENCIL_BITS,
             StencilClearValue = gl::STENCIL_CLEAR_VALUE,
             StencilFail = gl::STENCIL_FAIL,
@@ -906,8 +905,6 @@ parameters! {
             StencilPassDepthFail = gl::STENCIL_PASS_DEPTH_FAIL,
             StencilPassDepthPass = gl::STENCIL_PASS_DEPTH_PASS,
             StencilRef = gl::STENCIL_REF,
-            StencilValueMask = gl::STENCIL_VALUE_MASK,
-            StencilWritemask = gl::STENCIL_WRITEMASK,
             SubpixelBits = gl::SUBPIXEL_BITS,
             TransformFeedbackBinding = gl::TRANSFORM_FEEDBACK_BINDING,
             MaxTransformFeedbackInterleavedComponents = gl::MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS,
@@ -923,6 +920,12 @@ parameters! {
             UnpackSkipImages = gl::UNPACK_SKIP_IMAGES,
             UnpackSkipPixels = gl::UNPACK_SKIP_PIXELS,
             UnpackSkipRows = gl::UNPACK_SKIP_ROWS,
+        }),
+        UInt(ParameterUInt {
+            StencilBackValueMask = gl::STENCIL_BACK_VALUE_MASK,
+            StencilBackWritemask = gl::STENCIL_BACK_WRITEMASK,
+            StencilValueMask = gl::STENCIL_VALUE_MASK,
+            StencilWritemask = gl::STENCIL_WRITEMASK,
         }),
         Int2(ParameterInt2 {
             MaxViewportDims = gl::MAX_VIEWPORT_DIMS,
@@ -1389,6 +1392,16 @@ pub enum SizedDataType {
 }
 
 impl TexDataType {
+    /// Parses a texture data type constant. `HalfFloat` stores WebGL 1's `HALF_FLOAT_OES`,
+    /// while WebGL 2 uses `HALF_FLOAT` and does not define `OES_texture_half_float`.
+    pub fn from_webgl_constant(constant: u32, version: WebGLVersion) -> Option<Self> {
+        match (version, constant) {
+            (WebGLVersion::WebGL2, gl::HALF_FLOAT) => Some(TexDataType::HalfFloat),
+            (WebGLVersion::WebGL2, gl::HALF_FLOAT_OES) => None,
+            _ => Self::from_gl_constant(constant),
+        }
+    }
+
     /// Returns the compatible sized data type for this texture data type.
     pub fn sized_data_type(&self) -> SizedDataType {
         match self {

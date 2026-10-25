@@ -14,7 +14,8 @@ use malloc_size_of_derive::MallocSizeOf;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
-use servo_base::id::ScrollTreeNodeId;
+use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::id::{LCPCandidateID, ScrollTreeNodeId};
 use servo_base::print_tree::PrintTree;
 use servo_geometry::FastLayoutTransform;
 use style::values::specified::Overflow;
@@ -908,6 +909,75 @@ impl ScrollTree {
     }
 }
 
+/// A bitflags set that represents the paint timing report for a display list.
+///
+/// <https://www.w3.org/TR/paint-timing/#set-of-previously-reported-paints>
+/// Note: Analogous to the document's "set of previously reported paints". It
+/// is produced by layout's `mark paint timing` as the report for the current
+/// display list. In the specification this is an ordered set of paint-type
+/// strings (`"first-paint"`,`"first-contentful-paint"`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+pub struct PaintTimingReport(u8);
+
+bitflags! {
+    impl PaintTimingReport: u8 {
+        /// Report first paint (the spec's `"first-paint"`).
+        const FirstPaint = 1 << 0;
+        /// Report first contentful paint (the spec's `"first-contentful-paint"`).
+        const FirstContentfulPaint = 1 << 1;
+    }
+}
+
+/// <https://www.w3.org/TR/paint-timing/#paint-timing-info>
+#[derive(Clone, Copy, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+pub struct PaintTimingInfo {
+    /// <https://w3c.github.io/paint-timing/#paint-timing-info-rendering-update-end-time>
+    pub rendering_update_end_time: CrossProcessInstant,
+    /// <https://w3c.github.io/paint-timing/#paint-timing-info-implementation-defined-presentation-time>
+    pub implementation_defined_presentation_time: Option<CrossProcessInstant>,
+}
+
+impl PaintTimingInfo {
+    pub fn now() -> Self {
+        Self {
+            rendering_update_end_time: CrossProcessInstant::now(),
+            implementation_defined_presentation_time: None,
+        }
+    }
+
+    /// Return a copy of this [`PaintTimingInfo`] with its implementation-defined
+    /// presentation time set to `presentation_time`.
+    pub fn with_presentation_time(self, presentation_time: CrossProcessInstant) -> Self {
+        Self {
+            implementation_defined_presentation_time: Some(presentation_time),
+            ..self
+        }
+    }
+
+    /// <https://www.w3.org/TR/paint-timing/#dom-painttimingmixin-painttime>
+    pub fn paint_time(&self) -> CrossProcessInstant {
+        // The `paintTime` attribute's getter step is to return this's paint
+        // timing info's rendering update end time.
+        self.rendering_update_end_time
+    }
+
+    /// <https://www.w3.org/TR/paint-timing/#dom-painttimingmixin-presentationtime>
+    pub fn presentation_time(&self) -> Option<CrossProcessInstant> {
+        // The `presentationTime` attribute's getter step, if it exists, is to
+        // return this's paint timing info's implementation-defined
+        // presentation time.
+        self.implementation_defined_presentation_time
+    }
+
+    /// <https://www.w3.org/TR/paint-timing/#default-paint-timestamp>
+    pub fn default_paint_timestamp(&self) -> CrossProcessInstant {
+        // Return paintTimingInfo's implementation-defined presentation time if
+        // it is non-null, otherwise paintTimingInfo's rendering update end time.
+        self.implementation_defined_presentation_time
+            .unwrap_or(self.rendering_update_end_time)
+    }
+}
+
 /// A data structure which stores `Paint`-side information about
 /// display lists sent to `Paint`.
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
@@ -937,18 +1007,19 @@ pub struct PaintDisplayListInfo {
     /// tree.
     pub root_scroll_node_id: ScrollTreeNodeId,
 
-    /// From <https://www.w3.org/TR/paint-timing/#paintable>:
-    /// Whether the display list contains paintable items.
-    pub is_paintable: bool,
-
-    /// From <https://www.w3.org/TR/paint-timing/#contentful>:
-    /// Contentful paint i.e. whether the display list contains items of type
-    /// text, image, non-white canvas or SVG). Used by metrics.
-    pub is_contentful: bool,
-
     /// Whether the first layout or a subsequent (incremental) layout triggered this
     /// display list creation.
     pub first_reflow: bool,
+
+    /// The paint-timing report for this display list.
+    pub paint_timing_report: PaintTimingReport,
+
+    /// The [`PaintTimingInfo`] for this display list.
+    pub paint_timing_info: PaintTimingInfo,
+
+    /// New largest-contentful-paint candidate in this display list, if any.
+    /// The pair is the candidate's id and its reported area.
+    pub lcp_candidate: Option<(LCPCandidateID, usize)>,
 
     /// If this display list contains a blinking caret, this value will be filled with its animation
     /// key and original color value so that the painter can animate the caret.
@@ -1001,9 +1072,10 @@ impl PaintDisplayListInfo {
             scroll_tree,
             root_reference_frame_id,
             root_scroll_node_id,
-            is_paintable: false,
-            is_contentful: false,
             first_reflow,
+            lcp_candidate: None,
+            paint_timing_report: PaintTimingReport::default(),
+            paint_timing_info: PaintTimingInfo::now(),
             caret_property_binding: Default::default(),
         }
     }

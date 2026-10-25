@@ -103,28 +103,14 @@ skip = [
     # New versions of these dependencies is pulled in by GStreamer / GLib.
     "itertools",
 
-    # Duplicated by btleplug
-    "jni",
+    # Duplicated by ndk and ndk-sys that are still on 0.3.1
     "jni-sys",
 
     # Duplicated by egui
     "foldhash",
-    "windows-collections",
-    "windows-future",
-    "windows-numerics",
-    "windows-strings",
-    "windows-threading",
-
-    # Duplicated by egui-file-dialog
-    "windows",
-    "windows-link",
-    "windows-result",
 
     # Duplicated by winit.
     "windows-sys",
-
-    # wgpu has the latest and greatest.
-    "windows-core",
 
     # Duplicated by gilrs.
     "core-foundation",
@@ -145,7 +131,6 @@ skip = [
     # duplicated by tungstenite
     "getrandom",
     "rand",
-    "rand_chacha",
     "rand_core",
     "sha1",
 
@@ -225,4 +210,10 @@ skip = [
     "toml",
     "toml_datetime",
     "winnow",
+
+    # Duplicated by cssparser which brings in new versions
+    "phf",
+    "phf_generator",
+    "phf_macros",
+    "phf_shared",
 ]

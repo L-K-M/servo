@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -50,7 +52,11 @@ pub struct Reflector<T = ()> {
 }
 
 unsafe impl<T> js::gc::Traceable for Reflector<T> {
-    unsafe fn trace(&self, _: *mut js::jsapi::JSTracer) {}
+    unsafe fn trace(&self, tracer: *mut js::jsapi::JSTracer) {
+        unsafe {
+            self.object.trace(tracer);
+        }
+    }
 }
 
 impl<T> PartialEq for Reflector<T> {
@@ -261,7 +267,7 @@ pub trait WeakReferenceableDomObjectWrap<D: DomTypes>:
     /// Function pointer to the general wrap function type
     #[expect(clippy::type_complexity)]
     const WRAP: unsafe fn(
-        &mut js::context::JSContext,
+        &mut JSContext,
         &D::GlobalScope,
         Option<HandleObject>,
         Rc<Self>,
@@ -357,7 +363,7 @@ where
 }
 
 type WrapFn<D, AbstractType> = unsafe fn(
-    &mut js::context::JSContext,
+    &mut JSContext,
     &<D as DomTypes>::GlobalScope,
     Option<HandleObject>,
     Box<AbstractType>,
@@ -366,10 +372,10 @@ type WrapFn<D, AbstractType> = unsafe fn(
 /// Create the reflector for a new DOM object and yield ownership to the
 /// reflector.
 pub fn reflect_dom_object_with_proto_and_wrap<D, AbstractType, GlobalType>(
+    cx: &mut JSContext,
     obj: Box<AbstractType>,
     global: &GlobalType,
     proto: Option<HandleObject>,
-    cx: &mut js::context::JSContext,
     wrap: WrapFn<D, AbstractType>,
 ) -> DomRoot<AbstractType>
 where
@@ -386,9 +392,9 @@ where
 /// Create the reflector for a new DOM object and yield ownership to the
 /// reflector.
 pub fn reflect_dom_object_with_wrap<D, AbstractType, GlobalType>(
+    cx: &mut JSContext,
     obj: Box<AbstractType>,
     global: &GlobalType,
-    cx: &mut js::context::JSContext,
     wrap: WrapFn<D, AbstractType>,
 ) -> DomRoot<AbstractType>
 where
@@ -403,7 +409,7 @@ where
 }
 
 type WrapFnRc<D, AbstractType> = unsafe fn(
-    &mut js::context::JSContext,
+    &mut JSContext,
     &<D as DomTypes>::GlobalScope,
     Option<HandleObject>,
     Rc<AbstractType>,
@@ -411,7 +417,7 @@ type WrapFnRc<D, AbstractType> = unsafe fn(
 
 /// Create the reflector for a new DOM object and yield ownership to the
 /// reflector.
-pub fn reflect_weak_referenceable_dom_object_with_cx_and_wrap<D, AbstractType, GlobalType>(
+pub fn reflect_weak_referenceable_dom_object_with_wrap<D, AbstractType, GlobalType>(
     cx: &mut JSContext,
     obj: Rc<AbstractType>,
     global: &GlobalType,
