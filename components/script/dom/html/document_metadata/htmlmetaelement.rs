@@ -196,7 +196,7 @@ impl HTMLMetaElement {
                 }
             });
 
-        doc.set_theme(new_theme);
+        doc.set_theme(new_theme, cx.no_gc());
     }
 
     /// <https://html.spec.whatwg.org/multipage/#attr-meta-http-equiv-content-security-policy>

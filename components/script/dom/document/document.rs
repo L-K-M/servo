@@ -3778,6 +3778,10 @@ impl<'dom> LayoutDom<'dom, Document> {
         self.unsafe_get().quirks_mode.get()
     }
 
+    pub(crate) fn theme_for_layout(self) -> Option<Theme> {
+        self.unsafe_get().theme.get()
+    }
+
     #[inline]
     pub(crate) fn shared_style_locks(self) -> &'dom SharedRwLocks {
         self.unsafe_get().shared_style_locks()
@@ -5218,8 +5222,17 @@ impl Document {
         self.theme.get()
     }
 
-    pub(crate) fn set_theme(&self, new_theme: Option<Theme>) {
-        self.theme.set(new_theme);
+    pub(crate) fn set_theme(&self, new_theme: Option<Theme>, no_gc: &NoGC) {
+        if self.theme.replace(new_theme) == new_theme {
+            return;
+        }
+
+        // Rematch the root: recascading alone reuses its previous presentational hints.
+        if let Some(root) = self.GetDocumentElement() {
+            root.restyle(no_gc, NodeDamage::Style);
+            self.note_dirty_element(no_gc, &root);
+        }
+        self.add_restyle_reason(RestyleReason::ThemeChanged);
         self.window.refresh_theme();
     }
 }
