@@ -5222,12 +5222,16 @@ impl Document {
         self.theme.get()
     }
 
-    pub(crate) fn set_theme(&self, new_theme: Option<Theme>) {
+    pub(crate) fn set_theme(&self, new_theme: Option<Theme>, no_gc: &NoGC) {
         if self.theme.replace(new_theme) == new_theme {
             return;
         }
 
-        // Metadata also changes the root's color-scheme hint, even if the preference is unchanged.
+        // Rematch the root: recascading alone reuses its previous presentational hints.
+        if let Some(root) = self.GetDocumentElement() {
+            root.restyle(no_gc, NodeDamage::Style);
+            self.note_dirty_element(no_gc, &root);
+        }
         self.add_restyle_reason(RestyleReason::ThemeChanged);
         self.window.refresh_theme();
     }
