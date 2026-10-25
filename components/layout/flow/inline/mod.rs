@@ -102,7 +102,7 @@ use line::{
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
-use servo_base::text::Utf32CodeUnits;
+use servo_base::text::{Utf8CodeUnits, Utf32CodeUnits};
 use style::Zero;
 use style::computed_values::line_break::T as LineBreak;
 use style::computed_values::text_wrap_mode::T as TextWrapMode;
@@ -161,7 +161,8 @@ pub(crate) struct InlineFormattingContext {
     inline_boxes: InlineBoxes,
 
     /// The text content of this inline formatting context.
-    text_content: String,
+    #[conditional_malloc_size_of]
+    text_content: Arc<OnceLock<String>>,
 
     /// The [`SharedInlineStyles`] for the root of this [`InlineFormattingContext`] that are used to
     /// share styles with all [`TextRun`] children.
@@ -266,13 +267,13 @@ pub(crate) enum InlineItem {
     TextRun(ArcRefCell<TextRun>),
     OutOfFlowAbsolutelyPositionedBox(
         ArcRefCell<AbsolutelyPositionedBox>,
-        usize, /* offset_in_text */
+        Utf8CodeUnits, /* offset_in_text */
     ),
     OutOfFlowFloatBox(ArcRefCell<FloatBox>),
     Atomic(
         ArcRefCell<IndependentFormattingContext>,
-        usize, /* offset_in_text */
-        Level, /* bidi_level */
+        Utf8CodeUnits, /* offset_in_text */
+        Level,         /* bidi_level */
     ),
     BlockLevel(ArcRefCell<BlockLevelBox>),
 }
@@ -398,13 +399,13 @@ pub(crate) enum WeakInlineItem {
     TextRun(WeakRefCell<TextRun>),
     OutOfFlowAbsolutelyPositionedBox(
         WeakRefCell<AbsolutelyPositionedBox>,
-        usize, /* offset_in_text */
+        Utf8CodeUnits, /* offset_in_text */
     ),
     OutOfFlowFloatBox(WeakRefCell<FloatBox>),
     Atomic(
         WeakRefCell<IndependentFormattingContext>,
-        usize, /* offset_in_text */
-        Level, /* bidi_level */
+        Utf8CodeUnits, /* offset_in_text */
+        Level,         /* bidi_level */
     ),
     BlockLevel(WeakRefCell<BlockLevelBox>),
 }
@@ -1659,7 +1660,7 @@ impl InlineFormattingContextLayout<'_> {
         // If the metrics of this font don't match the default font, we are likely using another
         // font from the font list or a fallback and should incorporate its block size into the block
         // size of the container.
-        let font_metrics = &info.font_info.font.metrics;
+        let font_metrics = info.font_info.font.metrics();
         if current_inline_container_state
             .font_metrics
             .block_metrics_meaningfully_differ(font_metrics)
@@ -1727,8 +1728,8 @@ impl InlineFormattingContextLayout<'_> {
                 text_fragment_run_data: caret_placeholder.run_data,
                 base_fragment_info: caret_placeholder.base_fragment_info,
                 info: FontAndScriptInfo::simple_for_font(font),
-                character_range_in_dom_node: Utf32CodeUnits(caret_placeholder.character_index)..
-                    Utf32CodeUnits(caret_placeholder.character_index + 1),
+                character_range_in_dom_node: caret_placeholder.character_index..
+                    caret_placeholder.character_index + Utf32CodeUnits(1),
                 is_empty_for_text_cursor: true,
             },
         ));
@@ -1796,7 +1797,7 @@ impl InlineFormattingContextLayout<'_> {
         )
     }
 
-    /// Process a soft wrap opportunity. This will either commit the current unbreakble
+    /// Process a soft wrap opportunity. This will either commit the current unbreakable
     /// segment to the current line, if it fits within the containing block and float
     /// placement boundaries, or do a line break and then commit the segment.
     fn process_soft_wrap_opportunity(&mut self) {
@@ -1815,7 +1816,7 @@ impl InlineFormattingContextLayout<'_> {
         self.commit_current_segment_to_line();
     }
 
-    /// Commit the current unbrekable segment to the current line. In addition, this will
+    /// Commit the current unbreakable segment to the current line. In addition, this will
     /// place all floats in the unbreakable segment and expand the line dimensions.
     fn commit_current_segment_to_line(&mut self) {
         // The line segments might have no items and have content after processing a forced
@@ -1837,7 +1838,11 @@ impl InlineFormattingContextLayout<'_> {
             self.current_line.inline_position - self.current_line_segment.trailing_whitespace_size;
 
         // Place all floats in this unbreakable segment.
-        let mut segment_items = mem::take(&mut self.current_line_segment.line_items);
+        let mut segment_items = {
+            // We later put all the items back in the line_items, so we preallocate the vector.
+            let new_line_items = Vec::with_capacity(self.current_line_segment.line_items.len());
+            mem::replace(&mut self.current_line_segment.line_items, new_line_items)
+        };
         for item in segment_items.iter_mut() {
             if let LineItem::Float(_, float_item) = item {
                 self.place_float_line_item_for_commit_to_line(
@@ -1996,7 +2001,7 @@ impl InlineFormattingContext {
                 },
                 InlineItem::Atomic(_, index_in_text, bidi_level) => {
                     shaping_queue.flush();
-                    *bidi_level = bidi_levels.level(*index_in_text);
+                    *bidi_level = bidi_levels.level(usize::from(*index_in_text));
                 },
                 InlineItem::EndInlineBox(inline_box) => {
                     if inline_box.borrow().breaks_shaping_at_end {
@@ -2017,8 +2022,13 @@ impl InlineFormattingContext {
         );
 
         let has_right_to_left_content = bidi_levels.info.as_ref().is_some_and(BidiInfo::has_rtl);
+        builder
+            .text_content_slot
+            .set(text_content)
+            .expect("Text content should not yet be set.");
+
         InlineFormattingContext {
-            text_content,
+            text_content: builder.text_content_slot,
             inline_items: builder.inline_items,
             inline_boxes: builder.inline_boxes,
             shared_inline_styles,
@@ -2029,6 +2039,10 @@ impl InlineFormattingContext {
             has_right_to_left_content,
             tab_size_multiplier: Default::default(),
         }
+    }
+
+    pub(crate) fn text_content(&self) -> &str {
+        self.text_content.get().map_or("", String::as_str)
     }
 
     pub(crate) fn repair_style(
@@ -2188,15 +2202,19 @@ impl InlineFormattingContext {
             .sum()
     }
 
-    fn next_character_prevents_soft_wrap_opportunity(&self, index: usize) -> bool {
-        let Some(character) = self.text_content[index..].chars().nth(1) else {
+    fn next_character_prevents_soft_wrap_opportunity(&self, index: Utf8CodeUnits) -> bool {
+        let Some(second_character) = self.text_content()[usize::from(index)..].chars().nth(1)
+        else {
             return false;
         };
-        char_prevents_soft_wrap_opportunity_when_before_or_after_atomic(character)
+        char_prevents_soft_wrap_opportunity_when_before_or_after_atomic(second_character)
     }
 
-    fn previous_character_prevents_soft_wrap_opportunity(&self, index: usize) -> bool {
-        let Some(character) = self.text_content[0..index].chars().next_back() else {
+    fn previous_character_prevents_soft_wrap_opportunity(&self, index: Utf8CodeUnits) -> bool {
+        let Some(character) = self.text_content()[..usize::from(index)]
+            .chars()
+            .next_back()
+        else {
             return false;
         };
         char_prevents_soft_wrap_opportunity_when_before_or_after_atomic(character)
@@ -2316,7 +2334,7 @@ impl InlineFormattingContext {
 
             // Each "space" character in the tab is considered both a letter and a word separator for
             // the purposes of applying word spacing and letter spacing.
-            font.metrics.space_advance + word_spacing + letter_spacing
+            font.metrics().space_advance + word_spacing + letter_spacing
         });
 
         let tab_stop_advance = match style.get_inherited_text().tab_size {
@@ -2337,9 +2355,9 @@ impl InlineFormattingContext {
         // > In the cases where it is impossible or impractical to determine the measure of the “0”
         // > glyph, it must be assumed to be 0.5em wide by 1em tall.
         let half_ch_advance = font
-            .metrics
+            .metrics()
             .zero_horizontal_advance
-            .unwrap_or(font.metrics.em_size.scale_by(0.5))
+            .unwrap_or(font.metrics().em_size.scale_by(0.5))
             .scale_by(0.5);
         let number_of_tab_stops =
             (current_inline_advance + half_ch_advance).to_f32_px() / tab_stop_advance.to_f32_px();
@@ -2357,7 +2375,7 @@ impl InlineContainerState {
     ) -> Self {
         let font_metrics = default_font
             .as_ref()
-            .map(|font| font.metrics.clone())
+            .map(|font| font.metrics().clone())
             .unwrap_or_else(FontMetrics::empty);
         let mut baseline_offset = Au::zero();
         let mut strut_block_sizes = {
@@ -2545,7 +2563,7 @@ impl IndependentFormattingContext {
     fn layout_into_line_items(
         &self,
         layout: &mut InlineFormattingContextLayout,
-        offset_in_text: usize,
+        offset_in_text: Utf8CodeUnits,
         bidi_level: Level,
     ) {
         // We need to know the inline size of the atomic before deciding whether to do the line break.
@@ -2845,6 +2863,8 @@ struct ContentSizesComputation<'layout_data> {
     /// Stack of ending padding, margin, and border to add to the length
     /// when an inline box finishes.
     ending_inline_pbm_stack: Vec<Au>,
+    /// Stack of [`TextWrapMode`] of ongoing inline boxes.
+    text_wrap_mode_stack: Vec<TextWrapMode>,
     /// Whether the inline content size depends on block constraints.
     depends_on_block_constraints: bool,
 }
@@ -2897,10 +2917,14 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 let pbm = margin + padding + border;
                 self.add_inline_size(pbm.inline_start);
                 self.ending_inline_pbm_stack.push(pbm.inline_end);
+
+                self.text_wrap_mode_stack
+                    .push(layout_style.style().clone_text_wrap_mode());
             },
             InlineItem::EndInlineBox(..) => {
                 let length = self.ending_inline_pbm_stack.pop().unwrap_or_else(Au::zero);
                 self.add_inline_size(length);
+                self.text_wrap_mode_stack.pop();
             },
             InlineItem::TextRun(text_run) => {
                 let text_run = &*text_run.borrow();
@@ -2922,8 +2946,9 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 }
             },
             InlineItem::Atomic(atomic, offset_in_text, _level) => {
-                // TODO: need to handle TextWrapMode::Nowrap.
-                if self.had_content_yet_for_min_content &&
+                let can_wrap = self.text_wrap_mode() == TextWrapMode::Wrap;
+                if can_wrap &&
+                    self.had_content_yet_for_min_content &&
                     !inline_formatting_context
                         .previous_character_prevents_soft_wrap_opportunity(*offset_in_text)
                 {
@@ -2934,9 +2959,9 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 let outer = self.outer_inline_content_sizes_of_float_or_atomic(&atomic.borrow());
                 self.current_line += outer;
 
-                // TODO: need to handle TextWrapMode::Nowrap.
-                if !inline_formatting_context
-                    .next_character_prevents_soft_wrap_opportunity(*offset_in_text)
+                if can_wrap &&
+                    !inline_formatting_context
+                        .next_character_prevents_soft_wrap_opportunity(*offset_in_text)
                 {
                     self.line_break_opportunity();
                 }
@@ -3123,6 +3148,13 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
         self.paragraph.union_assign(&end_floats);
     }
 
+    fn text_wrap_mode(&self) -> TextWrapMode {
+        self.text_wrap_mode_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| self.constraint_space.style.clone_text_wrap_mode())
+    }
+
     /// Compute the [`ContentSizes`] of the given [`InlineFormattingContext`].
     fn compute(
         inline_formatting_context: &InlineFormattingContext,
@@ -3140,6 +3172,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
             had_content_yet_for_min_content: false,
             had_content_yet_for_max_content: false,
             ending_inline_pbm_stack: Vec::new(),
+            text_wrap_mode_stack: Vec::new(),
             depends_on_block_constraints: false,
         }
         .traverse(inline_formatting_context)
@@ -3158,7 +3191,7 @@ impl BidiLevels<'_> {
     }
 }
 
-/// Whether or not this character will rpevent a soft wrap opportunity when it
+/// Whether or not this character will prevent a soft wrap opportunity when it
 /// comes before or after an atomic inline element.
 ///
 /// From <https://www.w3.org/TR/css-text-3/#line-break-details>:

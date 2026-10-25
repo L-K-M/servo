@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>:has() in querySelector, querySelectorAll, matches and closest</title>
+<link rel="help" href="https://drafts.csswg.org/selectors-4/#relational">
+<link rel="help" href="https://dom.spec.whatwg.org/#scope-match-a-selectors-string">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="outer" class="box">
+  <div id="inner" class="box">
+    <span id="leaf" class="item"></span>
+  </div>
+  <p id="sibling"></p>
+</div>
+<div id="empty" class="box"></div>
+<script>
+function ids(nodes) {
+  return Array.from(nodes, node => node.id);
+}
+
+test(() => {
+  assert_array_equals(ids(document.querySelectorAll(".box:has(.item)")), ["outer", "inner"]);
+  assert_array_equals(ids(document.querySelectorAll(".box:has(> .item)")), ["inner"]);
+  assert_array_equals(ids(document.querySelectorAll(".box:has(+ .box)")), ["outer"]);
+  assert_array_equals(ids(document.querySelectorAll(".box:has(~ p)")), ["inner"]);
+  assert_array_equals(ids(document.querySelectorAll(".box:not(:has(*))")), ["empty"]);
+}, "querySelectorAll matches :has() with each relative combinator");
+
+test(() => {
+  assert_equals(document.querySelector(".box:has(p)").id, "outer");
+  assert_equals(outer.querySelector(":has(> span)").id, "inner");
+}, "querySelector matches :has()");
+
+test(() => {
+  assert_true(inner.matches(":has(> .item)"));
+  assert_false(empty.matches(":has(.item)"));
+  assert_equals(leaf.closest(".box:has(p)").id, "outer");
+}, "matches and closest accept :has()");
+
+test(() => {
+  assert_throws_dom("SyntaxError", () => document.querySelector(":has()"));
+  assert_throws_dom("SyntaxError", () => document.querySelector(":has(:has(span))"));
+}, "Invalid :has() arguments still throw");
+</script>

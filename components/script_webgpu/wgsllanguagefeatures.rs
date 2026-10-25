@@ -19,10 +19,11 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
 };
 use script_bindings::like::Setlike;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_wrap};
-use wgpu_core::naga::front::wgsl::ImplementedLanguageExtension;
+use webgpu_traits::ImplementedLanguageExtension;
 
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
+use crate::traits::Equivalence;
 
 #[dom_struct]
 pub struct WGSLLanguageFeatures<D: DomTypes> {
@@ -34,10 +35,7 @@ pub struct WGSLLanguageFeatures<D: DomTypes> {
     phantom: PhantomData<D>,
 }
 
-impl<D> WGSLLanguageFeatures<D>
-where
-    D: DomTypes<WGSLLanguageFeatures = WGSLLanguageFeatures<D>>,
-{
+impl<D: Equivalence> WGSLLanguageFeatures<D> {
     pub fn new(
         cx: &mut JSContext,
         global: &D::GlobalScope,
@@ -48,6 +46,7 @@ where
             .map(|le| le.to_ident().into())
             .collect();
         reflect_dom_object_with_proto_and_wrap::<D, _, _>(
+            cx,
             Box::new(Self {
                 reflector: Reflector::new(),
                 internal: DomRefCell::new(set),
@@ -55,7 +54,6 @@ where
             }),
             global,
             proto,
-            cx,
             WGSLLanguageFeaturesWrap::<D>,
         )
     }

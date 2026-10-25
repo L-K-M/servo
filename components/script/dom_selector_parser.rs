@@ -4,7 +4,7 @@
 
 //! Selector parsing for stateless DOM queries, independently of stylesheet support.
 
-use cssparser::{CowRcStr, Parser as CssParser, ParserInput, SourceLocation};
+use cssparser::{CowRcStr, Parser as CssParser};
 use selectors::parser::{ParseRelative, Parser, SelectorList};
 use style::selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl, SelectorParser};
 use style::stylesheets::{Namespaces, Origin, UrlExtraData};
@@ -13,10 +13,10 @@ use style_traits::{ParseError, StyleParseErrorKind};
 
 /// Parse DOM selectors with native :has() matching, which needs no style invalidation.
 /// Stylesheets and CSS.supports must keep using Stylo's preference-gated parser.
-pub(crate) fn parse_dom_selectors<'i>(
-    input: &'i str,
+pub(crate) fn parse_dom_selectors(
+    input: &str,
     url_data: &UrlExtraData,
-) -> Result<SelectorList<SelectorImpl>, ParseError<'i>> {
+) -> Result<SelectorList<SelectorImpl>, ParseError> {
     let namespaces = Namespaces::default();
     let parser = DomSelectorParser(SelectorParser {
         stylesheet_origin: Origin::Author,
@@ -24,8 +24,7 @@ pub(crate) fn parse_dom_selectors<'i>(
         url_data,
         for_supports_rule: false,
     });
-    let mut input = ParserInput::new(input);
-    SelectorList::parse(&parser, &mut CssParser::new(&mut input), ParseRelative::No)
+    SelectorList::parse(&parser, &mut CssParser::new(input), ParseRelative::No)
 }
 
 struct DomSelectorParser<'a>(SelectorParser<'a>);
@@ -34,7 +33,7 @@ struct DomSelectorParser<'a>(SelectorParser<'a>);
 // Recheck this list when updating the pinned selectors crate; its hooks have default bodies.
 impl<'i> Parser<'i> for DomSelectorParser<'_> {
     type Impl = SelectorImpl;
-    type Error = StyleParseErrorKind<'i>;
+    type Error = StyleParseErrorKind;
 
     fn parse_has(&self) -> bool {
         true
@@ -74,35 +73,30 @@ impl<'i> Parser<'i> for DomSelectorParser<'_> {
 
     fn parse_non_ts_pseudo_class(
         &self,
-        location: SourceLocation,
         name: CowRcStr<'i>,
-    ) -> Result<NonTSPseudoClass, ParseError<'i>> {
-        self.0.parse_non_ts_pseudo_class(location, name)
+    ) -> Result<NonTSPseudoClass, ParseError> {
+        self.0.parse_non_ts_pseudo_class(name)
     }
 
-    fn parse_non_ts_functional_pseudo_class<'t>(
+    fn parse_non_ts_functional_pseudo_class(
         &self,
         name: CowRcStr<'i>,
-        parser: &mut CssParser<'i, 't>,
+        parser: &mut CssParser<'i>,
         after_part: bool,
-    ) -> Result<NonTSPseudoClass, ParseError<'i>> {
+    ) -> Result<NonTSPseudoClass, ParseError> {
         self.0
             .parse_non_ts_functional_pseudo_class(name, parser, after_part)
     }
 
-    fn parse_pseudo_element(
-        &self,
-        location: SourceLocation,
-        name: CowRcStr<'i>,
-    ) -> Result<PseudoElement, ParseError<'i>> {
-        self.0.parse_pseudo_element(location, name)
+    fn parse_pseudo_element(&self, name: CowRcStr<'i>) -> Result<PseudoElement, ParseError> {
+        self.0.parse_pseudo_element(name)
     }
 
-    fn parse_functional_pseudo_element<'t>(
+    fn parse_functional_pseudo_element(
         &self,
         name: CowRcStr<'i>,
-        arguments: &mut CssParser<'i, 't>,
-    ) -> Result<PseudoElement, ParseError<'i>> {
+        arguments: &mut CssParser<'i>,
+    ) -> Result<PseudoElement, ParseError> {
         self.0.parse_functional_pseudo_element(name, arguments)
     }
 

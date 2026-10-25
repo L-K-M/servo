@@ -51,7 +51,9 @@ use style::values::computed::font::{FamilyName, FontFamilyNameSyntax, SingleFont
 use style::values::specified::font::VariantAlternates;
 use url::Url;
 use uuid::Uuid;
-use webrender_api::{FontInstanceFlags, FontInstanceKey, FontKey, FontVariation};
+use webrender_api::{
+    FontInstanceFlags, FontInstanceKey, FontInstancePlatformOptions, FontKey, FontVariation,
+};
 
 use crate::font::{Font, FontFamilyDescriptor, FontGroup, FontRef, FontSearchScope};
 use crate::font_feature_values::{
@@ -70,6 +72,7 @@ pub(crate) struct FontParameters {
     pub(crate) pt_size: Au,
     pub(crate) variations: Vec<FontVariation>,
     pub(crate) flags: FontInstanceFlags,
+    pub(crate) platform_options: FontInstancePlatformOptions,
 }
 
 pub type FontGroupRef = Arc<FontGroup>;
@@ -382,6 +385,7 @@ impl FontContext {
                 font.template.identifier().to_owned(),
                 font.descriptor.pt_size,
                 font.webrender_font_instance_flags(),
+                font.webrender_font_instance_platform_options(),
                 font.variations().to_owned(),
                 painter_id,
             ),
@@ -390,6 +394,7 @@ impl FontContext {
                     font.template.clone(),
                     font.descriptor.pt_size,
                     font.webrender_font_instance_flags(),
+                    font.webrender_font_instance_platform_options(),
                     font.variations().to_owned(),
                     painter_id,
                 ),
@@ -401,6 +406,7 @@ impl FontContext {
         font_template: FontTemplateRef,
         pt_size: Au,
         flags: FontInstanceFlags,
+        platform_options: FontInstancePlatformOptions,
         variations: Vec<FontVariation>,
         painter_id: PainterId,
     ) -> FontInstanceKey {
@@ -427,6 +433,7 @@ impl FontContext {
             pt_size,
             variations: variations.clone(),
             flags,
+            platform_options,
         };
         *self
             .webrender_font_instance_keys
@@ -441,6 +448,7 @@ impl FontContext {
                     font_key,
                     pt_size.to_f32_px(),
                     flags,
+                    platform_options,
                     variations,
                 );
                 font_instance_key
@@ -951,7 +959,7 @@ impl FontContext {
         data: &[u8],
         descriptors: CSSFontFaceDescriptors,
     ) -> Option<(LowercaseFontFamilyName, FontTemplate)> {
-        let bytes = fontsan::process(data)
+        let mut bytes = fontsan::process(data)
             .inspect_err(|error| {
                 debug!(
                     "Sanitiser rejected FontFace font: family={} with {error:?}",
@@ -959,7 +967,8 @@ impl FontContext {
                 );
             })
             .ok()?;
-        let font_data = FontData::from_bytes(&bytes);
+        bytes.shrink_to_fit();
+        let font_data = FontData::from_vec(bytes);
 
         let identifier = FontIdentifier::ArrayBuffer(Uuid::new_v4());
         let handle =
@@ -1349,7 +1358,7 @@ impl RemoteWebFontDownloader {
         );
 
         let font_data = match fontsan::process(&font_data) {
-            Ok(bytes) => FontData::from_bytes(&bytes),
+            Ok(bytes) => FontData::from_vec(bytes),
             Err(error) => {
                 debug!(
                     "Sanitiser rejected web font url={:?} with {error:?}",
@@ -1411,7 +1420,8 @@ impl RemoteWebFontDownloader {
                 DownloaderResponseResult::Finished
             },
             FetchResponseMsg::ProcessContentLength(_request_id, size) => {
-                self.response_data.reserve(size - self.response_data.len());
+                self.response_data
+                    .reserve(size.saturating_sub(self.response_data.len()));
                 DownloaderResponseResult::InProcess
             },
         }
@@ -1640,7 +1650,7 @@ fn font_face_rules_conflict(
     first_rule: &FontFaceRuleDescriptors,
     second_rule: &FontFaceRuleDescriptors,
 ) -> bool {
-    first_rule.font_stretch == second_rule.font_stretch &&
+    first_rule.font_width == second_rule.font_width &&
         first_rule.font_style == second_rule.font_style &&
         first_rule.font_weight == second_rule.font_weight &&
         first_rule.unicode_range == second_rule.unicode_range

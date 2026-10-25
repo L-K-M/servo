@@ -18,12 +18,13 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
 };
 use script_bindings::like::Setlike;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_wrap};
-use wgpu_types::Features;
+use webgpu_traits::Features;
 
 use crate::JSTraceable;
 use crate::dom::bindings::error::Fallible;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
+use crate::traits::Equivalence;
 
 #[dom_struct]
 pub struct GPUSupportedFeatures<D: DomTypes> {
@@ -38,10 +39,7 @@ pub struct GPUSupportedFeatures<D: DomTypes> {
     phantom: PhantomData<D>,
 }
 
-impl<D> GPUSupportedFeatures<D>
-where
-    D: DomTypes<GPUSupportedFeatures = GPUSupportedFeatures<D>>,
-{
+impl<D: Equivalence> GPUSupportedFeatures<D> {
     fn new(
         cx: &mut JSContext,
         global: &D::GlobalScope,
@@ -102,6 +100,7 @@ where
         */
 
         reflect_dom_object_with_proto_and_wrap::<D, _, _>(
+            cx,
             Box::new(GPUSupportedFeatures {
                 reflector: Reflector::new(),
                 internal: DomRefCell::new(set),
@@ -110,13 +109,12 @@ where
             }),
             global,
             proto,
-            cx,
             GPUSupportedFeaturesWrap::<D>,
         )
     }
 
     #[expect(non_snake_case)]
-    pub fn Constructor(
+    pub(crate) fn Constructor(
         cx: &mut JSContext,
         global: &D::GlobalScope,
         proto: Option<HandleObject>,
@@ -127,7 +125,7 @@ where
 }
 
 impl<D: DomTypes> GPUSupportedFeatures<D> {
-    pub fn wgpu_features(&self) -> &Features {
+    pub(crate) fn wgpu_features(&self) -> &Features {
         &self.features
     }
 }

@@ -11,14 +11,12 @@ use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg, Worke
 use embedder_traits::user_contents::UserContentManagerId;
 use embedder_traits::{
     AnimationState, FocusSequenceNumber, JSValue, JavaScriptEvaluationError,
-    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, Theme, ViewportDetails,
-    WakeLockType,
+    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, ViewportDetails, WakeLockType,
 };
 use encoding_rs::Encoding;
 use euclid::default::Size2D as UntypedSize2D;
 use fonts_traits::SystemFontServiceProxySender;
 use http::{HeaderMap, Method};
-use ipc_channel::ipc::IpcSender;
 use malloc_size_of_derive::MallocSizeOf;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{Destination, InsecureRequestsPolicy, Referrer, RequestBody};
@@ -505,8 +503,6 @@ pub struct IFrameLoadInfoWithData {
     pub old_pipeline_id: Option<PipelineId>,
     /// The initial viewport size for this iframe.
     pub viewport_details: ViewportDetails,
-    /// The [`Theme`] to use within this iframe.
-    pub embedder_theme: Theme,
 }
 
 /// Resources required by workerglobalscopes
@@ -717,7 +713,10 @@ pub enum ScriptToConstellationMessage {
         PipelineId,
         GenericSender<Option<(BrowsingContextId, Option<PipelineId>)>>,
     ),
-    /// Get the nth child browsing context ID for a given browsing context, sorted in tree order.
+    /// Get the count of child browsing contexts for a given browsing context.
+    GetChildBrowsingContextCount(BrowsingContextId, GenericSender<usize>),
+    /// Get the nth child browsing context ID for a given browsing context, when sorted in
+    /// insertion order.
     GetChildBrowsingContextId(
         BrowsingContextId,
         usize,
@@ -767,9 +766,7 @@ pub enum ScriptToConstellationMessage {
     JointSessionHistoryLength(GenericSender<u32>),
     /// Notification that this iframe should be removed.
     /// Returns a list of pipelines which were closed.
-    RemoveIFrame(BrowsingContextId, IpcSender<Vec<PipelineId>>),
-    /// Successful response to [crate::ConstellationControlMsg::SetThrottled].
-    SetThrottledComplete(bool),
+    RemoveIFrame(BrowsingContextId, GenericSender<Vec<PipelineId>>),
     /// A load has been requested in an IFrame.
     ScriptLoadedURLInIFrame(IFrameLoadInfoWithData),
     /// A load of the initial `about:blank` has been completed in an IFrame.

@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::ops::Range;
-use std::rc::Rc;
 
 use dom_struct::dom_struct;
 use js::context::{JSContext, NoGC};
@@ -19,18 +18,21 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
     GPUMapModeConstants, GPUMapModeFlags, GPUSize64,
 };
 use script_bindings::error::{Error, Fallible};
-use script_bindings::interfaces::PromiseHelpers;
+use script_bindings::interfaces::{PromiseHelpers, StackRootPromiseHelpers};
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
+use script_bindings::routed_promise::RoutedPromiseListener;
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::generic_channel::GenericSharedMemory;
-use webgpu_traits::{Mapping, WebGPU, WebGPUBuffer, WebGPURequest};
-use wgpu_core::device::HostMap;
+use webgpu_traits::{
+    BufferAccessError, BufferAddress, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT,
+    HostMap, MAP_ALIGNMENT, Mapping, WebGPU, WebGPUBuffer, WebGPURequest,
+};
 
 use crate::datablock::DataBlock;
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::USVString;
 use crate::gpuconvert::WebGPUConvert;
-use crate::traits::{GPUDeviceTrait, WebGPUGlobalTrait, WebGPUPromiseTrait};
+use crate::traits::{Equivalence, WebGPUGlobalTrait, WebGPUPromise, WebGPUPromiseCallbackTrait};
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -69,7 +71,7 @@ impl ActiveBufferMapping {
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
-pub struct DroppableGPUBuffer {
+pub(crate) struct DroppableGPUBuffer {
     #[no_trace]
     channel: WebGPU,
     #[no_trace]
@@ -102,15 +104,14 @@ pub struct GPUBuffer<D: DomTypes> {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpubuffer-usage>
     usage: GPUFlagsConstant,
     /// <https://gpuweb.github.io/gpuweb/#dom-gpubuffer-pending_map-slot>
-    #[conditional_malloc_size_of]
-    pending_map: DomRefCell<Option<Rc<D::Promise>>>,
+    pending_map: DomRefCell<Option<<D::Promise as PromiseHelpers<D>>::HeapTraced>>,
     /// <https://gpuweb.github.io/gpuweb/#dom-gpubuffer-mapping-slot>
     mapping: DomRefCell<Option<ActiveBufferMapping>>,
 }
 
 impl<D> GPUBuffer<D>
 where
-    D: DomTypes<GPUBuffer = GPUBuffer<D>>,
+    D: Equivalence,
     D::Promise: PromiseHelpers<D>,
 {
     fn new_inherited(
@@ -134,7 +135,7 @@ where
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         cx: &mut js::context::JSContext,
         global: &D::GlobalScope,
@@ -147,11 +148,11 @@ where
         label: USVString,
     ) -> DomRoot<Self> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPUBuffer::new_inherited(
                 channel, buffer, device, size, usage, mapping, label,
             )),
             global,
-            cx,
             GPUBufferWrap::<D>,
         )
     }
@@ -159,25 +160,23 @@ where
 
 impl<D> GPUBuffer<D>
 where
-    D: DomTypes<GPUBuffer = GPUBuffer<D>>,
-    D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait,
-    D::Promise: PromiseHelpers<D>,
+    D: Equivalence,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     pub fn id(&self) -> WebGPUBuffer {
         self.droppable.buffer
     }
 
     /// <https://gpuweb.github.io/gpuweb/#dom-gpudevice-createbuffer>
-    pub fn create(
+    pub(crate) fn create(
         cx: &mut js::context::JSContext,
         device: &D::GPUDevice,
         descriptor: &GPUBufferDescriptor,
     ) -> Fallible<DomRoot<GPUBuffer<D>>> {
-        let desc = wgpu_types::BufferDescriptor {
+        let desc = BufferDescriptor {
             label: (&descriptor.parent).convert(),
-            size: descriptor.size as wgpu_types::BufferAddress,
-            usage: wgpu_types::BufferUsages::from_bits_retain(descriptor.usage),
+            size: descriptor.size as BufferAddress,
+            usage: BufferUsages::from_bits_retain(descriptor.usage),
             mapped_at_creation: descriptor.mappedAtCreation,
         };
         let id = <D::GPUDevice as DomGlobalGeneric<D>>::global_from_reflector(device)
@@ -221,12 +220,8 @@ where
 
 impl<D> GPUBufferMethods<D> for GPUBuffer<D>
 where
-    D: DomTypes<GPUBuffer = GPUBuffer<D>>,
-    D::Promise: PromiseHelpers<D> + WebGPUPromiseTrait<D> + PartialEq,
-    D::GPUDevice: GPUDeviceTrait<D>,
-    D::GPUDevice: DomGlobalGeneric<D> + GPUDeviceTrait<D>,
-    D::GlobalScope: WebGPUGlobalTrait,
-    D::Promise: PromiseHelpers<D>,
+    D: Equivalence,
+    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     /// <https://gpuweb.github.io/gpuweb/#dom-gpubuffer-unmap>
     fn Unmap(&self, cx: &mut js::context::JSContext) {
@@ -290,7 +285,7 @@ where
         mode: u32,
         offset: GPUSize64,
         size: Option<GPUSize64>,
-    ) -> Rc<D::Promise> {
+    ) -> <D::Promise as PromiseHelpers<D>>::StackRoot {
         let promise = D::Promise::new_in_realm(cx);
         // Step 2
         if self.pending_map.borrow().is_some() {
@@ -301,7 +296,7 @@ where
             return promise;
         }
         // Step 4
-        *self.pending_map.safe_borrow_mut(cx) = Some(promise.clone());
+        *self.pending_map.safe_borrow_mut(cx) = Some(promise.to_traced());
         // Step 5
         let host_map = match mode {
             GPUMapModeConstants::READ => HostMap::Read,
@@ -316,7 +311,7 @@ where
             },
         };
 
-        let callback = D::Promise::callback_promise_gpubuffer(&promise, self);
+        let callback = promise.callback_promise_dom_manipulation_task_source(self);
         if let Err(e) = self
             .droppable
             .channel
@@ -361,7 +356,7 @@ where
             .map(RootedTraceableBox::new)
             .ok_or(Error::Operation(Some("No active buffer map".into())))?;
 
-        if !(offset.is_multiple_of(wgpu_types::MAP_ALIGNMENT)) {
+        if !(offset.is_multiple_of(MAP_ALIGNMENT)) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
@@ -371,7 +366,7 @@ where
             )));
         }
 
-        if !(range_size % wgpu_types::COPY_BUFFER_ALIGNMENT == 0) {
+        if !(range_size % COPY_BUFFER_ALIGNMENT == 0) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
@@ -456,13 +451,15 @@ where
 
 impl<D> GPUBuffer<D>
 where
-    D: DomTypes,
-    D::Promise: PromiseHelpers<D> + PartialEq,
-    D::GPUDevice: GPUDeviceTrait<D>,
+    D: Equivalence,
 {
-    pub fn map_failure(&self, cx: &mut JSContext, p: &Rc<D::Promise>) {
+    pub fn map_failure(
+        &self,
+        cx: &mut JSContext,
+        p: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
         // Step 1
-        if self.pending_map.borrow().as_ref() != Some(p) {
+        if self.pending_map.borrow().as_deref() != Some(p) {
             assert!(p.is_rejected());
             return;
         }
@@ -482,11 +479,11 @@ where
     pub fn map_success(
         &self,
         cx: &mut js::context::JSContext,
-        p: &Rc<D::Promise>,
+        p: &<D::Promise as PromiseHelpers<D>>::StackRoot,
         wgpu_mapping: Mapping,
     ) {
         // Step 1
-        if self.pending_map.borrow().as_ref() != Some(p) {
+        if self.pending_map.borrow().as_deref() != Some(p) {
             assert!(p.is_rejected());
             return;
         }
@@ -519,6 +516,20 @@ where
                 self.pending_map.safe_borrow_mut(cx).take();
                 p.resolve_native(cx, &());
             },
+        }
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, Result<Mapping, BufferAccessError>> for GPUBuffer<D> {
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        response: Result<Mapping, BufferAccessError>,
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        match response {
+            Ok(mapping) => self.map_success(cx, promise, mapping),
+            Err(_) => self.map_failure(cx, promise),
         }
     }
 }

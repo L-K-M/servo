@@ -3,15 +3,17 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::ops::Deref;
 use std::thread::LocalKey;
 
 use js::context::JSContext;
-use js::conversions::ToJSValConvertible;
+use js::conversions::{FromJSValConvertible, ToJSValConvertible};
+use js::gc::Traceable;
 use js::glue::JSPrincipalsCallbacks;
 use js::jsapi::{CallArgs, JSObject};
 use js::realm::CurrentRealm;
 use js::rust::{HandleObject, MutableHandleObject};
+use malloc_size_of::MallocSizeOf;
 use servo_base::id::PipelineId;
 use servo_constellation_traits::ScriptToConstellationChan;
 use servo_url::{MutableOrigin, ServoUrl};
@@ -67,7 +69,7 @@ pub trait DomHelpers<D: DomTypes> {
 
 /// Operations that must be invoked from the generated bindings.
 #[expect(unsafe_code)]
-pub trait GlobalScopeHelpers<D: DomTypes> {
+pub trait GlobalScopeHelpers<D: DomTypes>: DomObject + Sized {
     fn from_current_realm(realm: &'_ mut CurrentRealm) -> DomRoot<D::GlobalScope>;
 
     /// # Safety
@@ -88,14 +90,36 @@ pub trait GlobalScopeHelpers<D: DomTypes> {
     fn pipeline_id(&self) -> PipelineId;
 
     fn script_to_constellation_chan(&self) -> ScriptToConstellationChan;
+    fn entry() -> DomRoot<Self>;
+}
+
+pub trait HeapTracedPromiseHelpers<D: DomTypes> {
+    type StackRoot;
+    fn root(&self, cx: &JSContext) -> Self::StackRoot;
+}
+
+pub trait StackRootPromiseHelpers<D: DomTypes> {
+    type HeapTraced;
+    fn to_traced(&self) -> Self::HeapTraced;
 }
 
 pub trait PromiseHelpers<D: DomTypes> {
-    fn new_in_realm(cx: &mut CurrentRealm) -> Rc<D::Promise>;
+    type StackRoot: FromJSValConvertible<Config = ()>
+        + ToJSValConvertible
+        + Deref<Target = D::Promise>
+        + StackRootPromiseHelpers<D, HeapTraced = Self::HeapTraced>;
+    type HeapTraced: Traceable
+        + MallocSizeOf
+        + Deref<Target = D::Promise>
+        + HeapTracedPromiseHelpers<D, StackRoot = Self::StackRoot>;
+    fn new_in_realm(cx: &mut CurrentRealm) -> Self::StackRoot;
+    fn new(cx: &mut JSContext, global: &D::GlobalScope) -> Self::StackRoot;
     fn reject_error(&self, cx: &mut JSContext, error: Error);
     fn is_rejected(&self) -> bool;
     fn is_pending(&self) -> bool;
+    fn is_fulfilled(&self) -> bool;
     fn resolve_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T);
+    fn reject_native<T: ToJSValConvertible>(&self, cx: &mut JSContext, val: &T);
 }
 
 pub trait DocumentHelpers {

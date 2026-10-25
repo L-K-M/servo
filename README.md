@@ -1,7 +1,7 @@
 # Servo for Combray
 
 Independent downstream source for [Combray](https://github.com/L-K-M/Combray),
-based on Servo v0.6.0 (`c78d2c206f80a1c8b67eefa97f773bba513205d3`).
+based on Servo v0.7.0 (`aac43a3f31a259f04a574f5ec4e959c943ad7cc7`).
 The app pins a tested commit from the newest `combray/0.N` branch, which
 follows upstream releases. Its build instructions, native bridge and
 validation evidence live in the Combray repository.
@@ -86,7 +86,7 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   sudo $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
    "build-tools;36.0.0" \
    "emulator" \
-   "ndk;28.2.13676358" \
+   "ndk;29.0.14206865" \
    "platform-tools" \
    "platforms;android-37" \
    "system-images;android-37;google_apis;x86_64"
