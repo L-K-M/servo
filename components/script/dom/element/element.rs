@@ -2253,7 +2253,10 @@ impl Element {
             return;
         }
 
-        let name = match qname.prefix {
+        // html5ever adjusts the foreign attribute `xmlns` to an empty prefix, but its prefix
+        // is null: <https://html.spec.whatwg.org/multipage/#adjust-foreign-attributes>
+        let prefix = qname.prefix.filter(|prefix| !prefix.is_empty());
+        let name = match prefix {
             None => qname.local.clone(),
             Some(ref prefix) => {
                 let name = format!("{}:{}", &**prefix, &*qname.local);
@@ -2261,7 +2264,7 @@ impl Element {
             },
         };
         let value = self.parse_attribute(&qname.ns, &qname.local, value);
-        self.push_new_attribute(cx, qname.local, value, name, qname.ns, qname.prefix);
+        self.push_new_attribute(cx, qname.local, value, name, qname.ns, prefix);
     }
 
     pub(crate) fn set_attribute(&self, cx: &mut JSContext, name: &LocalName, value: AttrValue) {

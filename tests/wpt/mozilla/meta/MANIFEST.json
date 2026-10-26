@@ -15053,6 +15053,13 @@
       {}
      ]
     ],
+    "parser-foreign-xmlns-attribute.html": [
+     "1de5ae7cca61ccbe43551d5493f2b0731d55c58e",
+     [
+      null,
+      {}
+     ]
+    ],
     "parser-reentrancy-customelement.window.js": [
      "0df997aa6c521ef31c32c4054568ed005e011663",
      [
