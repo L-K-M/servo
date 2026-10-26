@@ -14,11 +14,11 @@ namespace console {
   undefined error(any... messages);
   undefined info(any... messages);
   undefined log(any... messages);
-  // undefined table(optional any tabularData, optional sequence<DOMString> properties);
+  undefined table(optional any tabularData, optional sequence<DOMString> properties);
   undefined trace(any... data);
   undefined warn(any... messages);
   undefined dir(optional any item, optional object? options);
-  // undefined dirxml(any... data);
+  undefined dirxml(any... data);
 
   // Counting
   undefined count(optional DOMString label = "default");
