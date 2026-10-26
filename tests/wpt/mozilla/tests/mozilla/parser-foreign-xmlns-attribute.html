@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The HTML parser gives the adjusted foreign attribute xmlns a null prefix</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#adjust-foreign-attributes">
+<link rel="help" href="https://dom.spec.whatwg.org/#concept-attribute-qualified-name">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<svg id="svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#svg"/></svg>
+<math id="math" xmlns="http://www.w3.org/1998/Math/MathML"></math>
+<script>
+const XMLNS = "http://www.w3.org/2000/xmlns/";
+const XLINK = "http://www.w3.org/1999/xlink";
+
+function assert_attribute(element, name, prefix, namespace, localName) {
+  const attr = element.getAttributeNodeNS(namespace, localName);
+  assert_not_equals(attr, null, `${name} is in the ${namespace} namespace`);
+  assert_equals(attr.name, name, "name");
+  assert_equals(attr.prefix, prefix, "prefix");
+  assert_equals(attr.localName, localName, "localName");
+  assert_equals(element.getAttribute(name), attr.value, "getAttribute by qualified name");
+}
+
+function check(svg) {
+  assert_attribute(svg, "xmlns", null, XMLNS, "xmlns");
+  assert_attribute(svg, "xmlns:xlink", "xmlns", XMLNS, "xlink");
+  assert_attribute(svg.firstElementChild, "xlink:href", "xlink", XLINK, "href");
+  assert_false(svg.outerHTML.includes(":xmlns"), "serialization");
+}
+
+test(() => {
+  check(document.getElementById("svg"));
+  assert_attribute(document.getElementById("math"), "xmlns", null, XMLNS, "xmlns");
+}, "Document parser");
+
+test(() => {
+  const div = document.createElement("div");
+  div.innerHTML = document.getElementById("svg").outerHTML;
+  check(div.firstElementChild);
+}, "Fragment parser");
+
+test(() => {
+  const doc = new DOMParser().parseFromString(
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#a"/></svg>',
+    "text/html");
+  check(doc.querySelector("svg"));
+}, "DOMParser");
+</script>
