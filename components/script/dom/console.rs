@@ -858,6 +858,35 @@ impl consoleMethods<crate::DomTypeHolder> for Console {
         );
     }
 
+    /// <https://console.spec.whatwg.org/#table>
+    fn Table(
+        cx: &mut JSContext,
+        global: &GlobalScope,
+        tabular_data: HandleValue,
+        _properties: Option<Vec<DOMString>>,
+    ) {
+        // Servo builds no table; the specification allows logging the argument instead.
+        Console::method(
+            cx,
+            global,
+            ConsoleLogLevel::Log,
+            vec![tabular_data],
+            IncludeStackTrace::No,
+        );
+    }
+
+    /// <https://console.spec.whatwg.org/#dirxml>
+    fn Dirxml(cx: &mut JSContext, global: &GlobalScope, data: Vec<HandleValue>) {
+        // Servo has no DOM tree representation, so the data is logged as it is.
+        Console::method(
+            cx,
+            global,
+            ConsoleLogLevel::Log,
+            data,
+            IncludeStackTrace::No,
+        );
+    }
+
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Console/clear>
     fn Clear(global: &GlobalScope) {
         if let Some(chan) = global.devtools_chan() {

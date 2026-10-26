@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>console.table and console.dirxml exist and log without throwing</title>
+<link rel="help" href="https://console.spec.whatwg.org/#table">
+<link rel="help" href="https://console.spec.whatwg.org/#dirxml">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+test(() => {
+  assert_equals(typeof console.table, "function");
+  assert_equals(console.table.length, 0);
+  assert_equals(console.table(), undefined);
+  assert_equals(console.table([{ a: 1, b: 2 }, { a: 3 }]), undefined);
+  assert_equals(console.table({ x: { a: 1 } }, ["a"]), undefined);
+  assert_equals(console.table("not tabular"), undefined);
+}, "console.table");
+
+test(() => {
+  assert_equals(typeof console.dirxml, "function");
+  assert_equals(console.dirxml.length, 0);
+  assert_equals(console.dirxml(), undefined);
+  assert_equals(console.dirxml(document.body, { a: 1 }, "text"), undefined);
+}, "console.dirxml");
+</script>
