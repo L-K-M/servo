@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>performance.measure() converts PerformanceTiming attribute names to timestamps</title>
+<link rel="help" href="https://www.w3.org/TR/user-timing/#convert-a-name-to-a-timestamp">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+// Set for every document by the time its load event has been dispatched, in this order.
+const happened = ["fetchStart", "domLoading", "domInteractive", "loadEventEnd"];
+
+// The read only attributes of PerformanceTiming. A name whose value is zero
+// throws InvalidAccessError; no name throws anything else.
+const timingAttributes = [
+  "navigationStart", "unloadEventStart", "unloadEventEnd", "redirectStart",
+  "redirectEnd", "fetchStart", "domainLookupStart", "domainLookupEnd",
+  "connectStart", "connectEnd", "secureConnectionStart", "requestStart",
+  "responseStart", "responseEnd", "domLoading", "domInteractive",
+  "domContentLoadedEventStart", "domContentLoadedEventEnd", "domComplete",
+  "loadEventStart", "loadEventEnd",
+];
+
+// loadEventEnd is set after the load event handlers return.
+const loaded = new Promise(resolve => {
+  window.addEventListener("load", () => setTimeout(resolve, 0));
+});
+
+promise_test(async () => {
+  await loaded;
+
+  let previous = 0;
+  for (const name of happened) {
+    const measure = performance.measure(`from ${name}`, name);
+    assert_greater_than_equal(measure.startTime, previous, `${name} after the previous name`);
+    assert_less_than_equal(measure.startTime, performance.now(), `${name} in the past`);
+    previous = measure.startTime;
+  }
+
+  // The same timestamp as the document's navigation entry reports.
+  const [navigation] = performance.getEntriesByType("navigation");
+  assert_approx_equals(
+    performance.measure("fetch", "fetchStart").startTime, navigation.fetchStart, 0.001);
+}, "Names of the document's fetch and parse timestamps convert to timestamps");
+
+promise_test(async () => {
+  await loaded;
+
+  for (const name of timingAttributes) {
+    try {
+      performance.measure(`from ${name}`, name);
+    } catch (error) {
+      assert_equals(error.name, "InvalidAccessError", name);
+    }
+  }
+}, "Every PerformanceTiming name converts or throws InvalidAccessError");
+</script>
