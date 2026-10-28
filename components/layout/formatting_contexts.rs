@@ -24,13 +24,14 @@ use crate::positioned::{LayoutRootLayoutInputs, PositioningContext};
 use crate::replaced::ReplacedContents;
 use crate::sizing::{
     self, ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult, LazySize,
+    SizeConstraint,
 };
 use crate::style_ext::{AspectRatio, Display, DisplayInside, LayoutStyle};
 use crate::table::Table;
 use crate::taffy::TaffyContainer;
 use crate::{
-    ArcRefCell, ConstraintSpace, ContainingBlock, IndefiniteContainingBlock, LogicalVec2,
-    PropagatedBoxTreeData,
+    ArcRefCell, ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock,
+    LogicalVec2, PropagatedBoxTreeData,
 };
 
 /// <https://drafts.csswg.org/css-display/#independent-formatting-context>
@@ -504,15 +505,15 @@ impl IndependentFormattingContext {
         preferred_aspect_ratio: Option<AspectRatio>,
         lazy_block_size: &LazySize,
     ) -> (IndependentFormattingContextLayoutResult, bool) {
-        if let Some(cached_layout_result) = self
+        let content_block_size_under_default_constraint = match self
             .base
             .cached_independent_formatting_context_layout_if_applicable(
                 positioning_context,
                 containing_block_for_children,
-            )
-        {
-            return (cached_layout_result, true);
-        }
+            ) {
+            Ok(cached_layout_result) => return (cached_layout_result, true),
+            Err(v) => v,
+        };
 
         #[cfg(feature = "tracing")]
         tracing::debug!(
@@ -531,6 +532,7 @@ impl IndependentFormattingContext {
         self.base.cache_independent_formatting_context_layout(
             containing_block_for_children,
             &child_positioning_context,
+            content_block_size_under_default_constraint,
             &result,
         );
         positioning_context.append(child_positioning_context);
@@ -555,6 +557,37 @@ impl IndependentFormattingContext {
             lazy_block_size,
         )
         .0
+    }
+
+    pub(crate) fn content_block_size_under_default_constraint(
+        &self,
+        layout_context: &LayoutContext,
+        positioning_context: &mut PositioningContext,
+        inline_size: Au,
+        containing_block: &ContainingBlock,
+        preferred_aspect_ratio: Option<AspectRatio>,
+    ) -> Au {
+        if let Some(content_block_size) = self
+            .base
+            .cached_content_block_size_under_default_constraint_if_applicable(inline_size)
+        {
+            return content_block_size;
+        }
+        self.layout(
+            layout_context,
+            positioning_context,
+            &ContainingBlock {
+                size: ContainingBlockSize {
+                    inline: inline_size,
+                    block: SizeConstraint::default(),
+                },
+                style: self.style(),
+            },
+            containing_block,
+            preferred_aspect_ratio,
+            &LazySize::intrinsic(),
+        )
+        .content_block_size
     }
 
     #[inline]

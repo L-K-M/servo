@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Deeply nested column flex containers lay out in reasonable time</title>
+<link rel="help" href="https://www.w3.org/TR/css-flexbox-1/#layout-algorithm">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  body { margin: 0; }
+  .flex { display: flex; flex-direction: column; flex-shrink: 0; min-height: 0; min-width: 0; }
+  .row { flex-direction: row; }
+  .grow { flex-grow: 1; flex-basis: 0%; }
+</style>
+<div id="host" style="width: 300px"></div>
+<script>
+// Each nested flex container used to lay out its items more than once
+// without reusing earlier results, so layout time doubled with every
+// level and a few dozen levels took minutes.
+const DEPTH = 40;
+
+function build(classFor) {
+  const root = document.createElement("div");
+  root.className = "flex";
+  let current = root;
+  for (let i = 0; i < DEPTH; i++) {
+    const child = document.createElement("div");
+    child.className = classFor(i);
+    current.appendChild(child);
+    current = child;
+  }
+  const leaf = document.createElement("div");
+  leaf.className = "flex";
+  leaf.style.height = "20px";
+  current.appendChild(leaf);
+  return { root, leaf };
+}
+
+function check(classFor) {
+  const host = document.getElementById("host");
+  host.textContent = "";
+  const { root, leaf } = build(classFor);
+  host.appendChild(root);
+  let rect = leaf.getBoundingClientRect();
+  assert_equals(rect.height, 20, "leaf height");
+
+  assert_equals(root.getBoundingClientRect().height, 20, "root height");
+
+  // A size change on the innermost item invalidates every ancestor.
+  leaf.style.width = "50px";
+  leaf.style.height = "30px";
+  rect = leaf.getBoundingClientRect();
+  assert_equals(rect.width, 50, "leaf width after restyle");
+  assert_equals(rect.height, 30, "leaf height after restyle");
+  assert_equals(root.getBoundingClientRect().height, 30, "root height after restyle");
+}
+
+test(() => check(() => "flex"), "Nested column flex containers");
+test(() => check(i => (i % 2 ? "flex row grow" : "flex grow")),
+     "Nested growing row and column flex containers");
+</script>
