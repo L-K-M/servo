@@ -1131,22 +1131,12 @@ fn do_initial_flex_line_layout<'items>(
     mut items: Vec<FlexItem<'items>>,
     main_gap: Au,
 ) -> Vec<InitialFlexLineLayout<'items>> {
-    let construct_line = |(items, outer_hypothetical_main_size)| {
-        InitialFlexLineLayout::new(
-            flex_context,
-            items,
-            outer_hypothetical_main_size,
-            container_main_size,
-            main_gap,
-        )
+    let construct_line = |items: Vec<FlexItem<'items>>| {
+        InitialFlexLineLayout::new(flex_context, items, container_main_size, main_gap)
     };
 
     if flex_context.config.container_is_single_line {
-        let outer_hypothetical_main_sizes_sum = items
-            .iter()
-            .map(|item| item.hypothetical_main_size + item.pbm_auto_is_zero.main)
-            .sum();
-        return vec![construct_line((items, outer_hypothetical_main_sizes_sum))];
+        return vec![construct_line(items)];
     }
 
     let mut lines = Vec::new();
@@ -1170,7 +1160,7 @@ fn do_initial_flex_line_layout<'items>(
 
         // We found something that doesn’t fit. This line ends *before* this item.
         let remaining = items.split_off(index);
-        lines.push((items, line_size_so_far));
+        lines.push(items);
         items = remaining;
 
         // The next line has this item.
@@ -1179,11 +1169,11 @@ fn do_initial_flex_line_layout<'items>(
     }
 
     // We didn't reach the end of the last line, so add all remaining items there.
-    lines.push((items, line_size_so_far));
+    lines.push(items);
 
     let job_sizes = lines
         .iter()
-        .map(|line| line.0.iter().map(FlexItem::subtree_size).sum());
+        .map(|line| line.iter().map(FlexItem::subtree_size).sum());
     if flex_context
         .layout_context
         .should_parallelize_layout(job_sizes)
@@ -1212,14 +1202,12 @@ impl InitialFlexLineLayout<'_> {
     fn new<'items>(
         flex_context: &FlexContext,
         items: Vec<FlexItem<'items>>,
-        outer_hypothetical_main_sizes_sum: Au,
         container_main_size: Au,
         main_gap: Au,
     ) -> InitialFlexLineLayout<'items> {
         let item_count = items.len();
         let (item_used_main_sizes, free_space_in_main_axis) = Self::resolve_flexible_lengths(
             &items,
-            outer_hypothetical_main_sizes_sum,
             container_main_size - main_gap * (item_count as i32 - 1),
         );
 
@@ -1275,7 +1263,6 @@ impl InitialFlexLineLayout<'_> {
     /// <https://drafts.csswg.org/css-flexbox/#resolve-flexible-lengths>
     fn resolve_flexible_lengths<'items>(
         items: &'items [FlexItem<'items>],
-        outer_hypothetical_main_sizes_sum: Au,
         container_main_size: Au,
     ) -> (Vec<Au>, Au) {
         struct FlexibleLengthResolutionItem<'items> {
@@ -1290,6 +1277,10 @@ impl InitialFlexLineLayout<'_> {
         // > items on the line. If the sum is less than the flex container’s inner main
         // > size, use the flex grow factor for the rest of this algorithm; otherwise, use
         // > the flex shrink factor.
+        let outer_hypothetical_main_sizes_sum: Au = items
+            .iter()
+            .map(|item| item.hypothetical_main_size + item.pbm_auto_is_zero.main)
+            .sum();
         let grow = outer_hypothetical_main_sizes_sum < container_main_size;
 
         let mut frozen_count = 0;
