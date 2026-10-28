@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SVGGeometryElement getTotalLength() and getPointAtLength()</title>
+<link rel="help" href="https://www.w3.org/TR/SVG2/types.html#InterfaceSVGGeometryElement">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<svg width="300" height="300">
+  <path id="lines" d="M10 20 h30 v40 M100 100 l-30 -40"/>
+  <path id="cubic" d="M0 0 C0 50 100 50 100 0"/>
+  <path id="arcs" d="M0 0a10 10 0 00 20 0a10 10 0 1120 0"/>
+  <path id="moveOnly" d="M7 8"/>
+  <path id="error" d="M0 0 L30 0 L30 x L0 0"/>
+  <path id="partialGroup" d="M0 0 L10 0 20 0 30"/>
+  <path id="plusSign" d="M0 0 L10 0 +20 0"/>
+  <path id="smoothAfterQuad" d="M0 0 Q0 10 10 10 S20 10 20 0"/>
+  <path id="closed" d="M0 0 h10 v10 z l0 -10"/>
+  <path id="empty"/>
+  <rect id="rect" x="5" y="5" width="20px" height="10"/>
+  <rect id="roundRect" width="40" height="20" rx="5"/>
+  <circle id="circle" cx="50" cy="50" r="10"/>
+  <ellipse id="ellipse" cx="0" cy="0" rx="30" ry="10"/>
+  <ellipse id="autoEllipse" cx="0" cy="0" ry="10"/>
+  <ellipse id="tallEllipse" cx="0" cy="0" rx="10" ry="30"/>
+  <rect id="hugeRect" width="1e38" height="1e38" rx="1e38"/>
+  <line id="line" x1="0" y1="0" x2="30" y2="40"/>
+  <polyline id="polyline" points="0,0 30,0 30,40 31"/>
+  <polygon id="polygon" points="0 0 30 0 30 40"/>
+</svg>
+<script>
+const byId = id => document.getElementById(id);
+
+function assert_point(point, x, y, epsilon, description) {
+  assert_true(point instanceof DOMPoint, description + " is a DOMPoint");
+  assert_approx_equals(point.x, x, epsilon, description + " x");
+  assert_approx_equals(point.y, y, epsilon, description + " y");
+}
+
+test(() => {
+  // A move command adds no length.
+  assert_equals(byId("lines").getTotalLength(), 120);
+  assert_point(byId("lines").getPointAtLength(0), 10, 20, 0, "start");
+  assert_point(byId("lines").getPointAtLength(50), 40, 40, 1e-4, "second segment");
+  assert_point(byId("lines").getPointAtLength(95), 85, 80, 1e-4, "second subpath");
+  assert_point(byId("lines").getPointAtLength(-5), 10, 20, 0, "clamped to the start");
+  assert_point(byId("lines").getPointAtLength(1000), 70, 60, 0, "clamped to the end");
+}, "Straight path segments and subpaths");
+
+test(() => {
+  // Arc length of the cubic, from numeric integration.
+  assert_approx_equals(byId("cubic").getTotalLength(), 139.47, 0.01);
+  assert_point(byId("cubic").getPointAtLength(byId("cubic").getTotalLength() / 2), 50, 37.5, 0.01,
+               "midpoint");
+}, "Cubic Bézier path");
+
+test(() => {
+  // Two half circles of radius 10, written with compact arc flags.
+  assert_approx_equals(byId("arcs").getTotalLength(), 20 * Math.PI, 0.01);
+  assert_point(byId("arcs").getPointAtLength(5 * Math.PI), 10, 10, 0.01, "lowest point of the first arc");
+  assert_point(byId("arcs").getPointAtLength(15 * Math.PI), 30, -10, 0.01, "highest point of the second arc");
+}, "Elliptical arcs");
+
+test(() => {
+  assert_equals(byId("moveOnly").getTotalLength(), 0);
+  assert_point(byId("moveOnly").getPointAtLength(10), 7, 8, 0, "move only");
+  assert_equals(byId("empty").getTotalLength(), 0);
+  assert_throws_dom("InvalidStateError", () => byId("empty").getPointAtLength(0));
+}, "Paths without length");
+
+test(() => {
+  // The path is drawn up to the command with the error.
+  assert_equals(byId("error").getTotalLength(), 30);
+  // Complete coordinate groups of the erroneous command are kept.
+  assert_equals(byId("partialGroup").getTotalLength(), 20);
+}, "Path data with an error");
+
+test(() => {
+  assert_equals(byId("plusSign").getTotalLength(), 20, "implicit command starting with +");
+  // After a quadratic curve, the first control point of S is the current
+  // point; reflecting the quadratic control point would give 34.25.
+  assert_approx_equals(byId("smoothAfterQuad").getTotalLength(), 32.096, 0.01, "S after Q");
+  // A command after closepath starts at the subpath's first point.
+  const closedLength = 20 + 10 * Math.SQRT2 + 10;
+  assert_approx_equals(byId("closed").getTotalLength(), closedLength, 1e-4);
+  assert_point(byId("closed").getPointAtLength(closedLength - 6), 0, -4, 1e-4, "after closepath");
+}, "Path data grammar");
+
+test(() => {
+  assert_equals(byId("rect").getTotalLength(), 60);
+  assert_point(byId("rect").getPointAtLength(25), 25, 10, 1e-4, "rect");
+  // Four straight sides of 30 and 10, and four quarter circles of radius 5.
+  assert_approx_equals(byId("roundRect").getTotalLength(), 80 + 10 * Math.PI, 0.01);
+  assert_point(byId("roundRect").getPointAtLength(0), 5, 0, 0, "rounded rect start");
+}, "Rectangles");
+
+test(() => {
+  assert_approx_equals(byId("circle").getTotalLength(), 20 * Math.PI, 0.01);
+  assert_point(byId("circle").getPointAtLength(0), 60, 50, 1e-4, "circle start");
+  assert_point(byId("circle").getPointAtLength(5 * Math.PI), 50, 60, 0.01, "circle runs clockwise");
+  // Perimeter of an ellipse with radii 30 and 10.
+  assert_approx_equals(byId("ellipse").getTotalLength(), 133.65, 0.05);
+  assert_point(byId("ellipse").getPointAtLength(0), 30, 0, 1e-4, "ellipse start");
+  assert_approx_equals(byId("autoEllipse").getTotalLength(), 20 * Math.PI, 0.01);
+  // A tall ellipse also starts at its rightmost point.
+  assert_point(byId("tallEllipse").getPointAtLength(0), 10, 0, 1e-4, "tall ellipse start");
+  // Huge shapes do not need a huge number of curves.
+  assert_approx_equals(byId("hugeRect").getTotalLength(), Math.PI * 1e38, 1e33);
+}, "Circles and ellipses");
+
+test(() => {
+  assert_equals(byId("line").getTotalLength(), 50);
+  assert_point(byId("line").getPointAtLength(25), 15, 20, 1e-4, "line");
+  // The odd last coordinate is dropped.
+  assert_equals(byId("polyline").getTotalLength(), 70);
+  assert_equals(byId("polygon").getTotalLength(), 120);
+  assert_point(byId("polygon").getPointAtLength(100), 12, 16, 1e-4, "closing segment");
+}, "Lines, polylines and polygons");
+
+test(() => {
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M0 0 H10");
+  assert_equals(path.getTotalLength(), 10, "detached element");
+  path.setAttribute("d", "M0 0 H25");
+  assert_equals(path.getTotalLength(), 25, "after an attribute change");
+}, "Elements outside the document and attribute changes");
+</script>
