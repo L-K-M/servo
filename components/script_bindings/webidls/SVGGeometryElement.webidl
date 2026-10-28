@@ -9,6 +9,6 @@ interface SVGGeometryElement : SVGGraphicsElement {
 
   //boolean isPointInFill(optional DOMPointInit point = {});
   //boolean isPointInStroke(optional DOMPointInit point = {});
-  //float getTotalLength();
-  //DOMPoint getPointAtLength(float distance);
+  float getTotalLength();
+  [Throws] DOMPoint getPointAtLength(float distance);
 };
