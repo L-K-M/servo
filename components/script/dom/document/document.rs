@@ -5234,6 +5234,12 @@ impl Document {
             self.origin().immutable().is_potentially_trustworthy()
     }
 
+    /// Combray: forget the trustworthy ancestor origin that a top-level PDF viewer document
+    /// took from the load that created it, such as a popup's from its opener.
+    pub(crate) fn clear_trustworthy_ancestor_origin(&self) {
+        self.has_trustworthy_ancestor_origin.set(false);
+    }
+
     pub(crate) fn highlight_dom_node(&self, node: Option<&Node>) {
         self.highlighted_dom_node.set(node);
         self.add_restyle_reason(RestyleReason::HighlightedDOMNodeChanged);
