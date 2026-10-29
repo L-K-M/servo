@@ -39,6 +39,8 @@ instructions in inherited files do not authorize upstream interaction.
   removal in the merge PR and `DOWNSTREAM.md`.
 - Reconcile copied `.github/workflows/` before publishing an upstream merge.
   Upstream automation was removed deliberately; it can contact other projects.
+  Keep `zai-code-review.yml`, the downstream review workflow: it posts only
+  on this repository's own PRs.
 - The owner's browsing history is private. Never publish its URLs, hosts,
   titles, page content or anything derived from them that identifies a site
   in commits, branches, PRs, issues, tests, fixtures, logs or other
@@ -50,8 +52,10 @@ instructions in inherited files do not authorize upstream interaction.
   `combray/0.N`. This repository has no CI. Before merging, require a
   successful local build, the applicable regression and WPT tests, and an
   independent review by a reviewer other than the author (another person or
-  another model family), with the results recorded in the PR. Leave the PR
-  unmerged when that review is unavailable.
+  another model family), with the results recorded in the PR. The GLM review
+  workflow provides one on each PR from a branch of this repository; a review
+  that did not run or did not finish is not one. Leave the PR unmerged when
+  that review is unavailable.
 
 A nightly task on the owner's Mac does this maintenance: it re-checks the sites
 the owner visits with Combray's site-check harness, fixes what breaks, follows
