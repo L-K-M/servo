@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Module scripts with top-level await report the errors they throw, and only those</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#run-a-module-script">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+setup({ allow_uncaught_exception: true });
+const errors = [];
+const firstError = new Promise(resolve => {
+  window.addEventListener("error", event => {
+    errors.push(event.error);
+    resolve(event.error);
+  });
+});
+</script>
+<script type="module">
+await new Promise(resolve => step_timeout(resolve, 0));
+window.fulfilled = true;
+</script>
+<script type="module">
+await new Promise(resolve => step_timeout(resolve, 0));
+throw new RangeError("thrown after await");
+</script>
+<script>
+promise_test(async () => {
+  const error = await firstError;
+  assert_true(error instanceof RangeError, "the first error is the one the module threw");
+  assert_equals(error.message, "thrown after await");
+  await new Promise(resolve => step_timeout(resolve, 0));
+  assert_true(window.fulfilled, "the other module finished");
+  assert_equals(errors.length, 1, "no other errors are reported");
+}, "Errors of modules that await at the top level are reported when their evaluation rejects");
+</script>

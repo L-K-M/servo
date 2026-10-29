@@ -70,7 +70,8 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::fill_compile_options;
 use crate::dom::html::htmlscriptelement::substitute_with_local_script;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::promisenativehandler::Callback;
+use crate::dom::promise::Promise;
+use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
 use crate::dom::script_execution::ScriptOptions;
 use crate::dom::types::{
     DedicatedWorkerGlobalScope, SharedWorkerGlobalScope, WorkerGlobalScope, WorkletGlobalScope,
@@ -395,7 +396,7 @@ impl ModuleTree {
             cx,
             NonNull::new(global.reflector().get_jsobject().get()).unwrap(),
         );
-        let cx = &mut *realm;
+        let cx = &mut realm.current_realm();
 
         unsafe {
             let ok = ModuleEvaluate(cx, module_record, eval_result.reborrow());
@@ -404,6 +405,22 @@ impl ModuleTree {
             rooted!(&in(cx) let mut evaluation_promise = ptr::null_mut::<JSObject>());
             if eval_result.is_object() {
                 evaluation_promise.set(eval_result.to_object());
+
+                // A module that awaits at the top level is still evaluating. Report its error
+                // upon rejection, as <https://html.spec.whatwg.org/multipage/#run-a-module-script>
+                // step 8 says: ThrowModuleErrorsSync expects a settled promise and would report
+                // the pending promise's undefined result as an exception.
+                let promise = Promise::new_with_js_promise(cx, evaluation_promise.handle());
+                if promise.is_pending() {
+                    let handler = PromiseNativeHandler::new(
+                        cx,
+                        global,
+                        None,
+                        Some(Box::new(ModuleEvaluationErrorHandler)),
+                    );
+                    promise.append_native_handler(cx, &handler);
+                    return Ok(());
+                }
             }
 
             let throw_result = ThrowOnModuleEvaluationFailure(
@@ -535,6 +552,16 @@ impl ModuleTree {
                     .to_owned(),
             )),
         }
+    }
+}
+
+/// Reports the error of a module evaluation that rejects after a top-level await.
+#[derive(JSTraceable, MallocSizeOf)]
+struct ModuleEvaluationErrorHandler;
+
+impl Callback for ModuleEvaluationErrorHandler {
+    fn callback(&self, cx: &mut CurrentRealm, v: HandleValue) {
+        GlobalScope::from_current_realm(cx).report_an_exception(cx, v);
     }
 }
 
