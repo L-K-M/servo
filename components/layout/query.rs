@@ -16,7 +16,8 @@ use euclid::{Point2D, Rect, Size2D};
 use layout_api::{
     AxesOverflow, BoxAreaType, CSSPixelRectVec, DangerousStyleElementOf, LayoutElement,
     LayoutElementType, LayoutNode, LayoutNodeType, OffsetParentResponse, PhysicalSides,
-    ScrollContainerQueryFlags, ScrollContainerResponse,
+    SVG_RASTER_STYLE_LONGHANDS, ScrollContainerQueryFlags, ScrollContainerResponse,
+    SvgElementStyle, SvgTextTransform,
 };
 use paint_api::display_list::ScrollTree;
 use script::layout_dom::ServoLayoutNode;
@@ -46,6 +47,7 @@ use style::values::generics::font::LineHeight;
 use style::values::generics::position::AspectRatio;
 use style::values::specified::GenericGridTemplateComponent;
 use style::values::specified::box_::DisplayInside;
+use style::values::specified::text::TextTransformCase;
 use style_traits::{CSSPixel, ParsingMode, ToCss};
 use webrender_api::units::LayoutPixel;
 
@@ -909,6 +911,79 @@ pub(crate) fn process_scroll_container_query(
         Position::Fixed => None,
         _ => Some(ScrollContainerResponse::Viewport(viewport_overflow)),
     }
+}
+
+/// Serialize the computed presentation styles of every element in the
+/// subtree rooted at `node`, in tree order (one [`SvgElementStyle`] per
+/// element).
+///
+/// Servo rasterizes SVG subtrees as images from their serialized XML, and
+/// the rasterizer only understands presentation attributes, `style`
+/// attributes and stylesheets inside the subtree. This resolves the
+/// document's full CSS cascade (including `var()` references) into
+/// declarations that survive that serialization.
+#[expect(unsafe_code)]
+pub fn process_svg_presentation_styles_request(
+    context: &SharedStyleContext,
+    root: ServoLayoutNode<'_>,
+) -> Vec<SvgElementStyle> {
+    let mut styles = Vec::new();
+    let mut stack = vec![root];
+    let mut tlc = ThreadLocalStyleContext::new();
+
+    // Preorder walk over elements, matching the script-side clone walk.
+    while let Some(node) = stack.pop() {
+        if let Some(element) = node.as_element() {
+            // SVG children sit in a `display: none` subtree (svg > * in
+            // servo.css), which the style traversal does not descend into,
+            // so resolve their styles on demand like a style query does.
+            let computed;
+            let style = if element.style_data().is_some() {
+                &*element.style(context)
+            } else {
+                let mut style_context = StyleContext {
+                    shared: context,
+                    thread_local: &mut tlc,
+                };
+                computed = resolve_style(
+                    &mut style_context,
+                    unsafe { element.dangerous_style_element() },
+                    RuleInclusion::All,
+                    None,
+                    None,
+                );
+                computed.primary()
+            };
+
+            let mut declarations = String::new();
+            for longhand_id in SVG_RASTER_STYLE_LONGHANDS {
+                let longhand_id = longhand_id.to_physical(style.writing_mode);
+                declarations.push_str(longhand_id.name());
+                declarations.push(':');
+                declarations.push_str(
+                    &style.computed_value_to_string(PropertyDeclarationId::Longhand(longhand_id)),
+                );
+                declarations.push(';');
+            }
+
+            styles.push(SvgElementStyle {
+                declarations,
+                text_transform: match style.get_inherited_text().text_transform.case() {
+                    TextTransformCase::None => SvgTextTransform::None,
+                    TextTransformCase::Uppercase => SvgTextTransform::Uppercase,
+                    TextTransformCase::Lowercase => SvgTextTransform::Lowercase,
+                    TextTransformCase::Capitalize => SvgTextTransform::Capitalize,
+                    TextTransformCase::MathAuto => SvgTextTransform::Unsupported,
+                },
+            });
+        }
+
+        let mut children: Vec<_> = node.dom_children().collect();
+        children.reverse();
+        stack.extend(children);
+    }
+
+    styles
 }
 
 /// <https://html.spec.whatwg.org/multipage/#get-the-text-steps>
