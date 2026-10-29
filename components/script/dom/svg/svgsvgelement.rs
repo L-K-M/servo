@@ -9,21 +9,25 @@ use dom_struct::dom_struct;
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
-use layout_api::SVGElementData;
+use layout_api::{SVGElementData, SvgElementStyle, SvgTextTransform};
+use servo_arc::Arc as ServoArc;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
 use style::parser::ParserContext;
-use style::stylesheets::Origin;
+use style::properties::parse_style_attribute;
+use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::values::specified::LengthPercentage;
 use style_traits::ParsingMode;
 use uuid::Uuid;
 use xml5ever::serialize::TraversalScope;
 
+use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{DomRoot, LayoutDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::characterdata::CharacterData;
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
@@ -32,7 +36,12 @@ use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
     ChildrenMutation, CloneChildrenFlag, Node, NodeDamage, NodeTraits, UnbindContext,
 };
+use crate::dom::svg::svgcircleelement::SVGCircleElement;
+use crate::dom::svg::svgellipseelement::SVGEllipseElement;
 use crate::dom::svg::svggraphicselement::SVGGraphicsElement;
+use crate::dom::svg::svgimageelement::SVGImageElement;
+use crate::dom::svg::svgrectelement::SVGRectElement;
+use crate::dom::text::Text;
 
 #[dom_struct]
 pub(crate) struct SVGSVGElement {
@@ -93,6 +102,13 @@ impl SVGSVGElement {
             *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
             return;
         }
+
+        // The rasterizer only sees the serialized markup, so resolve the
+        // document's class rules and var() references into the clone first.
+        // Baking walks the clone in lockstep with the original subtree, so it
+        // must run before `use` expansion appends extra nodes; expansion
+        // clones bake their own source subtree in `process_single_use_element`.
+        self.bake_resolved_styles(cx, self.upcast::<Node>(), &cloned_node);
 
         self.process_use_elements(cx, &cloned_node);
 
@@ -160,7 +176,226 @@ impl SVGSVGElement {
             CloneChildrenFlag::CloneChildren,
             None,
         );
+        self.bake_resolved_styles(cx, referenced_node.upcast::<Node>(), &cloned_node);
         let _ = root_node.AppendChild(cx, &cloned_node);
+    }
+
+    /// Serialize the resolved presentation styles of `original`'s elements
+    /// into the matching elements of `cloned`, which must be structurally
+    /// identical to `original`.
+    ///
+    /// Servo rasterizes SVG subtrees as images from their serialized XML,
+    /// and that rasterizer only understands presentation attributes,
+    /// `style` attributes and stylesheets inside the subtree. Resolving the
+    /// document's full CSS cascade here makes class rules, custom properties
+    /// and `var()` references survive serialization.
+    fn bake_resolved_styles(&self, cx: &mut JSContext, original: &Node, cloned: &Node) {
+        let document = self.owner_document();
+        let styles = self.owner_window().layout().query_svg_presentation_styles(
+            original.to_trusted_node_address(),
+            document.animation_manager().sets(),
+            document.current_animation_timeline_value(),
+        );
+
+        let original_elements: Vec<DomRoot<Element>> = original
+            .traverse_preorder(ShadowIncluding::No)
+            .filter_map(|node| node.downcast::<Element>().map(DomRoot::from_ref))
+            .collect();
+        let cloned_elements: Vec<DomRoot<Element>> = cloned
+            .traverse_preorder(ShadowIncluding::No)
+            .filter_map(|node| node.downcast::<Element>().map(DomRoot::from_ref))
+            .collect();
+        if styles.len() != original_elements.len() ||
+            original_elements.len() != cloned_elements.len()
+        {
+            // The layout walk and the clone walk must see the same elements
+            // in the same order; rather than assign styles to the wrong
+            // element, serialize the subtree without resolved styles.
+            error!(
+                "SVG style bake skipped: {} styles for {} original and {} cloned elements",
+                styles.len(),
+                original_elements.len(),
+                cloned_elements.len(),
+            );
+            return;
+        }
+
+        for ((style, original_element), cloned_element) in styles
+            .iter()
+            .zip(original_elements.iter())
+            .zip(cloned_elements.iter())
+        {
+            self.bake_element_style(cx, style, original_element, cloned_element);
+        }
+    }
+
+    /// Write one element's resolved presentation styles into its clone.
+    fn bake_element_style(
+        &self,
+        cx: &mut JSContext,
+        style: &SvgElementStyle,
+        original_element: &Element,
+        cloned_element: &Element,
+    ) {
+        let declarations = self.declarations_for_raster(style, original_element);
+
+        // Append the resolved declarations after any existing style
+        // attribute: the rasterizer resolves the attribute last, so the
+        // resolved values win over leftovers it cannot resolve (var()
+        // references).
+        if !declarations.is_empty() {
+            let existing = cloned_element.get_string_attribute(&local_name!("style"));
+            let merged = if existing.is_empty() {
+                declarations
+            } else {
+                format!("{existing};{declarations}")
+            };
+            self.set_style_attribute_for_serialization(cx, cloned_element, merged);
+        }
+        self.move_geometry_to_attributes(cx, cloned_element, style);
+
+        // The rasterizer has no text-transform; apply it to the cloned text.
+        if style.text_transform != SvgTextTransform::None {
+            self.apply_text_transform(cx, style.text_transform, cloned_element);
+        }
+    }
+
+    /// The declarations to serialize for one element.
+    fn declarations_for_raster(
+        &self,
+        style: &SvgElementStyle,
+        original_element: &Element,
+    ) -> String {
+        let parent_is_svg = original_element
+            .upcast::<Node>()
+            .GetParentNode()
+            .is_some_and(|parent| parent.is::<SVGSVGElement>());
+        if !parent_is_svg {
+            return style.declarations.clone();
+        }
+
+        // The user agent hides SVG children from CSS layout (`svg > *` in
+        // servo.css), which is not their rendered state: the rasterizer draws
+        // them. A computed `display: none` on a direct child of an `<svg>`
+        // comes from that rule unless the element carries its own `display`:
+        // a presentation attribute keeps working in the rasterizer, and a
+        // `display` in the element's own style attribute is author intent,
+        // so both keep the computed value.
+        let author_hides = original_element.has_attribute(&local_name!("display")) ||
+            original_element
+                .get_string_attribute(&local_name!("style"))
+                .contains("display");
+        if author_hides {
+            return style.declarations.clone();
+        }
+
+        style.declarations.replace("display:none;", "")
+    }
+
+    /// Set the style attribute on a serialization clone without running the
+    /// attribute-mutation pipeline: no style-attribute parsing and no
+    /// Content Security Policy check, which would report violations for
+    /// this engine-internal write.
+    fn set_style_attribute_for_serialization(
+        &self,
+        cx: &mut JSContext,
+        cloned_element: &Element,
+        value: String,
+    ) {
+        let document = self.owner_document();
+        let lock = document.style_shared_author_lock();
+        let block = parse_style_attribute(
+            &value,
+            &UrlExtraData(document.base_url().get_arc()),
+            None,
+            document.quirks_mode(),
+            CssRuleType::Style,
+        );
+        cloned_element.set_attribute(
+            cx,
+            &local_name!("style"),
+            AttrValue::Declaration {
+                block: ServoArc::new(lock.wrap(block)),
+                lock: lock.clone(),
+                serialization: std::sync::OnceLock::new(),
+            },
+        );
+    }
+
+    /// Move the resolved geometry declarations onto the clone's attributes.
+    /// The rasterizer resolves geometry only from presentation attributes,
+    /// never from a style attribute, and a raw attribute value cannot be
+    /// parsed after `var()` substitution re-parses it strictly. Only the
+    /// element kinds whose geometry attributes map to CSS properties carry
+    /// resolved values (SVG 2 §Geometry): text positioning attributes do
+    /// not, and the root `<svg>` keeps its own width and height, which
+    /// select the raster's natural size.
+    fn move_geometry_to_attributes(
+        &self,
+        cx: &mut JSContext,
+        cloned_element: &Element,
+        style: &SvgElementStyle,
+    ) {
+        let is_rect = cloned_element.is::<SVGRectElement>();
+        let is_image = cloned_element.is::<SVGImageElement>();
+        let is_circle = cloned_element.is::<SVGCircleElement>();
+        let is_ellipse = cloned_element.is::<SVGEllipseElement>();
+        if !(is_rect || is_image || is_circle || is_ellipse) {
+            return;
+        }
+
+        for declaration in style.declarations.split(';') {
+            let Some((name, value)) = declaration.split_once(':') else {
+                continue;
+            };
+            let maps = match name {
+                "x" | "y" | "width" | "height" => is_rect || is_image,
+                "rx" | "ry" => is_rect || is_ellipse,
+                "cx" | "cy" => is_circle || is_ellipse,
+                "r" => is_circle,
+                _ => false,
+            };
+            if !maps || value == "auto" {
+                continue;
+            }
+            cloned_element.set_attribute(
+                cx,
+                &LocalName::from(name),
+                AttrValue::String(value.into()),
+            );
+        }
+    }
+
+    /// Apply `text_transform` to the text nodes directly below
+    /// `cloned_element` (CSS Text 4 §text-transform). Descendant elements
+    /// apply their own computed transform to their own text; text that is
+    /// never rendered keeps its spelling.
+    fn apply_text_transform(
+        &self,
+        cx: &mut JSContext,
+        text_transform: SvgTextTransform,
+        cloned_element: &Element,
+    ) {
+        if matches!(
+            &**cloned_element.local_name(),
+            "style" | "script" | "title" | "desc"
+        ) {
+            return;
+        }
+
+        for node in cloned_element.upcast::<Node>().children() {
+            let Some(text) = node.downcast::<Text>() else {
+                continue;
+            };
+            let transformed = match text_transform {
+                SvgTextTransform::Uppercase => text.data().to_uppercase(),
+                SvgTextTransform::Lowercase => text.data().to_lowercase(),
+                SvgTextTransform::Capitalize => capitalize_words(&text.data()),
+                SvgTextTransform::None | SvgTextTransform::Unsupported => continue,
+            };
+            text.upcast::<CharacterData>()
+                .SetData(cx, DOMString::from(transformed));
+        }
     }
 
     fn invalidate_cached_serialized_subtree_and_rasterization_result(&self, no_gc: &NoGC) {
@@ -278,4 +513,35 @@ impl VirtualMethods for SVGSVGElement {
 
         self.invalidate_cached_serialized_subtree_and_rasterization_result(cx.no_gc());
     }
+}
+
+/// Uppercase the first typographic letter of every word. Approximates CSS
+/// `text-transform: capitalize` (CSS Text 4): a word boundary is a run of
+/// non-alphanumeric characters, except that apostrophes between letters
+/// ("don't") do not start a new word, and digits do not consume the word
+/// start ("2abc" becomes "2Abc").
+fn capitalize_words(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut at_word_start = true;
+    let mut previous_is_letter = false;
+
+    for character in text.chars() {
+        if character.is_alphabetic() {
+            if at_word_start {
+                result.extend(character.to_uppercase());
+                at_word_start = false;
+                previous_is_letter = true;
+                continue;
+            }
+            previous_is_letter = true;
+        } else if matches!(character, '\'' | '\u{2019}') && previous_is_letter {
+            // A word-internal apostrophe: keep the word going.
+        } else if !character.is_numeric() {
+            at_word_start = true;
+            previous_is_letter = false;
+        }
+        result.push(character);
+    }
+
+    result
 }

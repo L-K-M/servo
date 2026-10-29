@@ -67,7 +67,7 @@ use style::device::Device;
 use style::dom::OpaqueNode;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::style_structs::Font;
-use style::properties::{ComputedValues, PropertyId};
+use style::properties::{ComputedValues, LonghandId, PropertyId};
 use style::selector_parser::{PseudoElement, RestyleDamage, Snapshot};
 use style::str::char_is_whitespace;
 use style::stylesheets::{DocumentStyleSheet, Stylesheet};
@@ -164,6 +164,78 @@ pub struct SVGElementData<'dom> {
     pub height: Option<&'dom AttrValue>,
     pub svg_id: Uuid,
     pub view_box: Option<&'dom AttrValue>,
+}
+
+/// The longhands whose computed values are serialized into rasterized SVG
+/// subtrees (see [`SvgElementStyle`]). The presentation attributes for these
+/// are mapped in `svgelement.rs` (SVG 2 §Styling). Attributes outside this
+/// list keep reaching the SVG rasterizer only as attribute text; that
+/// includes `text-anchor`, `dominant-baseline`, `clip-rule`, `stop-color`,
+/// `stop-opacity` and `paint-order`, whose properties Servo's style system
+/// does not implement yet.
+pub const SVG_RASTER_STYLE_LONGHANDS: &[LonghandId] = &[
+    LonghandId::Fill,
+    LonghandId::FillOpacity,
+    LonghandId::FillRule,
+    LonghandId::Stroke,
+    LonghandId::StrokeWidth,
+    LonghandId::StrokeLinecap,
+    LonghandId::StrokeLinejoin,
+    LonghandId::StrokeDasharray,
+    LonghandId::StrokeDashoffset,
+    LonghandId::StrokeMiterlimit,
+    LonghandId::StrokeOpacity,
+    LonghandId::Opacity,
+    LonghandId::Display,
+    LonghandId::Visibility,
+    LonghandId::Color,
+    LonghandId::FontFamily,
+    LonghandId::FontSize,
+    LonghandId::FontStyle,
+    LonghandId::FontWeight,
+    LonghandId::LetterSpacing,
+    LonghandId::WordSpacing,
+    LonghandId::AlignmentBaseline,
+    LonghandId::BaselineShift,
+    LonghandId::Direction,
+    LonghandId::X,
+    LonghandId::Y,
+    LonghandId::Width,
+    LonghandId::Height,
+    LonghandId::Cx,
+    LonghandId::Cy,
+    LonghandId::R,
+    LonghandId::Rx,
+    LonghandId::Ry,
+];
+
+/// How to apply CSS `text-transform` to rasterized SVG text, which the SVG
+/// rasterizer does not support.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SvgTextTransform {
+    /// No case transform.
+    #[default]
+    None,
+    /// All uppercase.
+    Uppercase,
+    /// All lowercase.
+    Lowercase,
+    /// Capitalize each word.
+    Capitalize,
+    /// Any other value; text is serialized unchanged.
+    Unsupported,
+}
+
+/// The computed presentation styles of one element in a rasterized SVG
+/// subtree, resolved through the document's full CSS cascade.
+#[derive(Clone, Debug, Default)]
+pub struct SvgElementStyle {
+    /// Computed values of [`SVG_RASTER_STYLE_LONGHANDS`], serialized as CSS
+    /// declarations to append to the element's `style` attribute.
+    pub declarations: String,
+    /// The computed `text-transform`, applied to the subtree's text nodes
+    /// before serialization.
+    pub text_transform: SvgTextTransform,
 }
 
 impl SVGElementData<'_> {
@@ -397,6 +469,15 @@ pub trait Layout {
         animations: DocumentAnimationSet,
         animation_timeline_value: f64,
     ) -> String;
+    /// Serialize the computed presentation styles of every element in the
+    /// subtree rooted at `node`, in tree order (one [`SvgElementStyle`] per
+    /// element). Called after a reflow has styled the tree.
+    fn query_svg_presentation_styles(
+        &self,
+        node: TrustedNodeAddress,
+        animations: DocumentAnimationSet,
+        animation_timeline_value: f64,
+    ) -> Vec<SvgElementStyle>;
     fn query_resolved_font_style(
         &self,
         node: TrustedNodeAddress,
@@ -566,6 +647,7 @@ pub enum QueryMsg {
     /// A style query, with an optional [`PropertyId`], used to limit the phases
     /// of layout run before the query.
     ResolvedStyleQuery(PropertyId),
+    SvgPresentationStylesQuery,
     ScrollingAreaOrOffsetQuery,
     StyleQuery,
     TextIndexQuery,
