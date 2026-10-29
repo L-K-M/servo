@@ -1294,3 +1294,127 @@ fn test_svg_presentation_attribute_var_resolves() {
     );
 }
 
+#[test]
+fn test_svg_document_styles_paint() {
+    // A chart-style SVG: paints and text styles come from the document's
+    // stylesheets through custom properties and class rules, none of which
+    // survive into the serialized subtree the SVG rasterizer consumes.
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <style>\
+                :root{--surface:%2314181c;--direct:%23e8e2d6;--brand:%23ff7000;--gx:280px;\
+                --chain-label:var(--direct);--chain-brand:var(--brand)}\
+                body{margin:0;background:var(--surface)}\
+                svg{width:500px;height:500px;display:block}\
+                .bar{fill:var(--chain-brand)}\
+                .tick{fill:var(--chain-label);font-size:32px}\
+                .upper{text-transform:uppercase;fill:var(--direct);font-size:32px}\
+                </style><svg viewBox='0 0 500 500'>\
+                <g data-marks>\
+                <rect x='20' y='20' width='80' height='200' fill='var(--brand)'/>\
+                <rect class='bar' x='140' y='20' width='80' height='200'/>\
+                <rect x='var(--gx)' y='20' width='80' height='200' fill='var(--brand)'/>\
+                </g><g data-labels>\
+                <text class='tick' x='260' y='120'>M</text>\
+                <text class='upper' x='20' y='320'>Score</text>\
+                <text x='20' y='400' fill='var(--direct)' font-size='32px'>SCORE</text>\
+                </g></svg>",
+            )
+            .unwrap(),
+        )
+        .build();
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    // The rendering-ready helper paints the body green to force a frame;
+    // clear it again so the page background is the stylesheet's.
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.body.style.background = ''",
+    );
+
+    // The SVG rasterizes asynchronously; wait for its first bar to land
+    // before reading pixels.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+        let shot = webview
+            .rendering_context()
+            .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+            .expect("Should be able to read image");
+        if shot.get_pixel(60, 120) == &image::Rgba([255, 112, 0, 255]) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SVG raster never landed; pixels: {:?}",
+            shot.get_pixel(60, 120)
+        );
+    }
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    let image = webview
+        .rendering_context()
+        .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+        .expect("Should be able to read image");
+
+    // Bars paint in the brand color whether their fill is a presentation
+    // attribute with var() or a class rule with a chained var().
+    let brand = image::Rgba([255, 112, 0, 255]);
+    assert_eq!(
+        *image.get_pixel(60, 120),
+        brand,
+        "fill attribute with var()"
+    );
+    assert_eq!(
+        *image.get_pixel(180, 120),
+        brand,
+        "class rule with chained var()"
+    );
+    assert_eq!(
+        *image.get_pixel(320, 120),
+        brand,
+        "geometry attribute with var()"
+    );
+
+    // The page background resolves through var() as well.
+    assert_eq!(*image.get_pixel(10, 250), image::Rgba([20, 24, 28, 255]));
+
+    // Class-styled SVG text is visible on the dark card.
+    let text_is_bright = || {
+        (260..340)
+            .flat_map(|x| (60..130).map(move |y| (x, y)))
+            .map(|(x, y)| image.get_pixel(x, y))
+            .any(|pixel| pixel[0] > 150 && pixel[1] > 150 && pixel[2] > 150)
+    };
+    assert!(text_is_bright(), "class-styled SVG text should be visible");
+
+    // text-transform:uppercase paints identically to text authored
+    // uppercase; the rasterizer cannot apply it, so the serialization must.
+    // Both bands must contain text first, so the comparison cannot pass on
+    // two empty bands.
+    let band_has_text = |offset: u32| {
+        (20..260)
+            .flat_map(move |x| (288..336).map(move |y| (x, y + offset)))
+            .map(|(x, y)| image.get_pixel(x, y))
+            .any(|pixel| pixel[0] > 150 && pixel[1] > 150 && pixel[2] > 150)
+    };
+    assert!(band_has_text(0), "transformed label should be visible");
+    assert!(band_has_text(80), "authored label should be visible");
+
+    for y in 288..336 {
+        for x in 20..260 {
+            assert_eq!(
+                image.get_pixel(x, y),
+                image.get_pixel(x, y + 80),
+                "uppercase transform at ({x}, {y})"
+            );
+        }
+    }
+}
