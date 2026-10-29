@@ -11,7 +11,7 @@ use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::str::DOMString;
 use style::attr::AttrValue;
 use style::parser::ParserContext;
-use style::properties::{PropertyDeclaration, longhands};
+use style::properties::{LonghandId, PropertyDeclaration, PropertyId, SourcePropertyDeclaration};
 use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::values::generics::NonNegative;
 use style::values::specified;
@@ -45,6 +45,38 @@ pub(crate) struct SVGElement {
     element: Element,
     style_decl: MutNullableDom<CSSStyleDeclaration>,
 }
+
+/// The SVG 2 presentation attributes that map to CSS properties of the same
+/// name (SVG 2 §Styling). `transform`, `overflow`, `filter`, `mask`,
+/// `clip-path`, `marker-*`, `font-variant` and `text-decoration` are missing
+/// here: their attributes still reach the SVG rasterizer as attribute text,
+/// and document CSS for them is not resolved.
+const SVG_PRESENTATION_ATTRIBUTES: &[(&str, LonghandId)] = &[
+    ("fill", LonghandId::Fill),
+    ("fill-opacity", LonghandId::FillOpacity),
+    ("fill-rule", LonghandId::FillRule),
+    ("stroke", LonghandId::Stroke),
+    ("stroke-width", LonghandId::StrokeWidth),
+    ("stroke-linecap", LonghandId::StrokeLinecap),
+    ("stroke-linejoin", LonghandId::StrokeLinejoin),
+    ("stroke-dasharray", LonghandId::StrokeDasharray),
+    ("stroke-dashoffset", LonghandId::StrokeDashoffset),
+    ("stroke-miterlimit", LonghandId::StrokeMiterlimit),
+    ("stroke-opacity", LonghandId::StrokeOpacity),
+    ("opacity", LonghandId::Opacity),
+    ("display", LonghandId::Display),
+    ("visibility", LonghandId::Visibility),
+    ("color", LonghandId::Color),
+    ("font-family", LonghandId::FontFamily),
+    ("font-size", LonghandId::FontSize),
+    ("font-style", LonghandId::FontStyle),
+    ("font-weight", LonghandId::FontWeight),
+    ("letter-spacing", LonghandId::LetterSpacing),
+    ("word-spacing", LonghandId::WordSpacing),
+    ("alignment-baseline", LonghandId::AlignmentBaseline),
+    ("baseline-shift", LonghandId::BaselineShift),
+    ("direction", LonghandId::Direction),
+];
 
 impl SVGElement {
     fn new_inherited(
@@ -116,36 +148,17 @@ impl VirtualMethods for SVGElement {
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
-        matches!(
-            attr.local_name(),
-            &local_name!("fill") |
-                &local_name!("fill-opacity") |
-                &local_name!("fill-rule") |
-                &local_name!("stroke") |
-                &local_name!("stroke-width") |
-                &local_name!("stroke-linecap") |
-                &local_name!("stroke-linejoin") |
-                &local_name!("stroke-dasharray") |
-                &local_name!("stroke-dashoffset") |
-                &local_name!("stroke-miterlimit") |
-                &local_name!("stroke-opacity") |
-                &local_name!("display") |
-                &local_name!("visibility") |
-                &local_name!("opacity") |
-                &local_name!("cx") |
-                &local_name!("cy") |
-                &local_name!("r") |
-                &local_name!("rx") |
-                &local_name!("ry") |
-                &local_name!("x") |
-                &local_name!("y") |
-                &local_name!("width") |
-                &local_name!("height") |
-                &local_name!("d")
-        ) || self
-            .super_type()
-            .unwrap()
-            .attribute_affects_presentational_hints(attr)
+        let name = &**attr.local_name();
+        SVG_PRESENTATION_ATTRIBUTES
+            .iter()
+            .any(|(attr_name, _)| name == *attr_name) ||
+            matches!(
+                name,
+                "cx" | "cy" | "r" | "rx" | "ry" | "x" | "y" | "width" | "height" | "d"
+            ) ||
+            self.super_type()
+                .unwrap()
+                .attribute_affects_presentational_hints(attr)
     }
 }
 
@@ -294,139 +307,134 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
             Default::default(),
         );
 
-        self.parse_svg_attribute(
-            &parser_context,
-            "fill",
-            longhands::fill::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "fill-opacity",
-            longhands::fill_opacity::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "fill-rule",
-            longhands::fill_rule::parse_declared,
-            push,
-        );
-
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke",
-            longhands::stroke::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-width",
-            longhands::stroke_width::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-linecap",
-            longhands::stroke_linecap::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-linejoin",
-            longhands::stroke_linejoin::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-dasharray",
-            longhands::stroke_dasharray::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-dashoffset",
-            longhands::stroke_dashoffset::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-miterlimit",
-            longhands::stroke_miterlimit::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "stroke-opacity",
-            longhands::stroke_opacity::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "display",
-            longhands::display::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "visibility",
-            longhands::visibility::parse_declared,
-            push,
-        );
-        self.parse_svg_attribute(
-            &parser_context,
-            "opacity",
-            longhands::opacity::parse_declared,
-            push,
-        );
+        // SVG 2 §Styling maps these attributes to CSS properties of the same
+        // name. Layout rasterizes SVG subtrees as images from serialized
+        // styles (layout_api::SVG_RASTER_STYLE_LONGHANDS); an attribute that
+        // is not mapped here keeps reaching that rasterizer only as raw
+        // attribute text. `text-anchor`, `dominant-baseline`, `clip-rule`,
+        // `stop-color`, `stop-opacity` and `paint-order` are missing because
+        // Servo's style system does not implement those properties yet.
+        for (attr_name, longhand_id) in SVG_PRESENTATION_ATTRIBUTES {
+            self.parse_svg_attribute(
+                &parser_context,
+                attr_name,
+                PropertyId::NonCustom((*longhand_id).into()),
+                push,
+            );
+        }
 
         // Parse geometry attributes based on element type
         // <circle>: https://svgwg.org/svg2-draft/shapes.html#CircleElement
         if element.downcast::<SVGCircleElement>().is_some() {
-            self.parse_svg_attribute(&parser_context, "cx", longhands::cx::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "cy", longhands::cy::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "r", longhands::r::parse_declared, push);
+            self.parse_svg_attribute(
+                &parser_context,
+                "cx",
+                PropertyId::NonCustom(LonghandId::Cx.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "cy",
+                PropertyId::NonCustom(LonghandId::Cy.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "r",
+                PropertyId::NonCustom(LonghandId::R.into()),
+                push,
+            );
         }
         // <ellipse>: https://svgwg.org/svg2-draft/shapes.html#EllipseElement
         if element.downcast::<SVGEllipseElement>().is_some() {
-            self.parse_svg_attribute(&parser_context, "cx", longhands::cx::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "cy", longhands::cy::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "rx", longhands::rx::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "ry", longhands::ry::parse_declared, push);
+            self.parse_svg_attribute(
+                &parser_context,
+                "cx",
+                PropertyId::NonCustom(LonghandId::Cx.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "cy",
+                PropertyId::NonCustom(LonghandId::Cy.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "rx",
+                PropertyId::NonCustom(LonghandId::Rx.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "ry",
+                PropertyId::NonCustom(LonghandId::Ry.into()),
+                push,
+            );
         }
         // <rect>: https://svgwg.org/svg2-draft/shapes.html#RectElement
         if element.downcast::<SVGRectElement>().is_some() {
-            self.parse_svg_attribute(&parser_context, "x", longhands::x::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "y", longhands::y::parse_declared, push);
+            self.parse_svg_attribute(
+                &parser_context,
+                "x",
+                PropertyId::NonCustom(LonghandId::X.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "y",
+                PropertyId::NonCustom(LonghandId::Y.into()),
+                push,
+            );
             self.parse_svg_attribute(
                 &parser_context,
                 "width",
-                longhands::width::parse_declared,
+                PropertyId::NonCustom(LonghandId::Width.into()),
                 push,
             );
             self.parse_svg_attribute(
                 &parser_context,
                 "height",
-                longhands::height::parse_declared,
+                PropertyId::NonCustom(LonghandId::Height.into()),
                 push,
             );
-            self.parse_svg_attribute(&parser_context, "rx", longhands::rx::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "ry", longhands::ry::parse_declared, push);
+            self.parse_svg_attribute(
+                &parser_context,
+                "rx",
+                PropertyId::NonCustom(LonghandId::Rx.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "ry",
+                PropertyId::NonCustom(LonghandId::Ry.into()),
+                push,
+            );
         }
         // <image>: https://svgwg.org/svg2-draft/embedded.html#ImageElement
         if element.downcast::<SVGImageElement>().is_some() {
-            self.parse_svg_attribute(&parser_context, "x", longhands::x::parse_declared, push);
-            self.parse_svg_attribute(&parser_context, "y", longhands::y::parse_declared, push);
+            self.parse_svg_attribute(
+                &parser_context,
+                "x",
+                PropertyId::NonCustom(LonghandId::X.into()),
+                push,
+            );
+            self.parse_svg_attribute(
+                &parser_context,
+                "y",
+                PropertyId::NonCustom(LonghandId::Y.into()),
+                push,
+            );
             self.parse_svg_attribute(
                 &parser_context,
                 "width",
-                longhands::width::parse_declared,
+                PropertyId::NonCustom(LonghandId::Width.into()),
                 push,
             );
             self.parse_svg_attribute(
                 &parser_context,
                 "height",
-                longhands::height::parse_declared,
+                PropertyId::NonCustom(LonghandId::Height.into()),
                 push,
             );
         }
@@ -437,44 +445,71 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
             // Wrap the raw path data in `path("...")` so the CSS parser can handle it.
             if let Some(value) = element.get_attr_val_for_layout(&ns!(), &local_name!("d")) {
                 if value.eq_ignore_ascii_case("none") {
-                    let mut parser = cssparser::Parser::new(value);
-                    if let Ok(property) =
-                        parser.parse_entirely(|i| longhands::d::parse_declared(&parser_context, i))
-                    {
-                        push(property);
-                    }
+                    self.parse_svg_attribute(
+                        &parser_context,
+                        "d",
+                        PropertyId::NonCustom(LonghandId::D.into()),
+                        push,
+                    );
                 } else {
-                    let wrapped = format!("path(\"{}\")", value);
-                    let mut parser = cssparser::Parser::new(&wrapped);
-                    if let Ok(property) = parser.parse_entirely(|parse_input| {
-                        longhands::d::parse_declared(&parser_context, parse_input)
-                    }) {
-                        push(property);
-                    }
+                    // Path data treats whitespace alike, and a literal
+                    // newline would break the CSS string below.
+                    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let wrapped = format!("path(\"{normalized}\")");
+                    self.parse_svg_value(
+                        &wrapped,
+                        PropertyId::NonCustom(LonghandId::D.into()),
+                        &parser_context,
+                        push,
+                    );
                 }
             }
         }
     }
 
-    fn parse_svg_attribute<F>(
+    /// Parse one presentation attribute value as a declaration of
+    /// `property_id` and push the result.
+    ///
+    /// Presentation attributes are CSS declarations (SVG 2 §Styling), so
+    /// values may carry `var()` references and CSS-wide keywords. The
+    /// declaration parser accepts those where the property's value parser
+    /// does not.
+    fn parse_svg_attribute(
         self,
         parser_context: &ParserContext,
         attr_name: &str,
-        parse: F,
+        property_id: PropertyId,
         push: &mut impl FnMut(PropertyDeclaration),
-    ) where
-        F: for<'i, 't> FnOnce(
-            &ParserContext,
-            &mut cssparser::Parser<'i>,
-        ) -> Result<PropertyDeclaration, style_traits::ParseError>,
-    {
+    ) {
         let element = self.upcast::<Element>();
-        if let Some(value) = element.get_attr_val_for_layout(&ns!(), &LocalName::from(attr_name)) {
-            let mut parser = cssparser::Parser::new(value);
-            if let Ok(property) =
-                parser.parse_entirely(|parse_input| parse(parser_context, parse_input))
-            {
-                push(property);
+        let Some(value) = element.get_attr_val_for_layout(&ns!(), &LocalName::from(attr_name))
+        else {
+            return;
+        };
+        self.parse_svg_value(value, property_id, parser_context, push);
+    }
+
+    /// Parse `value` as a declaration of `property_id` and push the result.
+    fn parse_svg_value(
+        self,
+        value: &str,
+        property_id: PropertyId,
+        parser_context: &ParserContext,
+        push: &mut impl FnMut(PropertyDeclaration),
+    ) {
+        let mut parser = cssparser::Parser::new(value);
+        let mut declarations = SourcePropertyDeclaration::default();
+        let parsed = PropertyDeclaration::parse_into(
+            &mut declarations,
+            property_id,
+            parser_context,
+            &mut parser,
+        );
+        if parsed.is_ok() {
+            // Single longhand parses never set the `all` shorthand, so the
+            // drain only carries longhand declarations.
+            for declaration in declarations.drain().declarations {
+                push(declaration);
             }
         }
     }

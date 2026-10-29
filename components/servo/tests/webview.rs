@@ -1245,3 +1245,52 @@ fn test_hide_animating_webview() {
     webview.hide();
     servo_test.spin(|| webview.animating());
 }
+
+#[test]
+fn test_svg_presentation_attribute_var_resolves() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <style>:root{--brand:%23ff7000;--chain:var(--brand);--gx:280px}</style>\
+                <svg><rect id=attr fill='var(--brand)'></rect>\
+                <rect id=chained fill='var(--chain)'></rect>\
+                <rect id=literal fill='%23ff7000'></rect>\
+                <rect id=stroken stroke='var(--chain)'></rect>\
+                <rect id=geom x='var(--gx)' width='10' height='10'></rect>\
+                <rect id=inherited fill='inherit'></rect></svg>",
+            )
+            .unwrap(),
+        )
+        .build();
+
+    let computed = |id: &str, property: &str| {
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            format!("getComputedStyle(document.getElementById(\"{id}\")).{property}"),
+        )
+    };
+    let literal_fill = computed("literal", "fill");
+
+    // A var() reference in a presentation attribute computes like the
+    // literal value it resolves to, directly and through another custom
+    // property, for fill and stroke alike (SVG 2 §Styling, css-variables).
+    assert_eq!(computed("attr", "fill"), literal_fill);
+    assert_eq!(computed("chained", "fill"), literal_fill);
+    assert_eq!(computed("stroken", "stroke"), literal_fill);
+
+    // Geometry presentation attributes resolve var() the same way.
+    assert_eq!(computed("geom", "x"), Ok(JSValue::String("280px".into())));
+
+    // CSS-wide keywords parse in presentation attributes too; `inherit`
+    // takes the inherited fill, which is initial black here.
+    assert_eq!(
+        computed("inherited", "fill"),
+        Ok(JSValue::String("rgb(0, 0, 0)".into()))
+    );
+}
+
