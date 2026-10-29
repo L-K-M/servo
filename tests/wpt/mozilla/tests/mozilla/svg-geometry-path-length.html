@@ -25,6 +25,10 @@
   <line id="line" x1="0" y1="0" x2="30" y2="40"/>
   <polyline id="polyline" points="0,0 30,0 30,40 31"/>
   <polygon id="polygon" points="0 0 30 0 30 40"/>
+  <polyline id="doubledComma" points="0,0 10,0,,20,0"/>
+  <polyline id="leadingComma" points=",0,0 10,0"/>
+  <polyline id="commandLetter" points="0,0 10,0 L 20,0"/>
+  <polyline id="signSeparated" points="0 0 30-40"/>
 </svg>
 <script>
 const byId = id => document.getElementById(id);
@@ -114,6 +118,16 @@ test(() => {
   assert_equals(byId("polygon").getTotalLength(), 120);
   assert_point(byId("polygon").getPointAtLength(100), 12, 16, 1e-4, "closing segment");
 }, "Lines, polylines and polygons");
+
+test(() => {
+  // https://www.w3.org/TR/SVG2/shapes.html#DataTypePoints: points up to an
+  // error are kept.
+  assert_equals(byId("doubledComma").getTotalLength(), 10, "doubled comma");
+  assert_equals(byId("leadingComma").getTotalLength(), 0, "leading comma");
+  assert_equals(byId("commandLetter").getTotalLength(), 10, "command letter");
+  // A sign also separates two coordinates.
+  assert_equals(byId("signSeparated").getTotalLength(), 50, "sign separator");
+}, "Errors and separators in points");
 
 test(() => {
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
