@@ -316,22 +316,20 @@ fn ellipse_path(cx: f64, cy: f64, rx: f64, ry: f64) -> BezPath {
 }
 
 /// <https://svgwg.org/svg2-draft/shapes.html#PolylineElement> and
-/// <https://svgwg.org/svg2-draft/shapes.html#PolygonElement>. Like path
-/// data, points up to an error are kept, and an odd last coordinate is
-/// dropped.
+/// <https://svgwg.org/svg2-draft/shapes.html#PolygonElement>. The points
+/// grammar is that of the coordinate pairs after a path's move command, so
+/// the path data parser reads them: points up to an error (a leading or
+/// doubled comma, a command letter) are kept, and an odd last coordinate
+/// is dropped.
 fn points_path(points: &str, close: bool) -> BezPath {
-    let mut path = BezPath::new();
-    let mut coordinates = points
-        .split(|c: char| c == ',' || c.is_ascii_whitespace())
-        .filter(|coordinate| !coordinate.is_empty())
-        .map(parse_number);
-    while let (Some(Some(x)), Some(Some(y))) = (coordinates.next(), coordinates.next()) {
-        if path.elements().is_empty() {
-            path.move_to((x, y));
-        } else {
-            path.line_to((x, y));
-        }
-    }
+    let end = points
+        .find(|c: char| {
+            !(c.is_ascii_digit() ||
+                c.is_ascii_whitespace() ||
+                matches!(c, '+' | '-' | '.' | 'e' | 'E' | ','))
+        })
+        .unwrap_or(points.len());
+    let mut path = parse_path_data(&format!("M{}", &points[..end]));
     if close && !path.elements().is_empty() {
         path.close_path();
     }
