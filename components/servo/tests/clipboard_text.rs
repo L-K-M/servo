@@ -84,12 +84,15 @@ fn explicit_paste_preserves_selection_and_paste_events_in_a_closed_shadow_field(
         let result = evaluate_javascript(
             &test,
             view.clone(),
-            "field.value === 'AétéB' && pastes === 1 && pasted === 'été' && inputs === 1 && inputType === 'insertFromPaste'"
+            "field.value === 'AétéB' && pastes === 1 && pasted === 'été' && inputs === 1 && inputType === 'insertFromPaste'",
         );
         if result == Ok(JSValue::Boolean(true)) {
             break;
         }
-        assert!(Instant::now() < deadline, "Paste did not reach its field and events: {result:?}");
+        assert!(
+            Instant::now() < deadline,
+            "Paste did not reach its field and events: {result:?}"
+        );
     }
 }
 

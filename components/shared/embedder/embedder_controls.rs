@@ -187,7 +187,9 @@ impl std::fmt::Debug for EmbedderControlResponse {
             Self::FilePicker(value) => ("FilePicker", value),
             Self::ContextMenu(value) => ("ContextMenu", value),
             // A clipboard value may be a password.
-            Self::ContextMenuPaste(_) => return formatter.write_str("ContextMenuPaste(<redacted>)"),
+            Self::ContextMenuPaste(_) => {
+                return formatter.write_str("ContextMenuPaste(<redacted>)");
+            },
         };
         formatter.debug_tuple(name).field(value).finish()
     }
