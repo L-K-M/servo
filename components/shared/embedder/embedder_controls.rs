@@ -175,6 +175,8 @@ pub enum EmbedderControlResponse {
     ColorPicker(Option<RgbColor>),
     FilePicker(Option<Vec<SelectedFile>>),
     ContextMenu(Option<ContextMenuAction>),
+    /// Plain text supplied by the embedder after the user selected Paste.
+    ContextMenuPaste(String),
 }
 
 /// Response to file selection request
