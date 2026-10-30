@@ -542,7 +542,7 @@ pub(crate) struct Document {
     #[no_trace]
     tti_window: DomRefCell<InteractiveWindow>,
     /// RAII canceller for Fetch
-    canceller: FetchCanceller,
+    canceller: DomRefCell<FetchCanceller>,
     /// Combray: the blob URL store entry that holds the body of the PDF this viewer
     /// document shows, until the document is discarded.
     #[no_trace]
@@ -1178,6 +1178,11 @@ impl Document {
             return self.origin().same_origin(&top_level_document.origin());
         };
         false
+    }
+
+    /// Combray: stop the navigation fetch that is still delivering this document's body.
+    pub(crate) fn cancel_navigation_fetch(&self) {
+        self.canceller.borrow_mut().abort();
     }
 
     /// Combray: record the blob URL store entry that holds this PDF viewer document's body.
@@ -4154,7 +4159,7 @@ impl Document {
             form_id_listener_map: Default::default(),
             interactive_time: DomRefCell::new(interactive_time),
             tti_window: DomRefCell::new(InteractiveWindow::default()),
-            canceller,
+            canceller: DomRefCell::new(canceller),
             pdf_viewer_blob: Cell::new(None),
             throw_on_dynamic_markup_insertion_counter: Cell::new(0),
             page_showing: Cell::new(false),

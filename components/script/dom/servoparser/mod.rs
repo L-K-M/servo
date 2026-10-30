@@ -961,13 +961,21 @@ struct PdfViewerLoad {
     module_url: String,
     /// The body received so far.
     body: Vec<u8>,
+    /// The largest body the viewer accepts.
+    max_bytes: usize,
     /// The body's length, when the response states it without a content coding.
     length: Option<u64>,
 }
 
 impl PdfViewerLoad {
+    fn is_too_large_at_headers(&self) -> bool {
+        self.length
+            .is_some_and(|length| length > self.max_bytes as u64)
+    }
+
     /// The viewer document's markup. `data-pdf-state` on the root element moves from
-    /// `loading` to `ready` (with `data-pdf-src`) or `failed`.
+    /// `loading` to `ready` (with `data-pdf-src`), `too-large` (with `data-pdf-limit`) or
+    /// `failed`.
     fn markup(&self) -> String {
         let length = self
             .length
@@ -1133,6 +1141,7 @@ impl ParserContext {
             return None;
         }
 
+        let max_bytes = usize::try_from(pref!(combray_pdf_viewer_max_bytes)).unwrap_or(usize::MAX);
         // With a content coding, `Content-Length` counts the encoded bytes, which can be
         // more or fewer than the body has.
         let length = metadata
@@ -1140,9 +1149,14 @@ impl ParserContext {
             .filter(|headers| !headers.contains_key(CONTENT_ENCODING))
             .and_then(|headers| headers.typed_get::<ContentLength>())
             .map(|ContentLength(length)| length);
+        // Reserve the whole body up front, unless it will be refused.
+        let capacity = length
+            .filter(|length| *length <= max_bytes as u64)
+            .map_or(0, |length| length as usize);
         let pdf_viewer = PdfViewerLoad {
             module_url,
-            body: Vec::new(),
+            body: Vec::with_capacity(capacity),
+            max_bytes,
             length,
         };
         Some((pdf_viewer, csp))
@@ -1434,13 +1448,42 @@ impl ParserContext {
         parser.push_string_input_chunk(pdf_viewer.markup());
         parser.parse_sync(cx);
         parser.document.set_quirks_mode(ServoQuirksMode::NoQuirks);
+        if pdf_viewer.is_too_large_at_headers() {
+            self.refuse_too_large_pdf(cx, parser);
+        }
     }
 
-    /// Combray: keep a chunk of the viewer's PDF body.
-    fn receive_pdf_viewer_chunk(&mut self, chunk: &[u8]) {
-        if let Some(pdf_viewer) = self.pdf_viewer.as_mut() {
+    /// Combray: keep a chunk of the viewer's PDF body, or refuse the body once it grows
+    /// past the largest the viewer accepts.
+    fn receive_pdf_viewer_chunk(&mut self, cx: &mut JSContext, parser: &ServoParser, chunk: &[u8]) {
+        let Some(pdf_viewer) = self.pdf_viewer.as_mut() else {
+            return;
+        };
+        if pdf_viewer.body.len().saturating_add(chunk.len()) <= pdf_viewer.max_bytes {
             pdf_viewer.body.extend_from_slice(chunk);
+            return;
         }
+        let mut realm = enter_auto_realm(cx, &*parser.document);
+        self.refuse_too_large_pdf(&mut realm, parser);
+    }
+
+    /// Combray: drop a PDF body that is larger than the viewer accepts and finish the
+    /// viewer document. Cancelling the navigation fetch stops the network layer, which
+    /// would otherwise keep buffering the rest of the body.
+    fn refuse_too_large_pdf(&mut self, cx: &mut JSContext, parser: &ServoParser) {
+        let Some(pdf_viewer) = self.pdf_viewer.take() else {
+            return;
+        };
+        let document = &parser.document;
+        document.cancel_navigation_fetch();
+        let limit = pdf_viewer.max_bytes.to_string();
+        drop(pdf_viewer);
+        set_pdf_viewer_attribute(cx, document, "data-pdf-limit", limit);
+        set_pdf_viewer_attribute(cx, document, "data-pdf-state", "too-large".to_owned());
+        // Later chunks and the end of the response are then ignored.
+        self.is_synthesized_document = true;
+        parser.last_chunk_received.set(true);
+        parser.parse_sync(cx);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigate-ua-inline>
@@ -1783,11 +1826,18 @@ impl ParserContext {
             return;
         };
         if parser.aborted.get() {
+            // Combray: an aborted viewer, such as one navigated away from, no longer wants
+            // its PDF body. Drop it and cancel the navigation fetch, or the network layer
+            // keeps buffering the rest of the body, past the viewer's limit.
+            if self.pdf_viewer.take().is_some() {
+                document.cancel_navigation_fetch();
+                self.is_synthesized_document = true;
+            }
             return;
         }
         // Combray: the viewer's PDF body is kept for the viewer module, not parsed.
         if self.pdf_viewer.is_some() {
-            self.receive_pdf_viewer_chunk(&payload);
+            self.receive_pdf_viewer_chunk(cx, &parser, &payload);
             return;
         }
         if !self.has_loaded_document {
