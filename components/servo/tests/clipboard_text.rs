@@ -18,6 +18,8 @@ use servo::{
 };
 use url::Url;
 
+const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct NoClipboardReads;
 
 impl ClipboardDelegate for NoClipboardReads {
@@ -51,7 +53,7 @@ fn fixture(test: &ServoTest) -> (WebView, Rc<WebViewDelegateImpl>) {
 
 fn open_menu(test: &ServoTest, view: &WebView, delegate: &WebViewDelegateImpl) -> ContextMenu {
     click_at_point(view, euclid::Point2D::new(50., 50.), MouseButton::Secondary);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + ACTION_TIMEOUT;
     test.spin(|| {
         Instant::now() < deadline
             && !delegate
@@ -76,14 +78,19 @@ fn explicit_paste_preserves_selection_and_paste_events_in_a_closed_shadow_field(
     let test = ServoTest::new();
     let (view, delegate) = fixture(&test);
     open_menu(&test, &view, &delegate).paste_text("été".into());
-    assert_eq!(
-        evaluate_javascript(
+    // Default insertion queues the input event; wait for that event as well as the value.
+    let deadline = Instant::now() + ACTION_TIMEOUT;
+    loop {
+        let result = evaluate_javascript(
             &test,
-            view,
+            view.clone(),
             "field.value === 'AétéB' && pastes === 1 && pasted === 'été' && inputs === 1 && inputType === 'insertFromPaste'"
-        ),
-        Ok(JSValue::Boolean(true)),
-    );
+        );
+        if result == Ok(JSValue::Boolean(true)) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Paste did not reach its field and events: {result:?}");
+    }
 }
 
 #[test]

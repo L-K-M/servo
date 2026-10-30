@@ -169,7 +169,7 @@ pub struct SelectElementRequest {
 }
 
 /// Response from the embedder to an [`EmbedderControlRequest`].
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub enum EmbedderControlResponse {
     SelectElement(Vec<usize>),
     ColorPicker(Option<RgbColor>),
@@ -177,6 +177,31 @@ pub enum EmbedderControlResponse {
     ContextMenu(Option<ContextMenuAction>),
     /// Plain text supplied by the embedder after the user selected Paste.
     ContextMenuPaste(String),
+}
+
+impl std::fmt::Debug for EmbedderControlResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (name, value): (&str, &dyn std::fmt::Debug) = match self {
+            Self::SelectElement(value) => ("SelectElement", value),
+            Self::ColorPicker(value) => ("ColorPicker", value),
+            Self::FilePicker(value) => ("FilePicker", value),
+            Self::ContextMenu(value) => ("ContextMenu", value),
+            // A clipboard value may be a password.
+            Self::ContextMenuPaste(_) => return formatter.write_str("ContextMenuPaste(<redacted>)"),
+        };
+        formatter.debug_tuple(name).field(value).finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EmbedderControlResponse;
+
+    #[test]
+    fn paste_response_debug_never_contains_the_text() {
+        let response = EmbedderControlResponse::ContextMenuPaste("private clipboard".into());
+        assert_eq!(format!("{response:?}"), "ContextMenuPaste(<redacted>)");
+    }
 }
 
 /// Response to file selection request
