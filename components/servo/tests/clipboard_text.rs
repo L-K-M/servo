@@ -19,6 +19,7 @@ use servo::{
 use url::Url;
 
 const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
+const PASTE_SETTLE_TIME: Duration = Duration::from_millis(250);
 
 struct NoClipboardReads;
 
@@ -134,10 +135,40 @@ fn a_field_adopted_by_another_document_cannot_receive_a_late_paste() {
     let test = ServoTest::new();
     let (view, delegate) = fixture(&test);
     let menu = open_menu(&test, &view, &delegate);
-    evaluate_javascript(&test, view.clone(),
-        "let other = document.implementation.createHTMLDocument('other'); other.body.appendChild(other.adoptNode(field))"
-    ).unwrap();
+    // Use a live frame: an inert document would make the stale response trivial to reject.
+    evaluate_javascript(
+        &test,
+        view.clone(),
+        "window.iframe = document.createElement('iframe'); \
+         iframe.src = 'about:blank'; document.body.appendChild(iframe); void 0",
+    )
+    .unwrap();
+    let deadline = Instant::now() + ACTION_TIMEOUT;
+    loop {
+        let result = evaluate_javascript(
+            &test,
+            view.clone(),
+            "!!(iframe.contentDocument && iframe.contentDocument.body)",
+        );
+        if result == Ok(JSValue::Boolean(true)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "iframe document never became ready: {result:?}"
+        );
+    }
+    evaluate_javascript(
+        &test,
+        view.clone(),
+        "iframe.contentDocument.body.appendChild(iframe.contentDocument.adoptNode(field)); void 0",
+    )
+    .unwrap();
     menu.paste_text("private".into());
+    // Give the retained menu's response a bounded window to reach (and be
+    // rejected by) the script thread before asserting that nothing landed.
+    let deadline = Instant::now() + PASTE_SETTLE_TIME;
+    test.spin(|| Instant::now() < deadline);
     assert_eq!(
         evaluate_javascript(
             &test,

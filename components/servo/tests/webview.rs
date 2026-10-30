@@ -862,8 +862,15 @@ fn test_ime_in_shadow_dom() {
         Ok(JSValue::Boolean(true))
     );
 
-    // Trusted composition events insert their text into the shadow field. A
-    // canceled compositionstart must not disturb the compositionend insertion.
+    // Trusted composition events insert their text at the caret. A canceled
+    // compositionstart must not disturb the compositionend insertion.
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "window.__field.setSelectionRange(\
+            window.__field.value.length, window.__field.value.length)",
+    )
+    .expect("setSelectionRange should evaluate");
     webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
         CompositionEvent {
             state: CompositionState::Start,
@@ -1030,6 +1037,13 @@ fn test_ime_in_nested_shadow_dom() {
         "focus was not observed retargeted to the outermost host"
     );
 
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "window.__field.setSelectionRange(\
+            window.__field.value.length, window.__field.value.length)",
+    )
+    .expect("setSelectionRange should evaluate");
     webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
         CompositionEvent {
             state: CompositionState::End,
