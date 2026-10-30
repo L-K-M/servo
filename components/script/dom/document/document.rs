@@ -87,6 +87,7 @@ use style::stylist::Stylist;
 use stylo_atoms::Atom;
 use time::Duration as TimeDuration;
 use url::{Host, Position};
+use uuid::Uuid;
 
 use crate::css::stylesheet_loader::StylesheetContextId;
 use crate::css::stylesheet_set::StylesheetSetRef;
@@ -542,6 +543,10 @@ pub(crate) struct Document {
     tti_window: DomRefCell<InteractiveWindow>,
     /// RAII canceller for Fetch
     canceller: FetchCanceller,
+    /// Combray: the blob URL store entry that holds the body of the PDF this viewer
+    /// document shows, until the document is discarded.
+    #[no_trace]
+    pdf_viewer_blob: Cell<Option<Uuid>>,
     /// <https://html.spec.whatwg.org/multipage/#throw-on-dynamic-markup-insertion-counter>
     throw_on_dynamic_markup_insertion_counter: Cell<u64>,
     /// <https://html.spec.whatwg.org/multipage/#page-showing>
@@ -1173,6 +1178,21 @@ impl Document {
             return self.origin().same_origin(&top_level_document.origin());
         };
         false
+    }
+
+    /// Combray: record the blob URL store entry that holds this PDF viewer document's body.
+    pub(crate) fn set_pdf_viewer_blob(&self, id: Uuid) {
+        debug_assert!(self.pdf_viewer_blob.get().is_none());
+        self.pdf_viewer_blob.set(Some(id));
+    }
+
+    /// Combray: free the PDF viewer document's body, if it still holds one. Nothing else
+    /// revokes a blob URL entry that has no DOM `Blob`, so a discarded viewer would
+    /// otherwise keep the PDF in memory until Servo exits.
+    pub(crate) fn release_pdf_viewer_blob(&self) {
+        if let Some(id) = self.pdf_viewer_blob.take() {
+            self.window.as_global_scope().release_blob_url(id);
+        }
     }
 
     /// Part of <https://html.spec.whatwg.org/multipage/#navigate-ua-inline>
@@ -2412,6 +2432,12 @@ impl Document {
 
         // https://w3c.github.io/FileAPI/#lifeTime
         self.window.as_global_scope().clean_up_all_file_resources();
+
+        // Combray: a document that cannot return from the back-forward cache no longer needs
+        // its PDF body. A salvageable one keeps it until `Window::clear_js_runtime`.
+        if !self.salvageable.get() {
+            self.release_pdf_viewer_blob();
+        }
 
         // Step 15, End
         self.decr_ignore_opens_during_unload_counter();
@@ -4129,6 +4155,7 @@ impl Document {
             interactive_time: DomRefCell::new(interactive_time),
             tti_window: DomRefCell::new(InteractiveWindow::default()),
             canceller,
+            pdf_viewer_blob: Cell::new(None),
             throw_on_dynamic_markup_insertion_counter: Cell::new(0),
             page_showing: Cell::new(false),
             salvageable: Cell::new(true),

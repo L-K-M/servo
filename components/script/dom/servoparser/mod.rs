@@ -1027,6 +1027,7 @@ fn finish_pdf_viewer_load(
 
     let global = window.as_global_scope();
     let id = global.promote_bytes_to_blob_url(pdf_viewer.body, "application/pdf".to_owned());
+    document.set_pdf_viewer_blob(id);
     let src = URL::unicode_serialization_blob_url(global.origin().immutable(), &id);
     set_pdf_viewer_attribute(cx, document, "data-pdf-src", src);
     set_pdf_viewer_attribute(cx, document, "data-pdf-state", "ready".to_owned());
