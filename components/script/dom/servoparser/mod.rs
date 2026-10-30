@@ -13,14 +13,17 @@ use base64::Engine as _;
 use base64::engine::general_purpose;
 use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
+use content_security_policy::{CspList, PolicyDisposition, PolicySource};
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
 use embedder_traits::resources::{self, Resource};
 use encoding_rs::{Encoding, UTF_8};
+use headers::{ContentLength, HeaderMapExt};
 use html5ever::buffer_queue::BufferQueue;
 use html5ever::tendril::StrTendril;
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
 use html5ever::{Attribute, ExpandedName, LocalName, QualName, local_name, ns};
+use http::header::CONTENT_ENCODING;
 use hyper_serde::Serde;
 use js::context::JSContext;
 use markup5ever::TokenizerResult;
@@ -93,6 +96,7 @@ use crate::dom::security::xframeoptions::check_a_navigation_response_adherence_t
 use crate::dom::shadowroot::IsUserAgentWidget;
 use crate::dom::text::Text;
 use crate::dom::types::{HTMLElement, HTMLMediaElement, HTMLOptionElement};
+use crate::dom::url::URL;
 use crate::event_loop::document_loader::{DocumentLoader, LoadType};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::navigation::determine_the_origin;
@@ -945,6 +949,96 @@ pub(crate) struct ParserContext {
     /// will be a non-aliased copy of the origin.
     source_origin: Option<MutableOrigin>,
     document: Option<Trusted<Document>>,
+    /// Combray: a top-level PDF that the embedder's viewer module shows (DOWNSTREAM.md).
+    pdf_viewer: Option<PdfViewerLoad>,
+}
+
+/// Combray: a top-level `application/pdf` response shown in a viewer document. The document
+/// gets the viewer's markup as soon as the headers arrive. The body is kept out of the
+/// parser and, once complete, moves to the blob URL store, where the viewer module reads it.
+struct PdfViewerLoad {
+    /// The URL of the viewer's module script.
+    module_url: String,
+    /// The body received so far.
+    body: Vec<u8>,
+    /// The largest body the viewer accepts.
+    max_bytes: usize,
+    /// The body's length, when the response states it without a content coding.
+    length: Option<u64>,
+}
+
+impl PdfViewerLoad {
+    fn is_too_large_at_headers(&self) -> bool {
+        self.length
+            .is_some_and(|length| length > self.max_bytes as u64)
+    }
+
+    /// The viewer document's markup. `data-pdf-state` on the root element moves from
+    /// `loading` to `ready` (with `data-pdf-src`), `too-large` (with `data-pdf-limit`) or
+    /// `failed`.
+    fn markup(&self) -> String {
+        let length = self
+            .length
+            .map(|length| length.to_string())
+            .unwrap_or_default();
+        format!(
+            "<!DOCTYPE html><html data-pdf-state=\"loading\" data-pdf-length=\"{length}\">\
+             <head><meta charset=\"utf-8\">\
+             <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+             <script type=\"module\" async src=\"{}\"></script></head><body></body></html>",
+            escape_attribute_value(&self.module_url)
+        )
+    }
+}
+
+/// Escape a value for a double-quoted attribute in markup.
+fn escape_attribute_value(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Combray: set an attribute on the PDF viewer document's root element.
+fn set_pdf_viewer_attribute(cx: &mut JSContext, document: &Document, name: &str, value: String) {
+    if let Some(root) = document.GetDocumentElement() {
+        root.set_string_attribute(cx, &LocalName::from(name), DOMString::from(value));
+    }
+}
+
+/// Combray: move a complete PDF body into the blob URL store under the viewer document's
+/// opaque origin, and tell the viewer module where to fetch it.
+fn finish_pdf_viewer_load(
+    cx: &mut JSContext,
+    document: &Document,
+    mut pdf_viewer: PdfViewerLoad,
+    status: &Result<(), NetworkError>,
+) {
+    let window = document.window();
+    if !window.is_alive() {
+        return;
+    }
+    // The network layer ends a response whose connection dropped mid-body as if it were
+    // complete, so a body shorter than its stated length is the only sign. A longer one is
+    // not: revalidating a cached response merges the new headers, Content-Length included.
+    let truncated = pdf_viewer
+        .length
+        .is_some_and(|length| (pdf_viewer.body.len() as u64) < length);
+    if status.is_err() || truncated {
+        set_pdf_viewer_attribute(cx, document, "data-pdf-state", "failed".to_owned());
+        return;
+    }
+    // The blob store keeps the body for as long as the document lives, so drop the spare
+    // capacity it gained while it grew.
+    pdf_viewer.body.shrink_to_fit();
+
+    let global = window.as_global_scope();
+    let id = global.promote_bytes_to_blob_url(pdf_viewer.body, "application/pdf".to_owned());
+    document.set_pdf_viewer_blob(id);
+    let src = URL::unicode_serialization_blob_url(global.origin().immutable(), &id);
+    set_pdf_viewer_attribute(cx, document, "data-pdf-src", src);
+    set_pdf_viewer_attribute(cx, document, "data-pdf-state", "ready".to_owned());
 }
 
 impl ParserContext {
@@ -978,6 +1072,7 @@ impl ParserContext {
             target_snapshot_params,
             source_origin,
             document: None,
+            pdf_viewer: None,
         }
     }
 
@@ -1020,6 +1115,51 @@ impl ParserContext {
             // Step 5. Set result's referrer policy to the result of parsing the `Referrer-Policy` header given response. [REFERRERPOLICY]
             referrer_policy: ReferrerPolicy::parse_header_for_response(&metadata.headers),
         }
+    }
+
+    /// Combray: whether a response goes to the embedder's PDF viewer, and with which
+    /// Content-Security-Policy. Only a top-level document whose scripts may run qualifies,
+    /// and only while both viewer preferences are set, so the feature fails closed.
+    fn pdf_viewer_load_for_response(
+        &self,
+        content_type: Option<&Mime>,
+        metadata: Option<&Metadata>,
+    ) -> Option<(PdfViewerLoad, String)> {
+        let scripts_sandboxed = self
+            .target_snapshot_params
+            .sandboxing_flags
+            .contains(SandboxingFlagSet::SANDBOXED_SCRIPTS_BROWSING_CONTEXT_FLAG);
+        if self.parent_info.is_some() || scripts_sandboxed {
+            return None;
+        }
+        if content_type.is_none_or(|mime| mime.essence_str() != "application/pdf") {
+            return None;
+        }
+        let module_url = pref!(combray_pdf_viewer_module);
+        let csp = pref!(combray_pdf_viewer_csp);
+        if module_url.is_empty() || csp.is_empty() {
+            return None;
+        }
+
+        let max_bytes = usize::try_from(pref!(combray_pdf_viewer_max_bytes)).unwrap_or(usize::MAX);
+        // With a content coding, `Content-Length` counts the encoded bytes, which can be
+        // more or fewer than the body has.
+        let length = metadata
+            .and_then(|metadata| metadata.headers.as_ref())
+            .filter(|headers| !headers.contains_key(CONTENT_ENCODING))
+            .and_then(|headers| headers.typed_get::<ContentLength>())
+            .map(|ContentLength(length)| length);
+        // Reserve the whole body up front, unless it will be refused.
+        let capacity = length
+            .filter(|length| *length <= max_bytes as u64)
+            .map_or(0, |length| length as usize);
+        let pdf_viewer = PdfViewerLoad {
+            module_url,
+            body: Vec::with_capacity(capacity),
+            max_bytes,
+            length,
+        };
+        Some((pdf_viewer, csp))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
@@ -1080,6 +1220,11 @@ impl ParserContext {
     ) {
         assert!(!self.has_loaded_document);
         self.has_loaded_document = true;
+        // Combray: a PDF for the embedder's viewer module.
+        if self.pdf_viewer.is_some() {
+            self.load_pdf_viewer_document(cx, parser.expect("Must have a parser for a PDF"));
+            return;
+        }
         // Step 1. Let type be the computed type of navigationParams's response.
         let content_type = &self.navigation_params.content_type;
         let mime_type = MimeClassifier::default().classify(
@@ -1284,6 +1429,63 @@ impl ParserContext {
         self.process_link_headers_in_media_phase_with_task(&parser.document);
     }
 
+    /// Combray: give a top-level PDF the viewer document's markup. The parser stays open
+    /// until the end of the body, so the document keeps loading until the viewer can read it.
+    fn load_pdf_viewer_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
+        // This applies the viewer's policy container and sandboxing flags. The response's
+        // link headers were already dropped.
+        self.initialize_document_object(cx, &parser.document);
+        // The viewer is top level, so no ancestor's origin makes its requests mixed content.
+        // Servo still passes a trustworthy one on to a popup of a trustworthy opener, and to
+        // a link followed out of a frame of a trustworthy page, and it would block the module
+        // and worker on the embedder's non-secure scheme.
+        parser.document.clear_trustworthy_ancestor_origin();
+        let Some(pdf_viewer) = self.pdf_viewer.as_ref() else {
+            return;
+        };
+        // The viewer document loads when the headers arrive, before any of the body.
+        debug_assert!(self.navigation_params.resource_header.is_empty());
+        parser.push_string_input_chunk(pdf_viewer.markup());
+        parser.parse_sync(cx);
+        parser.document.set_quirks_mode(ServoQuirksMode::NoQuirks);
+        if pdf_viewer.is_too_large_at_headers() {
+            self.refuse_too_large_pdf(cx, parser);
+        }
+    }
+
+    /// Combray: keep a chunk of the viewer's PDF body, or refuse the body once it grows
+    /// past the largest the viewer accepts.
+    fn receive_pdf_viewer_chunk(&mut self, cx: &mut JSContext, parser: &ServoParser, chunk: &[u8]) {
+        let Some(pdf_viewer) = self.pdf_viewer.as_mut() else {
+            return;
+        };
+        if pdf_viewer.body.len().saturating_add(chunk.len()) <= pdf_viewer.max_bytes {
+            pdf_viewer.body.extend_from_slice(chunk);
+            return;
+        }
+        let mut realm = enter_auto_realm(cx, &*parser.document);
+        self.refuse_too_large_pdf(&mut realm, parser);
+    }
+
+    /// Combray: drop a PDF body that is larger than the viewer accepts and finish the
+    /// viewer document. Cancelling the navigation fetch stops the network layer, which
+    /// would otherwise keep buffering the rest of the body.
+    fn refuse_too_large_pdf(&mut self, cx: &mut JSContext, parser: &ServoParser) {
+        let Some(pdf_viewer) = self.pdf_viewer.take() else {
+            return;
+        };
+        let document = &parser.document;
+        document.cancel_navigation_fetch();
+        let limit = pdf_viewer.max_bytes.to_string();
+        drop(pdf_viewer);
+        set_pdf_viewer_attribute(cx, document, "data-pdf-limit", limit);
+        set_pdf_viewer_attribute(cx, document, "data-pdf-state", "too-large".to_owned());
+        // Later chunks and the end of the response are then ignored.
+        self.is_synthesized_document = true;
+        parser.last_chunk_received.set(true);
+        parser.parse_sync(cx);
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#navigate-ua-inline>
     fn load_inline_unknown_content(
         &mut self,
@@ -1372,6 +1574,12 @@ impl ParserContext {
             .map(Serde::into_inner)
             .map(Into::into);
 
+        // Combray: a top-level PDF is shown by the embedder's viewer module (DOWNSTREAM.md).
+        let pdf_viewer = error
+            .is_none()
+            .then(|| self.pdf_viewer_load_for_response(content_type.as_ref(), metadata.as_ref()))
+            .flatten();
+
         // <https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>
         // Step 21.9. Set responsePolicyContainer to the result of creating a
         // policy container from a fetch response given response and request's
@@ -1396,6 +1604,26 @@ impl ParserContext {
             })
             .unwrap_or_default();
 
+        // Combray: the viewer's policy replaces the PDF response's, so a `sandbox` directive
+        // in the response cannot stop the viewer module either. The response may not
+        // preload, preconnect or set reporting endpoints for the viewer; CSP does not govern
+        // preconnects.
+        let (policy_container, endpoints_list, link_headers) = match pdf_viewer {
+            Some((_, ref csp)) => (
+                PolicyContainer {
+                    csp_list: Some(CspList::parse(
+                        csp,
+                        PolicySource::Header,
+                        PolicyDisposition::Enforce,
+                    )),
+                    ..policy_container
+                },
+                None,
+                Vec::new(),
+            ),
+            None => (policy_container, endpoints_list, link_headers),
+        };
+
         // Step 21.10. Set finalSandboxFlags to the union of targetSnapshotParams's
         // sandboxing flags and responsePolicyContainer's CSP list's CSP-derived
         // sandboxing flags.
@@ -1414,6 +1642,12 @@ impl ParserContext {
             final_sandboxing_flag_set,
             self.source_origin.clone(),
         );
+        // Combray: the viewer document never shares an origin with the site that served
+        // the PDF.
+        let origin = match pdf_viewer {
+            Some(_) => MutableOrigin::new(ImmutableOrigin::new_opaque()),
+            None => origin,
+        };
 
         let Some(document) = script_thread.handle_page_headers_available(
             self.webview_id,
@@ -1503,6 +1737,17 @@ impl ParserContext {
         };
         self.submit_resource_timing(cx);
 
+        // Combray: load the viewer document now, so that fetching its module overlaps the
+        // body download. This comes after the navigation checks above, so a blocked
+        // response still gets the error page below.
+        if error.is_none() &&
+            let Some((pdf_viewer, _)) = pdf_viewer &&
+            let Some(parser) = document.get_current_parser()
+        {
+            self.pdf_viewer = Some(pdf_viewer);
+            self.load_document(cx, Some(&parser), &document);
+        }
+
         // Part of https://html.spec.whatwg.org/multipage/#loading-a-document
         //
         // Step 3. If, given type, the new resource is to be handled by displaying some sort of inline content,
@@ -1581,6 +1826,18 @@ impl ParserContext {
             return;
         };
         if parser.aborted.get() {
+            // Combray: an aborted viewer, such as one navigated away from, no longer wants
+            // its PDF body. Drop it and cancel the navigation fetch, or the network layer
+            // keeps buffering the rest of the body, past the viewer's limit.
+            if self.pdf_viewer.take().is_some() {
+                document.cancel_navigation_fetch();
+                self.is_synthesized_document = true;
+            }
+            return;
+        }
+        // Combray: the viewer's PDF body is kept for the viewer module, not parsed.
+        if self.pdf_viewer.is_some() {
+            self.receive_pdf_viewer_chunk(cx, &parser, &payload);
             return;
         }
         if !self.has_loaded_document {
@@ -1634,6 +1891,11 @@ impl ParserContext {
 
         if status.is_ok() {
             document.set_resource_fetch_timing(timing);
+        }
+
+        // Combray: hand the complete PDF body to the viewer module.
+        if let Some(pdf_viewer) = self.pdf_viewer.take() {
+            finish_pdf_viewer_load(cx, &document, pdf_viewer, &status);
         }
 
         if let Some(parser) = parser {

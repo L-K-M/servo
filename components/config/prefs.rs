@@ -413,6 +413,17 @@ pub struct Preferences {
     /// Exposes internal JS API functions that are usually restricted to `about:...` pages
     /// Useful if you want to get memory report or force GC in a test page
     pub expose_servointernals_globally: bool,
+    /// Combray: the URL of the module script that shows a top-level `application/pdf`
+    /// response in a viewer document with an opaque origin. Empty, the default, keeps the
+    /// "Unknown content type" page for PDFs.
+    pub combray_pdf_viewer_module: String,
+    /// Combray: the Content-Security-Policy of the PDF viewer document. It replaces the
+    /// response's own policy and the sandboxing flags that policy would add. Empty, the
+    /// default, keeps the "Unknown content type" page for PDFs.
+    pub combray_pdf_viewer_csp: String,
+    /// Combray: the largest PDF body, in bytes, that the viewer document accepts. A larger
+    /// response is cancelled and the viewer document reports it as too large.
+    pub combray_pdf_viewer_max_bytes: u64,
 }
 
 impl Preferences {
@@ -598,6 +609,9 @@ impl Preferences {
             user_agent: String::new(),
             viewport_meta_enabled: false,
             expose_servointernals_globally: false,
+            combray_pdf_viewer_module: String::new(),
+            combray_pdf_viewer_csp: String::new(),
+            combray_pdf_viewer_max_bytes: 64 * 1024 * 1024,
         }
     }
 

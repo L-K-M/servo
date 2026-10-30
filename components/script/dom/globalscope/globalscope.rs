@@ -1814,6 +1814,35 @@ impl GlobalScope {
         id
     }
 
+    /// Combray: move `bytes` into the blob URL store as a valid blob URL entry of this
+    /// global's origin, without a DOM `Blob` (and in single-process mode without a copy).
+    /// The entry starts with one reference, which only [`Self::release_blob_url`] drops.
+    pub(crate) fn promote_bytes_to_blob_url(&self, bytes: Vec<u8>, type_string: String) -> Uuid {
+        let origin = self.origin().immutable().clone();
+        let blob_buf = BlobBuf {
+            filename: None,
+            type_string,
+            size: bytes.len() as u64,
+            bytes,
+        };
+        let id = Uuid::new_v4();
+        self.send_to_file_manager(FileManagerThreadMsg::PromoteMemory(
+            id, blob_buf, true, origin,
+        ));
+        id
+    }
+
+    /// Combray: revoke a blob URL entry made by [`Self::promote_bytes_to_blob_url`] and
+    /// drop its reference. Both are needed: the store frees an entry only once it is
+    /// revoked, unreferenced and no fetch holds a token for it.
+    pub(crate) fn release_blob_url(&self, id: Uuid) {
+        let origin = self.origin().immutable().clone();
+        let (tx, rx) = profile_generic_channel::channel(self.time_profiler_chan().clone()).unwrap();
+        self.send_to_file_manager(FileManagerThreadMsg::RevokeBlobURL(id, origin, tx));
+        let _ = rx.recv();
+        self.decrement_file_ref(id);
+    }
+
     fn send_to_file_manager(&self, msg: FileManagerThreadMsg) {
         let resource_threads = self.resource_threads();
         let _ = resource_threads.send(CoreResourceMsg::ToFileManager(msg));

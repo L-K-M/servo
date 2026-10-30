@@ -2483,6 +2483,9 @@ impl Window {
         // https://github.com/servo/servo/issues/15318
         self.Document().teardown_custom_element_registry();
 
+        // Combray: a PDF viewer document discarded from session history frees its body.
+        self.Document().release_pdf_viewer_blob();
+
         self.current_state.set(WindowState::Zombie);
         *self.js_runtime.borrow_mut() = None;
 

@@ -94,7 +94,7 @@ impl URL {
     }
 
     /// <https://w3c.github.io/FileAPI/#unicodeBlobURL>
-    fn unicode_serialization_blob_url(origin: &ImmutableOrigin, id: &Uuid) -> String {
+    pub(crate) fn unicode_serialization_blob_url(origin: &ImmutableOrigin, id: &Uuid) -> String {
         // Step 1. Let result be the empty string.
         // Step 2. Append the string "blob:" to result.
         let mut result = "blob:".to_string();
