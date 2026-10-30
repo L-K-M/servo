@@ -16,6 +16,7 @@ use embedder_traits::{
 };
 use headers::{ContentLength, ContentRange, ContentType, HeaderMap, HeaderMapExt, Range};
 use log::warn;
+use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use mime::Mime;
 use net_traits::blob_url_store::{BlobBuf, BlobTokenCommunicator, BlobURLStoreError};
 use net_traits::filemanager_thread::{
@@ -153,6 +154,12 @@ impl FileManager {
         origin: ImmutableOrigin,
     ) {
         self.store.promote_memory(id, blob_buf, set_valid, origin);
+    }
+
+    /// The heap size of the bytes that in-memory blob store entries hold, for the
+    /// resource thread's memory report.
+    pub(crate) fn memory_entries_size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.store.memory_entries_size_of(ops)
     }
 
     /// Message handler
@@ -499,6 +506,17 @@ impl FileManagerStore {
 
     fn insert(&self, id: Uuid, entry: FileStoreEntry) {
         self.entries.write().insert(id, entry);
+    }
+
+    fn memory_entries_size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.entries
+            .read()
+            .values()
+            .map(|entry| match entry.file_impl {
+                FileImpl::Memory(ref blob_buf) => blob_buf.bytes.size_of(ops),
+                FileImpl::MetaDataOnly(_) | FileImpl::Sliced(..) => 0,
+            })
+            .sum()
     }
 
     fn remove(&self, id: &Uuid) {

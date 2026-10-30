@@ -357,6 +357,14 @@ impl ResourceChannelManager {
                     kind: ReportKind::ExplicitJemallocHeapSize,
                     size: public_suffix_list_size_of(ops),
                 },
+                Report {
+                    path: path!["blob-url-store", "memory"],
+                    kind: ReportKind::ExplicitJemallocHeapSize,
+                    size: self
+                        .resource_manager
+                        .filemanager
+                        .memory_entries_size_of(ops),
+                },
             ]);
             msg.send(ProcessReports::new(reports));
         })
