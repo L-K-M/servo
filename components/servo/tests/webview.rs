@@ -86,6 +86,88 @@ fn test_create_webview() {
     assert_eq!(url.unwrap().to_string(), "about:blank");
 }
 
+#[test]
+fn test_iframe_changes_preserve_every_scrolled_frame() {
+    #[derive(Default)]
+    struct ScrollFrameDelegate {
+        recording: Cell<bool>,
+        pixels: RefCell<Vec<image::Rgba<u8>>>,
+    }
+
+    impl WebViewDelegate for ScrollFrameDelegate {
+        fn notify_new_frame_ready(&self, webview: WebView) {
+            webview.paint();
+            if !self.recording.get() {
+                return;
+            }
+
+            let image = webview
+                .rendering_context()
+                .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+                .expect("Should be able to read each painted frame");
+            self.pixels.borrow_mut().push(*image.get_pixel(250, 250));
+        }
+    }
+
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(ScrollFrameDelegate::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+            <style>body{margin:0}div{height:1000px}iframe{position:fixed;left:-100px;\
+            top:0;width:10px;height:10px}</style>\
+            <div style='background:red'></div><div style='background:lime'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    webview.notify_scroll_event(
+        Scroll::Delta(WebViewVector::Device(DeviceVector2D::new(0., 1000.))),
+        WebViewPoint::Device(DevicePoint::new(250., 250.)),
+    );
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    let green = image::Rgba([0, 255, 0, 255]);
+    let image = webview
+        .rendering_context()
+        .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+        .unwrap();
+    assert_eq!(
+        *image.get_pixel(250, 250),
+        green,
+        "The page must be scrolled before recording"
+    );
+    delegate.recording.set(true);
+
+    // An offscreen frame changes the scene but must never flash the viewport's old offset.
+    for _ in 0..4 {
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "document.body.append(document.createElement('iframe'))",
+        )
+        .unwrap();
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "document.querySelector('iframe').remove()",
+        )
+        .unwrap();
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    }
+
+    let pixels = delegate.pixels.borrow();
+    assert!(!pixels.is_empty(), "The frame changes must have painted");
+    assert!(
+        pixels.iter().all(|pixel| *pixel == green),
+        "Every intermediate frame must retain the scroll position: {pixels:?}"
+    );
+}
+
 /// A [`RenderingContext`] that provides no surfman connection, which the trait
 /// permits: `connection()` returns `None`. Every other method must forward to the
 /// inner context; a defaulted `prepare_for_rendering` would bind no framebuffer.
