@@ -407,6 +407,18 @@ impl ScrollTreeNode {
             .map(|location| (info.external_id, location))
     }
 
+    /// Whether an upward scroll of type `context` could still be consumed by this
+    /// node: it is scrolled below its top edge and `context` can scroll it
+    /// vertically.
+    fn can_scroll_up(&self, context: ScrollType) -> bool {
+        match &self.info {
+            SpatialTreeNodeInfo::Scroll(info) => {
+                info.offset.y > 0.0 && info.scroll_sensitivity.y.contains(context)
+            },
+            _ => false,
+        }
+    }
+
     pub fn debug_print(&self, print_tree: &mut PrintTree, node_index: usize) {
         match &self.info {
             SpatialTreeNodeInfo::ReferenceFrame(info) => {
@@ -613,6 +625,42 @@ impl ScrollTree {
             self.invalidate_cached_transforms();
         }
         result
+    }
+
+    /// Whether an upward scroll of type `context` starting at the scroll node with the
+    /// given [`ExternalScrollId`] could be consumed by that node, by one of its ancestors,
+    /// or by this tree's viewport scroll node — which input scrolls chain to when the
+    /// chain under the hit node cannot consume them, mirroring
+    /// [`Self::scroll_node_or_ancestor`]. A node can scroll upward when it is scrolled
+    /// below its top edge and `context` can scroll it vertically. Returns `None` when
+    /// this tree has no scroll node with `external_id`.
+    pub fn node_or_ancestors_can_scroll_up(
+        &self,
+        external_id: ExternalScrollId,
+        context: ScrollType,
+    ) -> Option<bool> {
+        let mut node_id = self.node_with_external_scroll_node_id(external_id)?;
+        loop {
+            let node = self.get_node(node_id);
+            if node.can_scroll_up(context) {
+                return Some(true);
+            }
+            let Some(parent) = node.parent else {
+                break;
+            };
+            node_id = parent;
+        }
+
+        // Fixed descendants hang beside the viewport in the spatial tree. Chain an
+        // unconsumed input scroll to their document's viewport, preserving its
+        // sensitivity.
+        if context.intersects(ScrollType::InputEvents | ScrollType::Touch) &&
+            let Some(viewport) =
+                self.node_with_external_scroll_node_id(ExternalScrollId(0, external_id.1))
+        {
+            return Some(self.get_node(viewport).can_scroll_up(context));
+        }
+        Some(false)
     }
 
     /// Given an [`ExternalScrollId`] and an offset, update the scroll offset of the scroll node

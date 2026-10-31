@@ -1414,6 +1414,16 @@ impl Painter {
         }
     }
 
+    /// See [`WebViewRenderer::can_scroll_up_at_point`].
+    pub(crate) fn can_scroll_up_at_point(
+        &self,
+        webview_id: WebViewId,
+        point: WebViewPoint,
+    ) -> Option<bool> {
+        self.webview_renderer(webview_id)?
+            .can_scroll_up_at_point(&self.webrender_api, point)
+    }
+
     pub(crate) fn adjust_pinch_zoom(
         &mut self,
         webview_id: WebViewId,
