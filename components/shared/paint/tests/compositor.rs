@@ -347,6 +347,26 @@ fn scroll_to(tree: &mut ScrollTree, external_id: ExternalScrollId, y: f32) {
 }
 
 #[test]
+fn test_scroll_tree_can_scroll_up_abstains_from_page_owned_vertical_drags() {
+    let mut tree = ScrollTree::default();
+    let (node, external_id) = add_mock_scroll_node(&mut tree);
+    for (action, expected) in [
+        (TouchAction::None, None),
+        (TouchAction::PanX, None),
+        (TouchAction::Auto, Some(false)),
+        (TouchAction::PanY, Some(false)),
+    ] {
+        if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(node).info {
+            info.touch_action = action;
+        }
+        assert_eq!(
+            tree.node_or_ancestors_can_scroll_up(external_id, ScrollType::Touch),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn test_scroll_tree_can_scroll_up_reports_none_for_missing_node() {
     let mut scroll_tree = ScrollTree::default();
     assert_eq!(

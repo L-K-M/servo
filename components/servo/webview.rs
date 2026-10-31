@@ -627,8 +627,8 @@ impl WebView {
     /// node under `point` — or any node it would chain an upward scroll to — is
     /// scrolled and can be scrolled by touch. It returns `Some(false)` only when
     /// the root viewport and the entire hit scroll chain are at their top edges,
-    /// and `None` when the scroll tree or hit-test data needed to answer is not yet
-    /// available.
+    /// and `None` when scroll/hit-test data is missing or touch-action reserves
+    /// vertical movement for the page.
     pub fn can_scroll_up_at_point(&self, point: WebViewPoint) -> Option<bool> {
         self.servo()
             .paint()

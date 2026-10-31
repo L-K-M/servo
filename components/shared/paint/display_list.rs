@@ -633,12 +633,20 @@ impl ScrollTree {
     /// chain under the hit node cannot consume them, mirroring
     /// [`Self::scroll_node_or_ancestor`]. A node can scroll upward when it is scrolled
     /// below its top edge and `context` can scroll it vertically. Returns `None` when
-    /// this tree has no scroll node with `external_id`.
+    /// this tree has no scroll node with `external_id`, or touch-action reserves
+    /// vertical movement for the page rather than the embedder.
     pub fn node_or_ancestors_can_scroll_up(
         &self,
         external_id: ExternalScrollId,
         context: ScrollType,
     ) -> Option<bool> {
+        let (touch_action, _, _) = self.touch_action_and_scrollable_axes_for(external_id)?;
+        if context.contains(ScrollType::Touch) &&
+            matches!(touch_action, TouchAction::None | TouchAction::PanX)
+        {
+            return None;
+        }
+
         let mut node_id = self.node_with_external_scroll_node_id(external_id)?;
         loop {
             let node = self.get_node(node_id);
