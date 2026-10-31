@@ -981,6 +981,82 @@ impl WebViewRenderer {
         None
     }
 
+    /// Whether an upward scroll (a downward touch pan moving scrolled content back
+    /// toward its top edge) starting at `point` could still be consumed by this
+    /// [`WebViewRenderer`]'s pinch zoom viewport or scroll trees.
+    ///
+    /// Returns `Some(true)` when the pinch zoom viewport can pan up, when the root
+    /// viewport is scrolled below its top edge regardless of the hit target, or when
+    /// the scroll node under `point` — or any node it would chain an upward touch
+    /// scroll to — can scroll up. Returns `Some(false)` only when the root viewport
+    /// and every hit scroll chain are at their top edges, and `None` when the scroll
+    /// tree or hit-test data needed to answer is not yet available.
+    pub(crate) fn can_scroll_up_at_point(
+        &self,
+        render_api: &RenderApi,
+        point: WebViewPoint,
+    ) -> Option<bool> {
+        // While the pinch zoom viewport is panned away from the top edge, an upward
+        // pan is consumed by it before the page can scroll.
+        if self.pinch_zoom.can_pan_up() {
+            return Some(true);
+        }
+
+        // Without the root pipeline's scroll tree there is nothing to answer for.
+        let root_pipeline_id = self.root_pipeline_id?;
+        let root_pipeline = self.pipelines.get(&root_pipeline_id)?;
+
+        // A page scrolled below its top edge can always scroll back up, wherever
+        // the gesture lands.
+        if root_pipeline
+            .scroll_tree
+            .scroll_offset(ExternalScrollId(0, root_pipeline_id.into()))?
+            .y
+            > 0.0
+        {
+            return Some(true);
+        }
+
+        let point = point.as_device_point(self.device_pixels_per_page_pixel());
+        let hit_test_results = self
+            .touch_handler
+            .get_hit_test_result_cache_value()
+            .map(|result| vec![result])
+            .unwrap_or_else(|| self.hit_test(render_api, point));
+        if hit_test_results.is_empty() {
+            return None;
+        }
+
+        // Mirror `scroll_node_at_device_point`, evaluating the first hit node of
+        // each pipeline so that a gesture over an iframe chains through that
+        // frame's own scroll tree. A hit node that is missing from its pipeline's
+        // scroll tree makes the answer unknown rather than negative.
+        let mut saw_unknown_chain = false;
+        let mut previous_pipeline_id = None;
+        for hit_test_result in hit_test_results {
+            if previous_pipeline_id.replace(hit_test_result.pipeline_id)
+                == Some(hit_test_result.pipeline_id)
+            {
+                continue;
+            }
+            let Some(pipeline_details) = self.pipelines.get(&hit_test_result.pipeline_id) else {
+                saw_unknown_chain = true;
+                continue;
+            };
+            match pipeline_details
+                .scroll_tree
+                .node_or_ancestors_can_scroll_up(
+                    hit_test_result.external_scroll_id,
+                    ScrollType::Touch,
+                ) {
+                Some(true) => return Some(true),
+                Some(false) => {},
+                None => saw_unknown_chain = true,
+            }
+        }
+        if saw_unknown_chain { None } else { Some(false) }
+    }
+
     /// Scroll the viewport (root pipeline, root scroll node) of this WebView, but first
     /// attempting to pan the pinch zoom viewport. This is called when processing
     /// key-based scrolling from script.

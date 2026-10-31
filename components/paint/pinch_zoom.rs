@@ -148,6 +148,22 @@ impl PinchZoom {
         remaining
     }
 
+    /// Whether an upward scroll delta (a downward touch pan pulling content
+    /// back toward its top edge) could still be consumed by panning the pinch
+    /// zoom viewport, mirroring [`Self::pan_with_device_scroll`]. False when
+    /// the pinch zoom viewport is at the top edge of the unscaled viewport.
+    pub(crate) fn can_pan_up(&self) -> bool {
+        let unscaled_viewport = Rect::new(
+            Point2D::origin(),
+            self.unscaled_viewport_size.to_vector().to_size(),
+        );
+        self.transform
+            .outer_transformed_rect(&unscaled_viewport)
+            .origin
+            .y
+            < 0.0
+    }
+
     /// Get the [`PinchZoomInfos`] from this [`PinchZoom`] state.
     pub(crate) fn get_pinch_zoom_infos_for_script(
         &self,
