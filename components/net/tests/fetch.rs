@@ -32,6 +32,7 @@ use net::filemanager_thread::FileManager;
 use net::hsts::HstsEntry;
 use net::protocols::ProtocolRegistry;
 use net::request_interceptor::RequestInterceptor;
+use net::test_util::{TlsServerProtocol, make_ssl_server_with_protocol};
 use net_traits::blob_url_store::{BlobTokenCommunicator, UrlWithBlobClaim};
 use net_traits::filemanager_thread::FileTokenCheck;
 use net_traits::http_status::HttpStatus;
@@ -892,6 +893,51 @@ fn test_load_adds_host_to_hsts_list_when_url_is_https() {
             .read()
             .is_host_secure(url.host_str().unwrap())
     );
+}
+
+#[test]
+fn test_fetch_http2_response_with_large_header_list() {
+    // Ten 10 KiB headers: well over hyper's 16 KiB default for HTTP/2, but
+    // within what other browsers accept and what HTTP/1.1 already allows.
+    let handler =
+        move |_: HyperRequest<Incoming>,
+              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
+            for index in 0..10 {
+                let name = HeaderName::from_str(&format!("x-large-{index}")).unwrap();
+                let value = HeaderValue::from_str(&"a".repeat(10 * 1024)).unwrap();
+                response.headers_mut().insert(name, value);
+            }
+            *response.body_mut() = make_body(b"Yay!".to_vec());
+        };
+
+    let (server, mut url) = make_ssl_server_with_protocol(handler, TlsServerProtocol::Http2);
+    url.as_mut_url().set_scheme("https").unwrap();
+
+    let mut context = new_fetch_context(None, None);
+
+    // The server certificate is self-signed, so we need to add an override
+    // so that the connection works properly.
+    for certificate in server.certificates.as_ref().unwrap().iter() {
+        context.state.override_manager.add_override(certificate);
+    }
+
+    let request = RequestBuilder::new(Some(TEST_WEBVIEW_ID), url.clone(), Referrer::NoReferrer)
+        .origin(url.origin())
+        .policy_container(Default::default())
+        .build();
+
+    let response = fetch_with_context(request, &mut context);
+
+    let _ = server.close();
+
+    assert!(
+        !response.is_network_error(),
+        "{:?}",
+        response.get_network_error()
+    );
+    let internal_response = response.internal_response.unwrap();
+    assert!(internal_response.status.code().is_success());
+    assert!(internal_response.headers.contains_key("x-large-9"));
 }
 
 #[test]

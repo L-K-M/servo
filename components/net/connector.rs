@@ -649,6 +649,12 @@ impl Service<Destination> for ProxyConnector {
 
 pub type ServoClient = Client<InstrumentedConnector<ProxyConnector>, BoxedBody>;
 
+/// The largest HTTP/2 response header list to accept (SETTINGS_MAX_HEADER_LIST_SIZE,
+/// RFC 9113 section 6.5.2). hyper's 16 KiB default resets responses whose headers
+/// other browsers load, such as long Content-Security-Policy lists; 256 KiB matches
+/// Chromium's limit. hyper's read buffer already bounds HTTP/1.1 headers higher.
+const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 256 * 1024;
+
 pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls_config)
@@ -659,5 +665,6 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
 
     Client::builder(TokioExecutor {})
         .http1_title_case_headers(true)
+        .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
         .build(InstrumentedConnector::from(connector))
 }
