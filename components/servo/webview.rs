@@ -616,6 +616,25 @@ impl WebView {
             .notify_scroll_event(self.id(), scroll, point);
     }
 
+    /// Whether a downward touch pan at `point` could still scroll this [`WebView`]'s
+    /// content upward — that is, whether the page can consume an upward scroll
+    /// gesture there instead of leaving it to the embedder (for example, to trigger
+    /// a pull-to-reload).
+    ///
+    /// This queries the compositor's scroll trees and pinch zoom viewport, not page
+    /// or layout scroll state. It returns `Some(true)` when the root viewport is
+    /// scrolled below its top edge regardless of the hit target, or when the scroll
+    /// node under `point` — or any node it would chain an upward scroll to — is
+    /// scrolled and can be scrolled by touch. It returns `Some(false)` only when
+    /// the root viewport and the entire hit scroll chain are at their top edges,
+    /// and `None` when scroll/hit-test data is missing or touch-action reserves
+    /// vertical movement for the page.
+    pub fn can_scroll_up_at_point(&self, point: WebViewPoint) -> Option<bool> {
+        self.servo()
+            .paint()
+            .can_scroll_up_at_point(self.id(), point)
+    }
+
     /// Notify this [`WebView`] about an [`InputEvent`] such as a mouse click, touch
     /// event, or key press.
     ///

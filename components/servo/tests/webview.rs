@@ -24,10 +24,11 @@ use itertools::Itertools;
 use net::test_util::{make_body, make_server, replace_host_table};
 use servo::profile_traits::mem::MemoryReportResult;
 use servo::{
-    CreateNewWebViewRequest, Cursor, EmbedderControl, InputEvent, InputMethodType, JSValue,
-    LoadStatus, MouseButton, MouseLeftViewportEvent, MouseMoveEvent, PrefValue, RenderingContext,
-    Scroll, SimpleDialog, Theme, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint,
-    WebViewVector,
+    CompositionEvent, CompositionState, CreateNewWebViewRequest, Cursor, EmbedderControl, ImeEvent,
+    InputEvent, InputMethodType, JSValue, Key, KeyState, LoadStatus, MouseButton,
+    MouseLeftViewportEvent,
+    MouseMoveEvent, PrefValue, RenderingContext, Scroll, SimpleDialog, Theme, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewPoint, WebViewVector,
 };
 use servo_base::generic_channel::GenericCallback;
 use servo_config::prefs::Preferences;
@@ -83,6 +84,88 @@ fn test_create_webview() {
     let url = webview.url();
     assert!(url.is_some());
     assert_eq!(url.unwrap().to_string(), "about:blank");
+}
+
+#[test]
+fn test_iframe_changes_preserve_every_scrolled_frame() {
+    #[derive(Default)]
+    struct ScrollFrameDelegate {
+        recording: Cell<bool>,
+        pixels: RefCell<Vec<image::Rgba<u8>>>,
+    }
+
+    impl WebViewDelegate for ScrollFrameDelegate {
+        fn notify_new_frame_ready(&self, webview: WebView) {
+            webview.paint();
+            if !self.recording.get() {
+                return;
+            }
+
+            let image = webview
+                .rendering_context()
+                .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+                .expect("Should be able to read each painted frame");
+            self.pixels.borrow_mut().push(*image.get_pixel(250, 250));
+        }
+    }
+
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(ScrollFrameDelegate::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+            <style>body{margin:0}div{height:1000px}iframe{position:fixed;left:-100px;\
+            top:0;width:10px;height:10px}</style>\
+            <div style='background:red'></div><div style='background:lime'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    webview.notify_scroll_event(
+        Scroll::Delta(WebViewVector::Device(DeviceVector2D::new(0., 1000.))),
+        WebViewPoint::Device(DevicePoint::new(250., 250.)),
+    );
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    let green = image::Rgba([0, 255, 0, 255]);
+    let image = webview
+        .rendering_context()
+        .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+        .unwrap();
+    assert_eq!(
+        *image.get_pixel(250, 250),
+        green,
+        "The page must be scrolled before recording"
+    );
+    delegate.recording.set(true);
+
+    // An offscreen frame changes the scene but must never flash the viewport's old offset.
+    for _ in 0..4 {
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "document.body.append(document.createElement('iframe'))",
+        )
+        .unwrap();
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "document.querySelector('iframe').remove()",
+        )
+        .unwrap();
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    }
+
+    let pixels = delegate.pixels.borrow();
+    assert!(!pixels.is_empty(), "The frame changes must have painted");
+    assert!(
+        pixels.iter().all(|pixel| *pixel == green),
+        "Every intermediate frame must retain the scroll position: {pixels:?}"
+    );
 }
 
 /// A [`RenderingContext`] that provides no surfman connection, which the trait
@@ -755,6 +838,345 @@ fn test_show_and_hide_ime() {
     // The form control should be hidden when the field no longer has focus.
     let captured_delegate = delegate.clone();
     servo_test.spin(move || captured_delegate.number_of_controls_hidden.get() != 1);
+}
+
+/// Spin the event loop until `condition` holds or `timeout` elapses, returning
+/// whether `condition` was met. Unlike [`ServoTest::spin`] this cannot wait
+/// forever, which is what a regression test needs when the behavior it checks
+/// for may never happen.
+fn spin_until(
+    servo_test: &ServoTest,
+    timeout: std::time::Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while !condition() && std::time::Instant::now() < deadline {
+        servo_test.servo().spin_event_loop();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    condition()
+}
+
+/// Poll a JavaScript expression until it evaluates to `true` or `timeout`
+/// elapses, returning whether that happened. Each evaluation turns the event
+/// loop, so pending script work completes while polling.
+fn evaluate_until(
+    servo_test: &ServoTest,
+    webview: &WebView,
+    script: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(JSValue::Boolean(true)) = evaluate_javascript(servo_test, webview.clone(), script)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Shadow-root focus/blur must request/release the IME without changing listener retargeting.
+/// Typing keeps Servo's current composition behavior and untrusted-input guard.
+#[test]
+fn test_ime_in_shadow_dom() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <div id=\"host\"></div> \
+                <script> \
+                    const root = document.getElementById('host').attachShadow({mode: 'open'}); \
+                    root.innerHTML = '<input type=\"text\" id=\"field\" value=\"servo\">'; \
+                    window.__field = root.getElementById('field'); \
+                    window.__seen = []; \
+                    for (const type of ['focus', 'blur']) { \
+                        document.addEventListener(type, event => \
+                            __seen.push(type + ':' + (event.target.id || event.target.nodeName)), \
+                            true); \
+                    } \
+                    document.addEventListener('input', event => __seen.push( \
+                        'input:' + (event.target.id || event.target.nodeName) + ':' + \
+                        (event.inputType || '') + ':' + (event.data || ''))); \
+                    root.addEventListener('compositionstart', event => { \
+                        event.preventDefault(); \
+                        __seen.push('compositionstart:' + event.target.id); \
+                    }); \
+                    root.addEventListener('compositionend', event => __seen.push( \
+                        'compositionend:' + event.target.id + ':' + event.data)); \
+                </script>",
+            )
+            .unwrap(),
+        )
+        .build();
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    // Focusing the field must show the input method editor.
+    evaluate_javascript(&servo_test, webview.clone(), "window.__field.focus()")
+        .expect("focus() should evaluate");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, std::time::Duration::from_secs(5), move || {
+            captured_delegate.number_of_controls_shown.get() == 1
+        }),
+        "IME control was not shown for a focused <input> inside a shadow root"
+    );
+    {
+        let controls = delegate.controls_shown.borrow();
+        let EmbedderControl::InputMethod(ime) = &controls[0] else {
+            unreachable!("Expected embedder control to be an IME");
+        };
+        assert_eq!(ime.input_method_type(), InputMethodType::Text);
+        assert_eq!(ime.text(), "servo");
+    }
+
+    // Page listeners outside the shadow root observe the retargeted host.
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('focus:host')"
+        ),
+        Ok(JSValue::Boolean(true))
+    );
+
+    // Trusted composition events insert their text at the caret. A canceled
+    // compositionstart must not disturb the compositionend insertion.
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "window.__field.setSelectionRange(\
+            window.__field.value.length, window.__field.value.length)",
+    )
+    .expect("setSelectionRange should evaluate");
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+        CompositionEvent {
+            state: CompositionState::Start,
+            data: "w".into(),
+        },
+    )));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+        CompositionEvent {
+            state: CompositionState::End,
+            data: "world".into(),
+        },
+    )));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "window.__field.value === 'servoworld'",
+            std::time::Duration::from_secs(5)
+        ),
+        "composition text was not inserted into the shadow <input>"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('compositionstart:field') && \
+                window.__seen.includes('compositionend:field:world')"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "composition events were not delivered inside the shadow root"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('input:host:insertCompositionText:world')"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "composed input event was not observed retargeted to the host"
+    );
+
+    // An untrusted composition event must not insert text.
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "window.__field.dispatchEvent(\
+            new CompositionEvent('compositionend', {data: 'sneaky'}))",
+    )
+    .expect("dispatchEvent should evaluate");
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__field.value.includes('sneaky')"
+        ),
+        Ok(JSValue::Boolean(false))
+    );
+
+    // A canceled trusted keydown must not insert text either.
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "root.addEventListener('keydown', event => event.preventDefault())",
+    )
+    .expect("addEventListener should evaluate");
+    webview.notify_input_event(InputEvent::Keyboard(servo::KeyboardEvent::from_state_and_key(
+        KeyState::Down,
+        Key::Character("q".into()),
+    )));
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__field.value === 'servoworld'"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "canceled keydown inserted text"
+    );
+
+    // Blurring the field hides the input method editor.
+    evaluate_javascript(&servo_test, webview.clone(), "window.__field.blur()")
+        .expect("blur() should evaluate");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, std::time::Duration::from_secs(5), move || {
+            captured_delegate.number_of_controls_hidden.get() == 1
+        }),
+        "IME control was not hidden when a shadow <input> lost focus"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('blur:host')"
+        ),
+        Ok(JSValue::Boolean(true))
+    );
+}
+
+/// Same coverage as [`test_ime_in_shadow_dom`], but with a `<textarea>` in a
+/// closed shadow root nested inside an open one: events pass two shadow
+/// boundaries and retarget to the outermost host.
+#[test]
+fn test_ime_in_nested_shadow_dom() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <div id=\"host\"></div> \
+                <script> \
+                    const outer = document.getElementById('host').attachShadow({mode: 'open'}); \
+                    outer.innerHTML = '<div id=\"mid\"></div>'; \
+                    const inner = outer.getElementById('mid').attachShadow({mode: 'closed'}); \
+                    const field = document.createElement('textarea'); \
+                    field.value = 'abc'; \
+                    inner.appendChild(field); \
+                    window.__field = field; \
+                    window.__seen = []; \
+                    for (const type of ['focus', 'blur']) { \
+                        document.addEventListener(type, event => \
+                            __seen.push(type + ':' + (event.target.id || event.target.nodeName)), \
+                            true); \
+                    } \
+                    document.addEventListener('input', event => __seen.push( \
+                        'input:' + (event.target.id || event.target.nodeName) + ':' + \
+                        (event.inputType || '') + ':' + (event.data || ''))); \
+                    inner.addEventListener('compositionend', event => __seen.push( \
+                        'compositionend:' + event.target.nodeName + ':' + event.data)); \
+                </script>",
+            )
+            .unwrap(),
+        )
+        .build();
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    evaluate_javascript(&servo_test, webview.clone(), "window.__field.focus()")
+        .expect("focus() should evaluate");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, std::time::Duration::from_secs(5), move || {
+            captured_delegate.number_of_controls_shown.get() == 1
+        }),
+        "IME control was not shown for a focused <textarea> inside nested shadow roots"
+    );
+    {
+        let controls = delegate.controls_shown.borrow();
+        let EmbedderControl::InputMethod(ime) = &controls[0] else {
+            unreachable!("Expected embedder control to be an IME");
+        };
+        assert_eq!(ime.input_method_type(), InputMethodType::Text);
+        assert_eq!(ime.text(), "abc");
+    }
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('focus:host')"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "focus was not observed retargeted to the outermost host"
+    );
+
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "window.__field.setSelectionRange(\
+            window.__field.value.length, window.__field.value.length)",
+    )
+    .expect("setSelectionRange should evaluate");
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
+        CompositionEvent {
+            state: CompositionState::End,
+            data: "def".into(),
+        },
+    )));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "window.__field.value === 'abcdef'",
+            std::time::Duration::from_secs(5)
+        ),
+        "composition text was not inserted into the nested shadow <textarea>"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('compositionend:TEXTAREA:def')"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "compositionend was not delivered inside the closed shadow root"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('input:host:insertCompositionText:def')"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "composed input event was not observed retargeted to the outermost host"
+    );
+
+    evaluate_javascript(&servo_test, webview.clone(), "window.__field.blur()")
+        .expect("blur() should evaluate");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, std::time::Duration::from_secs(5), move || {
+            captured_delegate.number_of_controls_hidden.get() == 1
+        }),
+        "IME control was not hidden when a nested shadow <textarea> lost focus"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "window.__seen.includes('blur:host')"
+        ),
+        Ok(JSValue::Boolean(true))
+    );
 }
 
 #[test]

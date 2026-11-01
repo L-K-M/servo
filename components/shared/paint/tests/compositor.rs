@@ -330,3 +330,192 @@ fn check_fixed_drawer_chaining(context: ScrollType) {
             .is_none()
     );
 }
+
+fn allow_touch_input(tree: &mut ScrollTree, node_id: ScrollTreeNodeId) {
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(node_id).info {
+        info.scroll_sensitivity.x |= ScrollType::Touch;
+        info.scroll_sensitivity.y |= ScrollType::Touch;
+    }
+}
+
+fn scroll_to(tree: &mut ScrollTree, external_id: ExternalScrollId, y: f32) {
+    tree.set_scroll_offset_for_node_with_external_scroll_id(
+        external_id,
+        LayoutVector2D::new(0.0, y),
+        ScrollType::Script,
+    );
+}
+
+#[test]
+fn test_scroll_tree_can_scroll_up_abstains_from_page_owned_vertical_drags() {
+    let mut tree = ScrollTree::default();
+    let (node, external_id) = add_mock_scroll_node(&mut tree);
+    for (action, expected) in [
+        (TouchAction::None, None),
+        (TouchAction::PanX, None),
+        (TouchAction::Auto, Some(false)),
+        (TouchAction::PanY, Some(false)),
+    ] {
+        if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(node).info {
+            info.touch_action = action;
+        }
+        assert_eq!(
+            tree.node_or_ancestors_can_scroll_up(external_id, ScrollType::Touch),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn test_scroll_tree_can_scroll_up_reports_none_for_missing_node() {
+    let mut scroll_tree = ScrollTree::default();
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(
+            ExternalScrollId(0, PipelineId(0, 0)),
+            ScrollType::Touch,
+        ),
+        None
+    );
+
+    add_mock_scroll_node(&mut scroll_tree);
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(
+            ExternalScrollId(42, PipelineId(0, 0)),
+            ScrollType::Touch,
+        ),
+        None
+    );
+}
+
+#[test]
+fn test_scroll_tree_can_scroll_up_checks_node_and_ancestors() {
+    let mut scroll_tree = ScrollTree::default();
+    let (viewport_id, viewport_external_id) = add_mock_scroll_node(&mut scroll_tree);
+    let (child_id, child_external_id) = add_mock_scroll_node(&mut scroll_tree);
+    allow_touch_input(&mut scroll_tree, viewport_id);
+    allow_touch_input(&mut scroll_tree, child_id);
+
+    // Everything at the top edge: there is no upward scroll to consume.
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::Touch),
+        Some(false)
+    );
+
+    // The touched node itself is scrolled: it can scroll up.
+    scroll_to(&mut scroll_tree, child_external_id, 40.0);
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::Touch),
+        Some(true)
+    );
+
+    // The touched node is at its top edge, but an ancestor is scrolled.
+    scroll_to(&mut scroll_tree, child_external_id, 0.0);
+    scroll_to(&mut scroll_tree, viewport_external_id, 30.0);
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::Touch),
+        Some(true)
+    );
+}
+
+#[test]
+fn test_scroll_tree_can_scroll_up_respects_input_sensitivity() {
+    let mut scroll_tree = ScrollTree::default();
+    let (_, viewport_external_id) = add_mock_scroll_node(&mut scroll_tree);
+    let (child_id, child_external_id) = add_mock_scroll_node(&mut scroll_tree);
+
+    // A scroll container that only script can scroll (e.g. `overflow: hidden`)
+    // cannot consume a touch pan, even while scrolled; the scroll chains onward.
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut scroll_tree.get_node_mut(child_id).info {
+        info.scroll_sensitivity.x = ScrollType::Script;
+        info.scroll_sensitivity.y = ScrollType::Script;
+    }
+    scroll_to(&mut scroll_tree, child_external_id, 40.0);
+
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::Touch),
+        Some(false)
+    );
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::Script),
+        Some(true)
+    );
+
+    // The ancestor viewport still answers for its own axis: scrolled, it can
+    // scroll up for input types it is sensitive to.
+    scroll_to(&mut scroll_tree, viewport_external_id, 30.0);
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::Touch),
+        Some(false)
+    );
+    assert_eq!(
+        scroll_tree.node_or_ancestors_can_scroll_up(child_external_id, ScrollType::InputEvents),
+        Some(true)
+    );
+}
+
+#[test]
+fn test_scroll_tree_can_scroll_up_chains_from_fixed_drawer_to_viewport() {
+    // Fixed descendants are siblings of the viewport in the spatial tree, so
+    // their ancestor walk never reaches it; input scrolls chain to the
+    // document's viewport explicitly.
+    let mut tree = ScrollTree::default();
+    let pipeline = PipelineId(0, 0);
+    let reference = tree.add_scroll_tree_node(
+        None,
+        SpatialTreeNodeInfo::ReferenceFrame(ReferenceFrameNodeInfo {
+            origin: Default::default(),
+            frame_origin_for_query: Default::default(),
+            transform_style: TransformStyle::Flat,
+            transform: FastLayoutTransform::identity(),
+            kind: ReferenceFrameKind::default(),
+        }),
+    );
+    let add_sibling = |tree: &mut ScrollTree, external_id, height| {
+        tree.add_scroll_tree_node(
+            Some(reference),
+            SpatialTreeNodeInfo::Scroll(ScrollableNodeInfo {
+                external_id,
+                content_rect: Size2D::new(100.0, height).into(),
+                clip_rect: Size2D::new(100.0, 100.0).into(),
+                scroll_sensitivity: AxesScrollSensitivity {
+                    x: ScrollType::Script | ScrollType::InputEvents | ScrollType::Touch,
+                    y: ScrollType::Script | ScrollType::InputEvents | ScrollType::Touch,
+                },
+                touch_action: TouchAction::Auto,
+                offset: LayoutVector2D::zero(),
+                offset_changed: Cell::new(false),
+            }),
+        )
+    };
+    let viewport = ExternalScrollId(0, pipeline);
+    let viewport_node = add_sibling(&mut tree, viewport, 300.0);
+    let drawer = ExternalScrollId(1, pipeline);
+    add_sibling(&mut tree, drawer, 100.0);
+
+    // The viewport is at its top edge: nothing consumes an upward pan.
+    assert_eq!(
+        tree.node_or_ancestors_can_scroll_up(drawer, ScrollType::Touch),
+        Some(false)
+    );
+
+    // Page scrolled below its top edge: the gesture chains to the viewport.
+    scroll_to(&mut tree, viewport, 50.0);
+    assert_eq!(
+        tree.node_or_ancestors_can_scroll_up(drawer, ScrollType::Touch),
+        Some(true)
+    );
+
+    // A script-only viewport cannot be scrolled up by touch, though it can by
+    // script itself.
+    if let SpatialTreeNodeInfo::Scroll(info) = &mut tree.get_node_mut(viewport_node).info {
+        info.scroll_sensitivity.y = ScrollType::Script;
+    }
+    assert_eq!(
+        tree.node_or_ancestors_can_scroll_up(drawer, ScrollType::Touch),
+        Some(false)
+    );
+    assert_eq!(
+        tree.node_or_ancestors_can_scroll_up(viewport, ScrollType::Script),
+        Some(true)
+    );
+}

@@ -67,6 +67,7 @@ impl Document {
         cx: &mut JSContext,
         editing_context: &EditingContext,
         action: ClipboardAction,
+        paste_text: Option<String>,
     ) -> InputEventResult {
         let clipboard_event_type = match action {
             ClipboardAction::Copy => ClipboardEventType::Copy,
@@ -89,7 +90,12 @@ impl Document {
 
         // Step 2. Fire a clipboard event
         let event_target = editing_context.event_target();
-        let clipboard_event = self.fire_clipboard_event(cx, &event_target, clipboard_event_type);
+        let clipboard_event = self.fire_clipboard_event_with_text(
+            cx,
+            &event_target,
+            clipboard_event_type,
+            paste_text,
+        );
 
         let event = clipboard_event.upcast::<Event>();
         if !event.DefaultPrevented() {
@@ -205,6 +211,17 @@ impl Document {
         target: &EventTarget,
         clipboard_event_type: ClipboardEventType,
     ) -> DomRoot<ClipboardEvent> {
+        self.fire_clipboard_event_with_text(cx, target, clipboard_event_type, None)
+    }
+
+    /// An embedder Paste response carries its text with the original menu's document identity.
+    fn fire_clipboard_event_with_text(
+        &self,
+        cx: &mut JSContext,
+        target: &EventTarget,
+        clipboard_event_type: ClipboardEventType,
+        paste_text: Option<String>,
+    ) -> DomRoot<ClipboardEvent> {
         let clipboard_event = ClipboardEvent::new(
             cx,
             self.window(),
@@ -233,13 +250,18 @@ impl Document {
                 drag_data_store.set_mode(Mode::ReadWrite);
             },
             ClipboardEventType::Paste => {
-                let (callback, receiver) =
-                    GenericCallback::new_blocking().expect("Could not create callback");
-                self.send_to_embedder(EmbedderMsg::GetClipboardText(self.webview_id(), callback));
-                let text_contents = receiver
-                    .recv()
-                    .map(Result::unwrap_or_default)
-                    .unwrap_or_default();
+                let text_contents = paste_text.unwrap_or_else(|| {
+                    let (callback, receiver) =
+                        GenericCallback::new_blocking().expect("Could not create callback");
+                    self.send_to_embedder(EmbedderMsg::GetClipboardText(
+                        self.webview_id(),
+                        callback,
+                    ));
+                    receiver
+                        .recv()
+                        .map(Result::unwrap_or_default)
+                        .unwrap_or_default()
+                });
 
                 // Step 7.1.1
                 drag_data_store.set_mode(Mode::ReadOnly);
@@ -606,7 +628,7 @@ impl EditingContext {
         if let EditingAction::Clipboard(clipboard_action) = action {
             return self
                 .document()
-                .handle_clipboard_action(cx, self, clipboard_action)
+                .handle_clipboard_action(cx, self, clipboard_action, None)
                 .contains(InputEventResult::Consumed);
         }
 

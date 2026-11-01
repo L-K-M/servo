@@ -879,6 +879,7 @@ impl Painter {
         if fully_exited {
             let mut transaction = Transaction::new();
             transaction.remove_pipeline(pipeline_id.into());
+            self.update_transaction_with_all_scroll_offsets(&mut transaction);
             self.send_transaction(transaction);
         }
     }
@@ -898,6 +899,9 @@ impl Painter {
 
         let mut txn = Transaction::new();
         txn.set_display_list(starting_epoch.into(), (pipeline_id, Default::default()));
+
+        // Even an empty iframe scene resets WebRender's scroll tree, including its parent.
+        self.update_transaction_with_all_scroll_offsets(&mut txn);
 
         self.generate_frame(&mut txn, RenderReasons::SCENE);
         self.send_transaction(txn);
@@ -1277,6 +1281,7 @@ impl Painter {
         for pipeline_id in webview_renderer.pipelines.keys() {
             transaction.remove_pipeline(pipeline_id.into());
         }
+        self.update_transaction_with_all_scroll_offsets(&mut transaction);
         self.send_transaction(transaction);
 
         self.send_root_pipeline_display_list();
@@ -1407,6 +1412,16 @@ impl Painter {
         if let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) {
             webview_renderer.notify_scroll_event(scroll, point);
         }
+    }
+
+    /// See [`WebViewRenderer::can_scroll_up_at_point`].
+    pub(crate) fn can_scroll_up_at_point(
+        &self,
+        webview_id: WebViewId,
+        point: WebViewPoint,
+    ) -> Option<bool> {
+        self.webview_renderer(webview_id)?
+            .can_scroll_up_at_point(&self.webrender_api, point)
     }
 
     pub(crate) fn adjust_pinch_zoom(

@@ -861,6 +861,21 @@ impl Paint {
             .notify_scroll_event(webview_id, scroll, point);
     }
 
+    /// Whether an upward scroll gesture at `point` could still be consumed by the
+    /// `WebView`'s pinch zoom viewport or scroll trees. Returns `None` when the
+    /// answer cannot be determined yet.
+    pub fn can_scroll_up_at_point(
+        &self,
+        webview_id: WebViewId,
+        point: WebViewPoint,
+    ) -> Option<bool> {
+        if self.shutdown_state() != ShutdownState::NotShuttingDown {
+            return None;
+        }
+        self.maybe_painter(webview_id.into())?
+            .can_scroll_up_at_point(webview_id, point)
+    }
+
     pub fn adjust_pinch_zoom(
         &self,
         webview_id: WebViewId,

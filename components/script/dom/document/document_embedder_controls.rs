@@ -241,6 +241,24 @@ impl DocumentEmbedderControls {
             ) => {
                 context_menu_nodes.handle_context_menu_action(action, cx);
             },
+            (
+                ControlElement::ContextMenu(context_menu_nodes),
+                EmbedderControlResponse::ContextMenuPaste(text),
+            ) => {
+                // A retained node can be removed or adopted while the menu is open.
+                let document = self.window.Document();
+                if context_menu_nodes.node.is_connected()
+                    && context_menu_nodes.node.owner_doc() == document
+                {
+                    let context = document.editing_context(cx.no_gc(), &context_menu_nodes.node);
+                    document.handle_clipboard_action(
+                        cx,
+                        &context,
+                        ClipboardAction::Paste,
+                        Some(text),
+                    );
+                }
+            },
             (_, _) => unreachable!(
                 "The response to a form control should always match it's originating type."
             ),
@@ -510,15 +528,20 @@ impl ContextMenuNodes {
             },
             ContextMenuAction::Cut => {
                 let editing_context = document.editing_context(cx.no_gc(), &self.node);
-                document.handle_clipboard_action(cx, &editing_context, ClipboardAction::Cut);
+                document.handle_clipboard_action(cx, &editing_context, ClipboardAction::Cut, None);
             },
             ContextMenuAction::Copy => {
                 let editing_context = document.editing_context(cx.no_gc(), &self.node);
-                document.handle_clipboard_action(cx, &editing_context, ClipboardAction::Copy);
+                document.handle_clipboard_action(cx, &editing_context, ClipboardAction::Copy, None);
             },
             ContextMenuAction::Paste => {
                 let editing_context = document.editing_context(cx.no_gc(), &self.node);
-                document.handle_clipboard_action(cx, &editing_context, ClipboardAction::Paste);
+                document.handle_clipboard_action(
+                    cx,
+                    &editing_context,
+                    ClipboardAction::Paste,
+                    None,
+                );
             },
             ContextMenuAction::SelectAll => {
                 let editing_context = document.editing_context(cx.no_gc(), &self.node);

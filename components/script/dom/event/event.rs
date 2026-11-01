@@ -47,7 +47,7 @@ use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::shadowroot::ShadowRoot;
-use crate::dom::types::{KeyboardEvent, PointerEvent, UserActivation};
+use crate::dom::types::{FocusEvent, KeyboardEvent, PointerEvent, UserActivation};
 use crate::dom::window::Window;
 use crate::tasks::task::TaskOnce;
 
@@ -329,8 +329,7 @@ impl Event {
 
         let mut target = DomRoot::from_ref(target);
 
-        // Save the original dispatch target. Keyboard default actions need the
-        // element the event was originally fired on, not the retargeted host.
+        // Field default actions need the original target after listener retargeting.
         let original_target = target.clone();
 
         // Step 1. Set event’s dispatch flag.
@@ -691,11 +690,8 @@ impl Event {
         // https://w3c.github.io/uievents/#default-action
         // https://dom.spec.whatwg.org/#action-versus-occurance
         if !self.DefaultPrevented() {
-            if self.is::<KeyboardEvent>() {
-                // For keyboard events, use the original dispatch target rather than
-                // event.GetTarget(). Composed keyboard events may retarget across
-                // shadow boundaries, but the default action (character input, Tab
-                // navigation) should use the element the event was originally fired on.
+            if self.is::<KeyboardEvent>() || self.is::<FocusEvent>() {
+                // Listeners see the shadow host; editing and IME defaults belong to the field.
                 if let Some(node) = original_target.downcast::<Node>() {
                     let vtable = vtable_for(node);
                     vtable.handle_event(cx, self);

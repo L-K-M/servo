@@ -416,6 +416,17 @@ impl ContextMenu {
         self.response_sent = true;
     }
 
+    /// Paste text into this menu's original editing context. Unlike a clipboard delegate,
+    /// this does not leave clipboard contents available to unrelated or later requests.
+    pub fn paste_text(mut self, text: String) {
+        self.constellation_proxy
+            .send(EmbedderToConstellationMessage::EmbedderControlResponse(
+                self.id,
+                EmbedderControlResponse::ContextMenuPaste(text),
+            ));
+        self.response_sent = true;
+    }
+
     /// Tell Servo that the context menu was dismissed with no selection.
     pub fn dismiss(mut self) {
         self.constellation_proxy

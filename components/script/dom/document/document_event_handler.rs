@@ -388,7 +388,7 @@ impl DocumentEventHandler {
                         .focused_area()
                         .dom_anchor(&document);
                     let editing_context = document.editing_context(cx.no_gc(), &focused_node);
-                    document.handle_clipboard_action(cx, &editing_context, clipboard_action)
+                    document.handle_clipboard_action(cx, &editing_context, clipboard_action, None)
                 },
             };
 
