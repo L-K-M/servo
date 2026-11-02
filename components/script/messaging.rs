@@ -58,6 +58,7 @@ impl MixedMessage {
         match self {
             MixedMessage::FromConstellation(inner_msg) => match inner_msg {
                 ScriptThreadMessage::StopDelayingLoadEventsMode(id) => Some(*id),
+                ScriptThreadMessage::StopLoading(id) => Some(*id),
                 ScriptThreadMessage::SpawnPipeline(new_pipeline_info) => new_pipeline_info
                     .parent_info
                     .or(Some(new_pipeline_info.new_pipeline_id)),

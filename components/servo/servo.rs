@@ -826,9 +826,13 @@ impl ServoInner {
                     .finish_evaluation(evaluation_id, result);
             },
             ConstellationToEmbedderMsg::StopLoadingCompleted(stop_loading_id, result) => {
-                self.stop_loading_handler
+                let callback = self
+                    .stop_loading_handler
                     .borrow_mut()
-                    .finish_stop_loading(stop_loading_id, result);
+                    .take_callback(stop_loading_id);
+
+                // Release the registry borrow before client code can request another stop.
+                callback(result);
             },
             ConstellationToEmbedderMsg::InputEventsHandled(webview_id, event_outcomes) => {
                 let webview = self.get_webview_handle(webview_id);

@@ -11,9 +11,8 @@ use crate::proxies::ConstellationProxy;
 
 pub(crate) type StopLoadingCallback = Box<dyn FnOnce(Result<PipelineId, StopLoadingError>)>;
 
-/// A struct that tracks ongoing `WebView::stop_loading` requests and is responsible
-/// for calling their callbacks once the `Constellation` reports the result. The
-/// callbacks always run on the embedder event loop that owns this `Servo` instance.
+/// Tracks `WebView::stop_loading` callbacks for the owning embedder event loop.
+/// Completion takes the callback before client code runs, allowing reentry.
 pub(crate) struct StopLoadingHandler {
     current_id: StopLoadingId,
     constellation_proxy: ConstellationProxy,
@@ -50,14 +49,9 @@ impl StopLoadingHandler {
         Ok(())
     }
 
-    pub(crate) fn finish_stop_loading(
-        &mut self,
-        stop_loading_id: StopLoadingId,
-        result: Result<PipelineId, StopLoadingError>,
-    ) {
-        (self
-            .pending_stops
+    pub(crate) fn take_callback(&mut self, stop_loading_id: StopLoadingId) -> StopLoadingCallback {
+        self.pending_stops
             .remove(&stop_loading_id)
-            .expect("Received result for unknown stop loading request."))(result)
+            .expect("Received result for unknown stop loading request.")
     }
 }

@@ -198,6 +198,12 @@ struct PendingApprovalNavigation {
 
 type PendingApprovalNavigations = FxHashMap<PipelineId, PendingApprovalNavigation>;
 
+#[derive(Clone, Copy)]
+enum StopLoadingPipelineState {
+    Committed,
+    Discarded,
+}
+
 /// A `WebView::stop_loading` request whose completion still has to be reported
 /// to the embedder, deferred until its replacement initial document commits or
 /// the `WebView` goes away.
@@ -3010,7 +3016,7 @@ where
 
         // A pipeline that was carrying a deferred `stop_loading` result is gone
         // without committing; report it as unavailable (or as a closed `WebView`).
-        self.complete_stop_loading_for_pipeline(pipeline_id, false);
+        self.complete_stop_loading_for_pipeline(pipeline_id, StopLoadingPipelineState::Discarded);
 
         // Clean up any registered interests for this pipeline.
         self.pipeline_interests.retain(|_, set| {
@@ -4552,6 +4558,8 @@ where
         let Some(new_browsing_context_info) = change.new_browsing_context_info else {
             return warn!("{webview_id}: Initial load change without browsing context info");
         };
+        let parent_pipeline_id = new_browsing_context_info.parent_pipeline_id;
+        let is_private = new_browsing_context_info.is_private;
         let Some((cancelled_load_data, opener)) = self
             .pipelines
             .get(&change.new_pipeline_id)
@@ -4622,11 +4630,11 @@ where
             replacement_pipeline_id,
             change.browsing_context_id,
             webview_id,
-            new_browsing_context_info.parent_pipeline_id,
+            parent_pipeline_id,
             opener,
             change.viewport_details,
             load_data,
-            new_browsing_context_info.is_private,
+            is_private,
             TargetSnapshotParams::default(),
             None,
         );
@@ -4647,7 +4655,11 @@ where
     /// Report a deferred `stop_loading` result for every request that was
     /// waiting on `pipeline_id`. Used when a replacement initial document
     /// commits or exits.
-    fn complete_stop_loading_for_pipeline(&mut self, pipeline_id: PipelineId, committed: bool) {
+    fn complete_stop_loading_for_pipeline(
+        &mut self,
+        pipeline_id: PipelineId,
+        state: StopLoadingPipelineState,
+    ) {
         let Some(completions) = self
             .pending_stop_loading_completions
             .remove(&pipeline_id)
@@ -4655,7 +4667,7 @@ where
             return;
         };
         for completion in completions {
-            let result = if committed {
+            let result = if matches!(state, StopLoadingPipelineState::Committed) {
                 Ok(pipeline_id)
             } else if self.webviews.contains_key(&completion.webview_id) {
                 Err(StopLoadingError::DocumentUnavailable)
@@ -6074,11 +6086,16 @@ where
             .pending_stop_loading_completions
             .contains_key(&pipeline_id)
         {
-            let committed = self
+            let state = if self
                 .browsing_contexts
                 .get(&change_browsing_context_id)
-                .is_some_and(|ctx| ctx.pipeline_id == pipeline_id);
-            self.complete_stop_loading_for_pipeline(pipeline_id, committed);
+                .is_some_and(|ctx| ctx.pipeline_id == pipeline_id)
+            {
+                StopLoadingPipelineState::Committed
+            } else {
+                StopLoadingPipelineState::Discarded
+            };
+            self.complete_stop_loading_for_pipeline(pipeline_id, state);
         }
 
         if let Some(webview) = self.webviews.get_mut(&webview_id) {
