@@ -20,6 +20,7 @@ use embedder_traits::{
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
 use log::debug;
+use paint::InputEventDispatch;
 use paint_api::WebViewTrait;
 use paint_api::rendering_context::RenderingContext;
 use servo_base::Epoch;
@@ -677,10 +678,13 @@ impl WebView {
 
         // Events with a `point` first go to `Paint` for hit testing.
         if event.event.point().is_some() {
-            if !servo.paint().notify_input_event(self.id(), event) {
+            if let InputEventDispatch::Handled(result) =
+                servo.paint().notify_input_event(self.id(), event)
+            {
                 servo.add_pending_handled_input_event(PendingHandledInputEvent {
                     event_id,
                     webview_id,
+                    result,
                 });
                 servo.event_loop_waker().wake();
             }

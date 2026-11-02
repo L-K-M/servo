@@ -239,6 +239,7 @@ impl<'a> EmbedderMessageSelector<'a> {
 pub struct PendingHandledInputEvent {
     pub event_id: InputEventId,
     pub webview_id: WebViewId,
+    pub(crate) result: InputEventResult,
 }
 
 struct ServoInner {
@@ -327,19 +328,16 @@ impl ServoInner {
         for PendingHandledInputEvent {
             event_id,
             webview_id,
+            result,
         } in pending_handled_input_events
         {
-            self.paint.borrow_mut().notify_input_event_handled(
-                webview_id,
-                event_id,
-                InputEventResult::DispatchFailed,
-            );
+            self.paint
+                .borrow_mut()
+                .notify_input_event_handled(webview_id, event_id, result);
             if let Some(webview) = self.get_webview_handle(webview_id) {
-                webview.delegate().notify_input_event_handled(
-                    webview,
-                    event_id,
-                    InputEventResult::DispatchFailed,
-                );
+                webview
+                    .delegate()
+                    .notify_input_event_handled(webview, event_id, result);
             }
         }
 

@@ -55,9 +55,9 @@ use webrender_api::{FontInstanceKey, FontKey, ImageKey};
 #[cfg(feature = "webxr")]
 use webxr::WebXrRegistry;
 
-use crate::InitialPaintState;
 use crate::painter::Painter;
 use crate::webview_renderer::UnknownWebView;
+use crate::{InitialPaintState, InputEventDispatch};
 
 /// An option to control what kind of WebRender debugging is enabled while Servo is running.
 #[derive(Copy, Clone)]
@@ -843,11 +843,14 @@ impl Paint {
             .save_capture(capture_path, CaptureBits::all());
     }
 
-    /// Returning `false` means this is not going to reach the Constellation,
-    /// and we need to directly notify the embedder that input event is handled.
-    pub fn notify_input_event(&self, webview_id: WebViewId, event: InputEventAndId) -> bool {
+    /// Local completion must preserve coalescing versus failed dispatch for the embedder.
+    pub fn notify_input_event(
+        &self,
+        webview_id: WebViewId,
+        event: InputEventAndId,
+    ) -> InputEventDispatch {
         if self.shutdown_state() != ShutdownState::NotShuttingDown {
-            return false;
+            return InputEventDispatch::Handled(InputEventResult::DispatchFailed);
         }
         self.painter_mut(webview_id.into())
             .notify_input_event(webview_id, event)
