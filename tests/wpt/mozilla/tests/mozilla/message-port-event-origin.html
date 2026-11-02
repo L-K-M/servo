@@ -1,0 +1,116 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Port and dedicated worker message events have an empty origin</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#message-port-post-message-steps">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-worker-postmessage">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+// Worker.postMessage and MessagePort.postMessage run the port post message
+// steps, which fire a MessageEvent without setting its origin or source.
+// BroadcastChannel is the control: its steps do set the sender's origin.
+
+// Reports what the worker saw for each message it receives, from its global
+// scope and from any port it was handed.
+const WORKER_SOURCE = `
+  const describe = e => ({
+    isTrusted: e.isTrusted,
+    origin: e.origin,
+    sourceIsNull: e.source === null,
+    lastEventId: e.lastEventId,
+    data: e.data,
+  });
+  onmessage = e => {
+    if (e.ports.length) {
+      const port = e.ports[0];
+      port.onmessage = pe => port.postMessage(describe(pe));
+      port.postMessage("ready");
+      return;
+    }
+    postMessage(describe(e));
+  };
+`;
+
+function startWorker(t) {
+  const url = URL.createObjectURL(new Blob([WORKER_SOURCE], {type: "text/javascript"}));
+  const worker = new Worker(url);
+  t.add_cleanup(() => {
+    worker.terminate();
+    URL.revokeObjectURL(url);
+  });
+  return worker;
+}
+
+function nextMessage(target) {
+  return new Promise(resolve => {
+    target.addEventListener("message", resolve, {once: true});
+  });
+}
+
+function assertPortEvent(seen, data) {
+  assert_true(seen.isTrusted, "isTrusted");
+  assert_equals(seen.origin, "", "origin");
+  assert_true(seen.sourceIsNull, "source is null");
+  assert_equals(seen.lastEventId, "", "lastEventId");
+  assert_equals(seen.data, data, "data");
+}
+
+promise_test(async t => {
+  const worker = startWorker(t);
+  const reply = nextMessage(worker);
+  worker.postMessage("ping");
+  assertPortEvent((await reply).data, "ping");
+}, "Worker.postMessage reaches the worker with an empty origin and a null source");
+
+promise_test(async t => {
+  const worker = startWorker(t);
+  const reply = nextMessage(worker);
+  worker.postMessage("ping");
+  const event = await reply;
+  assert_true(event.isTrusted, "isTrusted");
+  assert_equals(event.origin, "", "origin");
+  assert_equals(event.source, null, "source");
+}, "A message from the worker reaches the Worker object with an empty origin");
+
+promise_test(async t => {
+  const channel = new MessageChannel();
+  t.add_cleanup(() => channel.port1.close());
+  const received = nextMessage(channel.port2);
+  channel.port2.start();
+  channel.port1.postMessage("ping");
+  const event = await received;
+  assert_true(event.isTrusted, "isTrusted");
+  assert_equals(event.origin, "", "origin");
+  assert_equals(event.source, null, "source");
+  assert_equals(event.data, "ping", "data");
+}, "MessagePort.postMessage within a window delivers an empty origin");
+
+promise_test(async t => {
+  const worker = startWorker(t);
+  const channel = new MessageChannel();
+  t.add_cleanup(() => channel.port1.close());
+  const ready = nextMessage(channel.port1);
+  channel.port1.start();
+  worker.postMessage(null, [channel.port2]);
+  assert_equals((await ready).data, "ready", "worker took the port");
+
+  const reply = nextMessage(channel.port1);
+  channel.port1.postMessage("ping");
+  assertPortEvent((await reply).data, "ping");
+}, "MessagePort.postMessage to a port in a worker delivers an empty origin");
+
+promise_test(async t => {
+  const name = "message-port-event-origin-" + Math.random();
+  const sender = new BroadcastChannel(name);
+  const receiver = new BroadcastChannel(name);
+  t.add_cleanup(() => {
+    sender.close();
+    receiver.close();
+  });
+  const received = nextMessage(receiver);
+  sender.postMessage("ping");
+  const event = await received;
+  assert_equals(event.origin, location.origin, "origin");
+  assert_equals(event.data, "ping", "data");
+}, "BroadcastChannel still delivers the sender's origin");
+</script>

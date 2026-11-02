@@ -934,7 +934,10 @@ impl DedicatedWorkerGlobalScope {
                 target,
                 scope.upcast(),
                 message.handle(),
-                Some(msg.origin.ascii_serialization().as_ref()),
+                // Worker.postMessage runs the port post message steps, which leave the
+                // event's origin as the empty string and its source as null.
+                // <https://html.spec.whatwg.org/multipage/#message-port-post-message-steps>
+                None,
                 None,
                 ports,
             );
