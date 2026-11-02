@@ -3,8 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::convert::TryFrom;
+use std::ffi::CStr;
 use std::ptr::{self, NonNull};
-use std::slice;
 
 use devtools_traits::{
     ConsoleLogLevel, ConsoleMessage, ConsoleMessageFields, DebuggerValue, FunctionPreview,
@@ -14,23 +14,26 @@ use devtools_traits::{
 use embedder_traits::EmbedderMsg;
 use js::context::JSContext;
 use js::conversions::jsstr_to_string;
-use js::jsapi::{self, ESClass, JS_GetFunctionArity, PropertyDescriptor, SavedFrameSelfHosted};
-use js::jsval::{Int32Value, UndefinedValue};
+use js::jsapi::{
+    self, ESClass, IsWindowProxy, JS_GetFunctionArity, PropertyDescriptor, SavedFrameSelfHosted,
+};
+use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
-    GetArrayLength, GetBuiltinClass, GetPropertyKeys, GetSavedFrameColumn,
+    GetArrayLength, GetBuiltinClass, GetPropertyKeys, GetRegExpSource, GetSavedFrameColumn,
     GetSavedFrameFunctionDisplayName, GetSavedFrameLine, GetSavedFrameSource,
     JS_ClearPendingException, JS_GetElement, JS_GetFunctionDisplayId, JS_GetFunctionId,
-    JS_GetOwnPropertyDescriptorById, JS_GetPropertyById, JS_IdToValue, JS_Stringify,
+    JS_GetOwnPropertyDescriptor, JS_GetOwnPropertyDescriptorById, JS_GetPrototype, JS_IdToValue,
     JS_ValueToFunction, JS_ValueToSource, MapEntries, MapSize,
 };
 use js::rust::{
-    CapturedJSStack, HandleObject, HandleValue, IdVector, ToNumber, ToString,
-    describe_scripted_caller, for_of,
+    CapturedJSStack, HandleObject, HandleValue, IdVector, ToNumber, describe_scripted_caller,
+    for_of, get_object_class,
 };
-use script_bindings::conversions::get_dom_class;
+use script_bindings::conversions::{get_dom_class, is_dom_proxy};
 
 use crate::dom::bindings::codegen::Bindings::ConsoleBinding::consoleMethods;
+use crate::dom::bindings::codegen::PrototypeList;
 use crate::dom::bindings::error::report_pending_exception;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
@@ -93,6 +96,10 @@ impl Console {
         messages: Vec<HandleValue>,
         include_stacktrace: IncludeStackTrace,
     ) {
+        // Devtools get arguments in structured form. Build it only for an attached client:
+        // unlike the embedder text, it walks proxies and Map iterators, which run page script.
+        let devtools_attached = global.devtools_chan().is_some();
+
         // If the first argument is a string, apply sprintf-style substitutions per the
         // WHATWG Console spec formatter. The result is a single formatted string followed
         // by any arguments that were not consumed by a substitution specifier.
@@ -102,12 +109,14 @@ impl Console {
 
             let mut arguments: Vec<DebuggerValue> =
                 vec![DebuggerValue::StringValue(formatted.clone())];
-            for msg in remaining {
-                arguments.push(console_argument_from_handle_value(
-                    cx,
-                    *msg,
-                    &mut Vec::new(),
-                ));
+            if devtools_attached {
+                for msg in remaining {
+                    arguments.push(console_argument_from_handle_value(
+                        cx,
+                        *msg,
+                        &mut Vec::new(),
+                    ));
+                }
             }
 
             let embedder_msg = if remaining.is_empty() {
@@ -118,17 +127,23 @@ impl Console {
 
             (arguments, embedder_msg.into())
         } else {
-            let arguments = messages
-                .iter()
-                .map(|msg| console_argument_from_handle_value(cx, *msg, &mut Vec::new()))
-                .collect();
+            let arguments = if devtools_attached {
+                messages
+                    .iter()
+                    .map(|msg| console_argument_from_handle_value(cx, *msg, &mut Vec::new()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             (arguments, stringify_handle_values(cx, &messages))
         };
 
-        let stacktrace = (include_stacktrace == IncludeStackTrace::Yes).then_some(get_js_stack(cx));
-        let console_message = Self::build_message(cx, level.clone(), arguments, stacktrace);
-
-        Console::send_to_devtools(global, console_message);
+        if devtools_attached {
+            let stacktrace =
+                (include_stacktrace == IncludeStackTrace::Yes).then_some(get_js_stack(cx));
+            let console_message = Self::build_message(cx, level.clone(), arguments, stacktrace);
+            Console::send_to_devtools(global, console_message);
+        }
 
         let prefix = global.current_group_label().unwrap_or_default();
         let formatted_message = format!("{prefix}{embedder_msg}");
@@ -242,7 +257,12 @@ fn console_argument_from_handle_value(
 fn accessor_value_from_property_descriptor(descriptor: &PropertyDescriptor) -> DebuggerValue {
     // https://console.spec.whatwg.org/#printer
     // Objects with either generic JavaScript object formatting or optimally useful formatting applied.
-    let value = match (
+    DebuggerValue::StringValue(accessor_kind(descriptor).into())
+}
+
+/// Names an accessor property's kind, e.g. "Getter", without calling it.
+fn accessor_kind(descriptor: &PropertyDescriptor) -> &'static str {
+    match (
         descriptor.hasGetter_() && !descriptor.getter_.is_null(),
         descriptor.hasSetter_() && !descriptor.setter_.is_null(),
     ) {
@@ -250,8 +270,7 @@ fn accessor_value_from_property_descriptor(descriptor: &PropertyDescriptor) -> D
         (true, false) => "Getter",
         (false, true) => "Setter",
         (false, false) => "undefined",
-    };
-    DebuggerValue::StringValue(value.into())
+    }
 }
 
 #[expect(unsafe_code)]
@@ -480,6 +499,12 @@ fn console_object_from_handle_value(
     ))
 }
 
+/// Formats a console argument as text for the embedder without running page script.
+///
+/// Browsers format console arguments only for an attached devtools client, so a page cannot
+/// observe its own logging. Calling a getter, proxy trap, `toString` or `toJSON` here would let
+/// it: logging `{ get x() { … } }` would run the getter. Accessors therefore print as their
+/// kind (`{"x": Getter}`), proxies as their class name, and other objects from internal state.
 #[expect(unsafe_code)]
 pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -> DOMString {
     if message.is_string() {
@@ -491,11 +516,33 @@ pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -
         value: HandleValue,
         parents: Vec<u64>,
     ) -> DOMString {
-        rooted!(&in(cx) let mut obj = value.to_object());
+        rooted!(&in(cx) let obj = value.to_object());
+        if unsafe { IsWindowProxy(obj.get()) } {
+            return DOMString::from_static("Window");
+        }
+        if is_foreign_proxy(obj.get()) {
+            return DOMString::from_static("Proxy");
+        }
+
         let mut object_class = ESClass::Other;
         if !unsafe { GetBuiltinClass(cx, obj.handle(), &mut object_class as *mut _) } {
-            return DOMString::from_static("/* invalid */");
+            return invalid_value(cx);
         }
+        match object_class {
+            ESClass::Object | ESClass::Array => {},
+            ESClass::Error => return stringify_error(cx, obj.handle()),
+            ESClass::RegExp => return stringify_regexp(cx, obj.handle()),
+            // SpiderMonkey converts these to source from internal slots alone, as long as realms
+            // keep `toSource` lookups disabled (the default). Boxed BigInts are not among them:
+            // their conversion enumerates and converts the properties.
+            ESClass::Function |
+            ESClass::Date |
+            ESClass::Boolean |
+            ESClass::Number |
+            ESClass::String => return handle_value_to_string(cx, value),
+            _ => {},
+        }
+
         let mut ids = IdVector::new(cx);
         if !unsafe {
             GetPropertyKeys(
@@ -505,18 +552,11 @@ pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -
                 ids.handle_mut(),
             )
         } {
-            return DOMString::from_static("/* invalid */");
+            return invalid_value(cx);
         }
         let truncate = ids.len() > MAX_LOG_CHILDREN;
-        if object_class != ESClass::Array && object_class != ESClass::Object {
-            if truncate {
-                return DOMString::from_static("…");
-            } else {
-                return handle_value_to_string(cx, value);
-            }
-        }
 
-        let mut explicit_keys = object_class == ESClass::Object;
+        let mut explicit_keys = object_class != ESClass::Array;
         let mut props = Vec::with_capacity(ids.len());
         for id in ids.iter().take(MAX_LOG_CHILDREN) {
             rooted!(&in(cx) let id = *id);
@@ -532,13 +572,7 @@ pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -
                     &mut is_none,
                 )
             } {
-                return DOMString::from_static("/* invalid */");
-            }
-
-            rooted!(&in(cx) let mut property = UndefinedValue());
-            if !unsafe { JS_GetPropertyById(cx, obj.handle(), id.handle(), property.handle_mut()) }
-            {
-                return DOMString::from_static("/* invalid */");
+                return invalid_value(cx);
             }
 
             if !explicit_keys {
@@ -552,16 +586,23 @@ pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -
                     explicit_keys = false;
                 }
             }
-            let value_string = stringify_inner(cx, property.handle(), parents.clone());
+
+            // Reading through an accessor would call page script, so name its kind instead.
+            let value_string = if desc.hasGetter_() || desc.hasSetter_() {
+                DOMString::from_static(accessor_kind(&desc))
+            } else {
+                rooted!(&in(cx) let property = desc.value_);
+                stringify_inner(cx, property.handle(), parents.clone())
+            };
             if explicit_keys {
                 let key = if id.is_string() || id.is_symbol() || id.is_int() {
                     rooted!(&in(cx) let mut key_value = UndefinedValue());
                     if !unsafe { JS_IdToValue(cx, id.handle().get(), key_value.handle_mut()) } {
-                        return DOMString::from_static("/* invalid */");
+                        return invalid_value(cx);
                     }
                     handle_value_to_string(cx, key_value.handle())
                 } else {
-                    return DOMString::from_static("/* invalid */");
+                    return invalid_value(cx);
                 };
                 props.push(format!("{}: {}", key, value_string,));
             } else {
@@ -571,10 +612,14 @@ pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -
         if truncate {
             props.push("…".to_string());
         }
-        if object_class == ESClass::Array {
-            DOMString::from(format!("[{}]", itertools::join(props, ", ")))
-        } else {
-            DOMString::from(format!("{{{}}}", itertools::join(props, ", ")))
+        match object_class {
+            ESClass::Array => DOMString::from(format!("[{}]", itertools::join(props, ", "))),
+            ESClass::Object => DOMString::from(format!("{{{}}}", itertools::join(props, ", "))),
+            _ => DOMString::from(format!(
+                "{} {{{}}}",
+                object_class_name(obj.get()),
+                itertools::join(props, ", ")
+            )),
         }
     }
     fn stringify_inner(cx: &mut JSContext, value: HandleValue, mut parents: Vec<u64>) -> DOMString {
@@ -592,69 +637,101 @@ pub(crate) fn stringify_handle_value(cx: &mut JSContext, message: HandleValue) -
             return handle_value_to_string(cx, value);
         }
         parents.push(value_bits);
-
-        if value.is_object() &&
-            let Some(repr) = maybe_stringify_dom_object(cx, value)
-        {
-            return repr;
-        }
         stringify_object_from_handle_value(cx, value, parents)
     }
     stringify_inner(cx, message, Vec::new())
 }
 
+/// Whether `obj` is a proxy other than a DOM object, such as `new Proxy(…)` or a
+/// cross-compartment wrapper. Inspecting one can run page-defined traps.
 #[expect(unsafe_code)]
-fn maybe_stringify_dom_object(cx: &mut JSContext, value: HandleValue) -> Option<DOMString> {
-    // The standard object serialization is not effective for DOM objects,
-    // since their properties generally live on the prototype object.
-    // Instead, fall back to the output of JSON.stringify combined
-    // with the class name extracted from the output of toString().
-    rooted!(&in(cx) let obj = value.to_object());
-    let is_dom_class = unsafe { get_dom_class(obj.get()).is_ok() };
-    if !is_dom_class {
-        return None;
-    }
-    rooted!(&in(cx) let class_name = unsafe { ToString(cx, value) });
-    let Some(class_name) = NonNull::new(class_name.get()) else {
-        return Some(DOMString::from_static(
-            "<error converting DOM object to string>",
-        ));
-    };
-    let class_name = unsafe { jsstr_to_string(cx, class_name) }
-        .replace("[object ", "")
-        .replace("]", "");
-    let mut repr = format!("{} ", class_name);
-    rooted!(&in(cx) let mut value = value.get());
+fn is_foreign_proxy(obj: *mut jsapi::JSObject) -> bool {
+    let class = unsafe { get_object_class(obj) };
+    let is_proxy = unsafe { (*class).flags } & js::JSCLASS_IS_PROXY != 0;
+    is_proxy && !unsafe { is_dom_proxy(obj) }
+}
 
-    #[expect(unsafe_code)]
-    unsafe extern "C" fn stringified(
-        string: *const u16,
-        len: u32,
-        data: *mut std::ffi::c_void,
-    ) -> bool {
-        let s = data as *mut String;
-        let string_chars = unsafe { slice::from_raw_parts(string, len as usize) };
-        unsafe { (*s).push_str(&String::from_utf16_lossy(string_chars)) };
-        true
+/// The name of an object's class from engine data, e.g. "Map" or "HTMLDivElement".
+#[expect(unsafe_code)]
+fn object_class_name(obj: *mut jsapi::JSObject) -> String {
+    if let Ok(dom_class) = unsafe { get_dom_class(obj) } {
+        let interface = dom_class.interface_chain[dom_class.depth as usize];
+        return PrototypeList::proto_id_to_name(interface as u16).to_owned();
     }
+    let name = unsafe { (*get_object_class(obj)).name };
+    if name.is_null() {
+        return "Object".to_owned();
+    }
+    unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
+}
 
-    rooted!(&in(cx) let space = Int32Value(2));
-    let stringify_result = unsafe {
-        JS_Stringify(
-            cx,
-            value.handle_mut(),
-            HandleObject::null(),
-            space.handle(),
-            Some(stringified),
-            &mut repr as *mut String as *mut _,
-        )
-    };
-    if !stringify_result {
-        return Some(DOMString::from_static(
-            "<error converting DOM object to string>",
-        ));
+/// Formats an error like `Error.prototype.toString`, e.g. "TypeError: x is null", reading
+/// `name` and `message` only where they are data properties.
+fn stringify_error(cx: &mut JSContext, error: HandleObject) -> DOMString {
+    let name = data_property_string(cx, error, c"name").unwrap_or_else(|| "Error".to_owned());
+    let message = data_property_string(cx, error, c"message").unwrap_or_default();
+    if message.is_empty() {
+        return name.into();
     }
-    Some(repr.into())
+    format!("{name}: {message}").into()
+}
+
+/// Formats a regular expression from its internal source, e.g. "/a+b/". Its `source` and
+/// `flags` properties are getters a page can replace, and mozjs binds no internal accessor
+/// for the flags, so they are left out.
+#[expect(unsafe_code)]
+fn stringify_regexp(cx: &mut JSContext, regexp: HandleObject) -> DOMString {
+    rooted!(&in(cx) let source = unsafe { GetRegExpSource(cx, regexp) });
+    let Some(source) = NonNull::new(source.get()) else {
+        return invalid_value(cx);
+    };
+    format!("/{}/", unsafe { jsstr_to_string(cx, source) }).into()
+}
+
+/// The text for a value the formatter failed to read. Logging must not throw, so the
+/// failure's pending exception is cleared.
+#[expect(unsafe_code)]
+fn invalid_value(cx: &mut JSContext) -> DOMString {
+    unsafe { JS_ClearPendingException(cx) };
+    DOMString::from_static("/* invalid */")
+}
+
+/// Looks up a string-valued data property on `object` or its prototypes without running page
+/// script. Returns `None` once the lookup meets an accessor, a foreign proxy or another value.
+#[expect(unsafe_code)]
+fn data_property_string(cx: &mut JSContext, object: HandleObject, name: &CStr) -> Option<String> {
+    rooted!(&in(cx) let mut current = object.get());
+    while !current.is_null() && !is_foreign_proxy(current.get()) {
+        rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
+        let mut is_none = true;
+        if !unsafe {
+            JS_GetOwnPropertyDescriptor(
+                cx,
+                current.handle(),
+                name.as_ptr(),
+                desc.handle_mut(),
+                &mut is_none,
+            )
+        } {
+            unsafe { JS_ClearPendingException(cx) };
+            return None;
+        }
+        if !is_none {
+            if desc.hasGetter_() || desc.hasSetter_() || !desc.value_.is_string() {
+                return None;
+            }
+            let string = NonNull::new(desc.value_.to_string())?;
+            return Some(unsafe { jsstr_to_string(cx, string) });
+        }
+
+        rooted!(&in(cx) let mut prototype = ptr::null_mut::<jsapi::JSObject>());
+        if !unsafe { JS_GetPrototype(cx, current.handle(), prototype.handle_mut()) } {
+            unsafe { JS_ClearPendingException(cx) };
+            return None;
+        }
+        current.set(prototype.get());
+    }
+    None
 }
 
 /// Apply sprintf-style substitutions to console format arguments per the WHATWG Console spec.
@@ -694,10 +771,7 @@ fn apply_sprintf_substitutions(cx: &mut JSContext, messages: &[HandleValue]) -> 
             Some('d') | Some('i') => {
                 let spec = chars.next().unwrap();
                 if arg_index < messages.len() {
-                    let num = unsafe { ToNumber(cx, messages[arg_index]) };
-                    if num.is_err() {
-                        unsafe { JS_ClearPendingException(cx) };
-                    }
+                    let num = substitution_number(cx, messages[arg_index]);
                     arg_index += 1;
                     format_integer_substitution(&mut result, num);
                 } else {
@@ -708,10 +782,7 @@ fn apply_sprintf_substitutions(cx: &mut JSContext, messages: &[HandleValue]) -> 
             Some('f') => {
                 chars.next();
                 if arg_index < messages.len() {
-                    let num = unsafe { ToNumber(cx, messages[arg_index]) };
-                    if num.is_err() {
-                        unsafe { JS_ClearPendingException(cx) };
-                    }
+                    let num = substitution_number(cx, messages[arg_index]);
                     arg_index += 1;
                     format_float_substitution(&mut result, num);
                 } else {
@@ -747,6 +818,20 @@ fn apply_sprintf_substitutions(cx: &mut JSContext, messages: &[HandleValue]) -> 
     (result, arg_index)
 }
 
+/// Converts a `%d`, `%i` or `%f` argument to a number. Objects become NaN unconverted, since
+/// converting them would call page-defined `valueOf`, `toString` or `Symbol.toPrimitive`.
+#[expect(unsafe_code)]
+fn substitution_number(cx: &mut JSContext, value: HandleValue) -> Result<f64, ()> {
+    if value.is_object() {
+        return Err(());
+    }
+    let num = unsafe { ToNumber(cx, value) };
+    if num.is_err() {
+        unsafe { JS_ClearPendingException(cx) };
+    }
+    num
+}
+
 fn format_integer_substitution(result: &mut String, num: Result<f64, ()>) {
     match num {
         Ok(n) if n.is_nan() => result.push_str("NaN"),
@@ -775,69 +860,6 @@ fn stringify_handle_values(cx: &mut JSContext, messages: &[HandleValue]) -> DOMS
             .map(|msg| stringify_handle_value(cx, msg)),
         " ",
     ))
-}
-
-/// An implementation of <https://console.spec.whatwg.org/#printer>.
-/// This produces a string version of the argument that is printed to the console.
-fn stringify_debugger_value(value: &DebuggerValue) -> String {
-    match value {
-        DebuggerValue::VoidValue => "undefined".into(),
-        DebuggerValue::NullValue(_) => "null".into(),
-        DebuggerValue::BooleanValue(value) => value.to_string(),
-        DebuggerValue::NumberValue(value) => value.to_string(),
-        DebuggerValue::StringValue(value) => value.clone(),
-        DebuggerValue::ObjectValue { class, preview, .. } => {
-            let Some(preview) = preview else {
-                return class.clone();
-            };
-
-            if preview.kind == "ArrayLike" {
-                let mut items = preview
-                    .items
-                    .as_ref()
-                    .map(|items| {
-                        items
-                            .iter()
-                            .take(MAX_LOG_CHILDREN)
-                            .map(stringify_debugger_value)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if preview
-                    .array_length
-                    .is_some_and(|length| length as usize > items.len())
-                {
-                    items.push("...".into());
-                }
-                return format!("[{}]", itertools::join(items, ", "));
-            }
-
-            let mut properties = preview
-                .own_properties
-                .as_ref()
-                .map(|properties| {
-                    properties
-                        .iter()
-                        .take(MAX_LOG_CHILDREN)
-                        .map(|property| {
-                            format!(
-                                "{}: {}",
-                                property.name,
-                                stringify_debugger_value(&property.value)
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if preview
-                .own_properties_length
-                .is_some_and(|length| length as usize > properties.len())
-            {
-                properties.push("...".into());
-            }
-            format!("{class} {{{}}}", itertools::join(properties, ", "))
-        },
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -964,17 +986,20 @@ impl consoleMethods<crate::DomTypeHolder> for Console {
         _options: Option<*mut jsapi::JSObject>,
     ) {
         // Step 1. Let object be item with generic JavaScript object formatting applied.
-        let argument = console_argument_from_handle_value(cx, item, &mut Vec::new());
-        let prefix = global.current_group_label().unwrap_or_default();
         // Step 2. Perform Printer("dir", « object », options).
-        Console::send_to_devtools(
-            global,
-            Self::build_message(cx, ConsoleLogLevel::Dir, vec![argument.clone()], None),
-        );
+        // As in `method`, only an attached devtools client gets the structured form.
+        if global.devtools_chan().is_some() {
+            let argument = console_argument_from_handle_value(cx, item, &mut Vec::new());
+            Console::send_to_devtools(
+                global,
+                Self::build_message(cx, ConsoleLogLevel::Dir, vec![argument], None),
+            );
+        }
+        let prefix = global.current_group_label().unwrap_or_default();
         Self::send_to_embedder(
             global,
             ConsoleLogLevel::Dir,
-            format!("{prefix}{}", stringify_debugger_value(&argument)),
+            format!("{prefix}{}", stringify_handle_value(cx, item)),
         );
     }
 
