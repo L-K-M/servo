@@ -1033,6 +1033,25 @@ impl Display for FocusSequenceNumber {
 #[derive(Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct JavaScriptEvaluationId(pub usize);
 
+/// An identifier for a particular `WebView::stop_loading` request, used to track the
+/// request from the embedding layer to the `Constellation` and then back.
+#[derive(Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct StopLoadingId(pub usize);
+
+/// An error that can happen when trying to stop the ongoing loads of a `WebView`.
+#[derive(Clone, Debug, Deserialize, EnumMessage, PartialEq, Serialize)]
+pub enum StopLoadingError {
+    /// The `WebView` no longer exists.
+    WebViewClosed,
+    /// The channel to the `Constellation` is closed. This indicates that Servo is
+    /// shutting down and no further requests can be processed.
+    ChannelClosed,
+    /// The `WebView` has no document that remains usable after stopping, for example
+    /// when its only pipeline was closed before an initial empty document could be
+    /// created.
+    DocumentUnavailable,
+}
+
 /// A JavaScript value produced by evaluation of a script.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum JSValue {

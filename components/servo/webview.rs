@@ -15,7 +15,7 @@ use embedder_traits::{
     ContextMenuAction, ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlRequest, Image,
     InputEvent, InputEventAndId, InputEventId, JSValue, JavaScriptEvaluationError, LoadStatus,
     MediaSessionActionType, NewWebViewDetails, ScreenGeometry, ScreenshotCaptureError, Scroll,
-    Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint, WebViewRect,
+    StopLoadingError, Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint, WebViewRect,
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
@@ -553,6 +553,34 @@ impl WebView {
         self.servo()
             .constellation_proxy()
             .send(EmbedderToConstellationMessage::Reload(self.id()))
+    }
+
+    /// Stop the ongoing loads of this [`WebView`]. This is the embedder-level
+    /// equivalent of `Window.stop()`:
+    ///
+    /// - the parser and fetches of the active document and its descendant
+    ///   documents are aborted, while the committed DOM, URL, and session
+    ///   history are preserved;
+    /// - navigations that have not committed yet are cancelled and never enter
+    ///   the session history;
+    /// - navigation requests still waiting for an embedder approval are refused,
+    ///   so responding to them after this call has no effect.
+    ///
+    /// If the initial document has not committed yet, the `WebView` is left with
+    /// an empty initial document and can still be navigated.
+    ///
+    /// `callback` is invoked exactly once on this [`WebView`]'s event loop with
+    /// the [`PipelineId`] of the top-level document that remains usable, or a
+    /// [`StopLoadingError`]. This method returns
+    /// `Err(StopLoadingError::ChannelClosed)` immediately if the request cannot
+    /// be sent, in which case `callback` is never invoked.
+    pub fn stop_loading(
+        &self,
+        callback: impl FnOnce(Result<PipelineId, StopLoadingError>) + 'static,
+    ) -> Result<(), StopLoadingError> {
+        self.servo()
+            .stop_loading_handler_mut()
+            .stop_loading(self.id(), Box::new(callback))
     }
 
     /// Whether or not this [`WebView`] can go backward in its navigation history.
