@@ -489,6 +489,8 @@ impl ServoParser {
         // Step 1.
         self.script_input.replace_with(BufferQueue::default());
         self.network_input.replace_with(BufferQueue::default());
+        // Combray: a PDF viewer document's body is input that bypasses the parser.
+        abort_pdf_viewer_load(cx, &self.document);
 
         // Step 2.
         self.document
@@ -954,13 +956,12 @@ pub(crate) struct ParserContext {
 }
 
 /// Combray: a top-level `application/pdf` response shown in a viewer document. The document
-/// gets the viewer's markup as soon as the headers arrive. The body is kept out of the
-/// parser and, once complete, moves to the blob URL store, where the viewer module reads it.
+/// gets the viewer's markup as soon as the headers arrive. The document keeps the body out
+/// of the parser and, once it is complete, moves it to the blob URL store, where the viewer
+/// module reads it.
 struct PdfViewerLoad {
     /// The URL of the viewer's module script.
     module_url: String,
-    /// The body received so far.
-    body: Vec<u8>,
     /// The largest body the viewer accepts.
     max_bytes: usize,
     /// The body's length, when the response states it without a content coding.
@@ -1012,9 +1013,12 @@ fn set_pdf_viewer_attribute(cx: &mut JSContext, document: &Document, name: &str,
 fn finish_pdf_viewer_load(
     cx: &mut JSContext,
     document: &Document,
-    mut pdf_viewer: PdfViewerLoad,
+    pdf_viewer: PdfViewerLoad,
     status: &Result<(), NetworkError>,
 ) {
+    let Some(mut body) = document.pdf_viewer_body_mut().take() else {
+        return;
+    };
     let window = document.window();
     if !window.is_alive() {
         return;
@@ -1024,21 +1028,36 @@ fn finish_pdf_viewer_load(
     // not: revalidating a cached response merges the new headers, Content-Length included.
     let truncated = pdf_viewer
         .length
-        .is_some_and(|length| (pdf_viewer.body.len() as u64) < length);
+        .is_some_and(|length| (body.len() as u64) < length);
     if status.is_err() || truncated {
         set_pdf_viewer_attribute(cx, document, "data-pdf-state", "failed".to_owned());
         return;
     }
     // The blob store keeps the body for as long as the document lives, so drop the spare
     // capacity it gained while it grew.
-    pdf_viewer.body.shrink_to_fit();
+    body.shrink_to_fit();
 
     let global = window.as_global_scope();
-    let id = global.promote_bytes_to_blob_url(pdf_viewer.body, "application/pdf".to_owned());
+    let id = global.promote_bytes_to_blob_url(body, "application/pdf".to_owned());
     document.set_pdf_viewer_blob(id);
     let src = URL::unicode_serialization_blob_url(global.origin().immutable(), &id);
     set_pdf_viewer_attribute(cx, document, "data-pdf-src", src);
     set_pdf_viewer_attribute(cx, document, "data-pdf-state", "ready".to_owned());
+}
+
+/// Combray: end the load of a PDF viewer document whose parser is aborted while the body
+/// still arrives, as by Stop, `window.stop()` or navigating away. Stop keeps the document,
+/// so the viewer module must learn that the body will not come. The navigation fetch is
+/// cancelled now rather than when the next chunk reaches the aborted parser: the network
+/// layer then drops that chunk and closes the connection, instead of forwarding it and
+/// waiting for another, which a stalled server may never send. A viewer whose load already
+/// ended keeps its state.
+fn abort_pdf_viewer_load(cx: &mut JSContext, document: &Document) {
+    if document.pdf_viewer_body_mut().take().is_none() {
+        return;
+    }
+    document.cancel_navigation_fetch();
+    set_pdf_viewer_attribute(cx, document, "data-pdf-state", "failed".to_owned());
 }
 
 impl ParserContext {
@@ -1149,13 +1168,8 @@ impl ParserContext {
             .filter(|headers| !headers.contains_key(CONTENT_ENCODING))
             .and_then(|headers| headers.typed_get::<ContentLength>())
             .map(|ContentLength(length)| length);
-        // Reserve the whole body up front, unless it will be refused.
-        let capacity = length
-            .filter(|length| *length <= max_bytes as u64)
-            .map_or(0, |length| length as usize);
         let pdf_viewer = PdfViewerLoad {
             module_url,
-            body: Vec::with_capacity(capacity),
             max_bytes,
             length,
         };
@@ -1450,17 +1464,23 @@ impl ParserContext {
         parser.document.set_quirks_mode(ServoQuirksMode::NoQuirks);
         if pdf_viewer.is_too_large_at_headers() {
             self.refuse_too_large_pdf(cx, parser);
+            return;
         }
+        // Reserve the whole body up front.
+        let capacity = pdf_viewer.length.map_or(0, |length| length as usize);
+        *parser.document.pdf_viewer_body_mut() = Some(Vec::with_capacity(capacity));
     }
 
     /// Combray: keep a chunk of the viewer's PDF body, or refuse the body once it grows
     /// past the largest the viewer accepts.
     fn receive_pdf_viewer_chunk(&mut self, cx: &mut JSContext, parser: &ServoParser, chunk: &[u8]) {
-        let Some(pdf_viewer) = self.pdf_viewer.as_mut() else {
+        let Some(pdf_viewer) = self.pdf_viewer.as_ref() else {
             return;
         };
-        if pdf_viewer.body.len().saturating_add(chunk.len()) <= pdf_viewer.max_bytes {
-            pdf_viewer.body.extend_from_slice(chunk);
+        if let Some(body) = parser.document.pdf_viewer_body_mut().as_mut() &&
+            body.len().saturating_add(chunk.len()) <= pdf_viewer.max_bytes
+        {
+            body.extend_from_slice(chunk);
             return;
         }
         let mut realm = enter_auto_realm(cx, &*parser.document);
@@ -1476,8 +1496,8 @@ impl ParserContext {
         };
         let document = &parser.document;
         document.cancel_navigation_fetch();
+        *document.pdf_viewer_body_mut() = None;
         let limit = pdf_viewer.max_bytes.to_string();
-        drop(pdf_viewer);
         set_pdf_viewer_attribute(cx, document, "data-pdf-limit", limit);
         set_pdf_viewer_attribute(cx, document, "data-pdf-state", "too-large".to_owned());
         // Later chunks and the end of the response are then ignored.
@@ -1826,13 +1846,6 @@ impl ParserContext {
             return;
         };
         if parser.aborted.get() {
-            // Combray: an aborted viewer, such as one navigated away from, no longer wants
-            // its PDF body. Drop it and cancel the navigation fetch, or the network layer
-            // keeps buffering the rest of the body, past the viewer's limit.
-            if self.pdf_viewer.take().is_some() {
-                document.cancel_navigation_fetch();
-                self.is_synthesized_document = true;
-            }
             return;
         }
         // Combray: the viewer's PDF body is kept for the viewer module, not parsed.

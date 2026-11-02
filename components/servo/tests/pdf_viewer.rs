@@ -38,8 +38,8 @@ use servo::protocol_handler::{
     ResourceFetchTiming, Response, ResponseBody,
 };
 use servo::{
-    CreateNewWebViewRequest, JSValue, LoadStatus, MouseButton, RenderingContext, WebView,
-    WebViewBuilder, WebViewDelegate,
+    CreateNewWebViewRequest, JSValue, LoadStatus, MouseButton, PipelineId, RenderingContext,
+    WebView, WebViewBuilder, WebViewDelegate,
 };
 use servo_base::generic_channel::GenericCallback;
 use servo_config::prefs::{self, Preferences};
@@ -366,6 +366,37 @@ impl PdfTest {
         self.evaluate_in(&self.webview, script)
     }
 
+    /// Like `evaluate`, but without waiting for the load to complete, which a stopped load
+    /// never does.
+    fn evaluate_now(&self, script: &str) -> String {
+        let result = Rc::new(RefCell::new(None));
+        let callback_result = result.clone();
+        self.webview.evaluate_javascript(script, move |value| {
+            *callback_result.borrow_mut() = Some(value);
+        });
+        self.spin_until(&format!("the result of {script:?}"), || {
+            result.borrow().is_some()
+        });
+        match result.borrow_mut().take().unwrap() {
+            Ok(JSValue::String(value)) => value,
+            other => panic!("Expected a string from {script:?}, got {other:?}"),
+        }
+    }
+
+    /// Stop loading, as the embedder's Stop button does, and return the document Stop kept.
+    fn stop_loading(&self) -> PipelineId {
+        let result = Rc::new(RefCell::new(None));
+        let callback_result = result.clone();
+        self.webview
+            .stop_loading(move |value| {
+                *callback_result.borrow_mut() = Some(value);
+            })
+            .expect("Should be able to request Stop");
+        self.spin_until("Stop to complete", || result.borrow().is_some());
+        let kept = result.borrow_mut().take().unwrap();
+        kept.expect("Stop should keep a document")
+    }
+
     /// Wait for a viewer module to report for the document at `path`, and return the report.
     fn wait_for_report(&self, webview: &WebView, path: &str) -> String {
         let prefix = format!("report:{path}:");
@@ -471,6 +502,8 @@ struct BodyProbe {
     dropped: AtomicBool,
     /// The body stops after this many bytes, or before it ends, until `release`.
     hold_at: Option<usize>,
+    /// The body stops for good after this many bytes, and a chunk ends there.
+    stall_at: Option<usize>,
     released: AtomicBool,
     waker: Mutex<Option<Waker>>,
 }
@@ -480,6 +513,14 @@ impl BodyProbe {
         Self {
             hold_at: Some(hold_at),
             ..Self::default()
+        }
+    }
+
+    /// Stop the body for good after `stall_at` bytes.
+    fn stalling_at(self, stall_at: usize) -> Self {
+        Self {
+            stall_at: Some(stall_at),
+            ..self
         }
     }
 
@@ -494,6 +535,10 @@ impl BodyProbe {
     /// Whether the body must wait at `position`. The waker is stored before the second
     /// check, so a release in between is not lost.
     fn holds(&self, position: usize, context: &Context<'_>) -> bool {
+        // Nothing wakes a stalled body.
+        if self.stall_at.is_some_and(|stall_at| position >= stall_at) {
+            return true;
+        }
         if self.hold_at.is_none_or(|hold_at| position < hold_at) {
             return false;
         }
@@ -527,7 +572,9 @@ impl Body for PatternBody {
         if start >= self.length {
             return Poll::Ready(None);
         }
-        let end = (start + 64 * 1024).min(self.length);
+        let end = (start + 64 * 1024)
+            .min(self.length)
+            .min(self.probe.stall_at.unwrap_or(usize::MAX));
         self.probe.produced.store(end, Ordering::SeqCst);
         let chunk: Vec<u8> = (start..end).map(pdf_byte).collect();
         Poll::Ready(Some(Ok(Frame::data(Bytes::from(chunk)))))
@@ -877,7 +924,7 @@ pdf_viewer_test! {
             test.delegate.load_complete.get() && test.webview.url().as_ref() == Some(&other_url)
         });
 
-        // The script thread can only cancel when the next chunk arrives.
+        // The network layer notices the cancellation at the next chunk.
         probe.release();
         test.spin_until("the server to drop the body", || {
             probe.dropped.load(Ordering::SeqCst)
@@ -889,6 +936,71 @@ pdf_viewer_test! {
             "The server produced {produced} of {LARGE_PDF_LENGTH} bytes"
         );
         assert_eq!(log.count("/large.pdf"), 1);
+        server.close();
+    }
+}
+
+pdf_viewer_test! {
+    /// Stop while the body still arrives keeps the viewer document, which then reports
+    /// `failed`, and cancels the navigation fetch at once rather than when the next chunk
+    /// reaches the aborted parser. Stop leaves a viewer that finished loading as it is.
+    fn test_pdf_viewer_stop_during_body_fails_and_cancels_fetch() {
+        const HOLD_AT: usize = 128 * 1024;
+        // After the release, the server sends one more byte and then stalls for good. A
+        // fetch cancelled before that byte arrives closes the connection on it; one that is
+        // cancelled only once the byte reaches the script thread waits for the next byte.
+        let probe = Arc::new(BodyProbe::holding_at(HOLD_AT).stalling_at(HOLD_AT + 1));
+        let server_probe = probe.clone();
+        let module = "report(root.dataset.pdfState); settled().then(report);";
+        let test = PdfTest::new(ViewerFiles::new(module), |_| {});
+        let (server, base, log) = start_server(move |path, response| match path {
+            "/held.pdf" => serve_streamed_pdf(response, PDF_LENGTH, false, &server_probe),
+            _ => serve_pdf(response, PDF_LENGTH),
+        });
+
+        let held_url = base.join("/held.pdf").unwrap();
+        test.webview.load(held_url.clone());
+        assert_eq!(test.wait_for_report(&test.webview, "/held.pdf"), "loading");
+        test.spin_until("the server to hold the body", || {
+            probe.produced.load(Ordering::SeqCst) >= HOLD_AT
+        });
+        test.spin_until("the viewer's URL", || {
+            test.webview.url().as_ref() == Some(&held_url)
+        });
+        let viewer = test.webview.active_document_id();
+
+        assert_eq!(Some(test.stop_loading()), viewer);
+        assert_eq!(test.webview.active_document_id(), viewer);
+        assert_eq!(test.webview.url().as_ref(), Some(&held_url));
+        test.spin_until("the viewer to report failed", || {
+            test.webview.page_title().as_deref() == Some("report:/held.pdf:failed")
+        });
+        assert_eq!(test.evaluate_now(STATE_SCRIPT), r#"["failed","",null,null]"#);
+        assert_eq!(
+            test.evaluate_now("document.querySelector('script[type=module]').src"),
+            format!("{VIEWER_ORIGIN}viewer.mjs")
+        );
+
+        probe.release();
+        test.spin_until("the server to drop the body", || {
+            probe.dropped.load(Ordering::SeqCst)
+        });
+        assert_eq!(probe.produced.load(Ordering::SeqCst), HOLD_AT + 1);
+        assert_eq!(log.count("/held.pdf"), 1);
+        assert_eq!(test.blob_store_bytes(), 0);
+
+        // A viewer that finished loading keeps its state and its body.
+        test.load(&base.join("/doc.pdf").unwrap());
+        test.spin_until("the viewer to report ready", || {
+            test.webview.page_title().as_deref() == Some("report:/doc.pdf:ready")
+        });
+        let ready_state = test.evaluate(STATE_SCRIPT);
+        let held = test.blob_store_bytes();
+        assert!(held >= PDF_LENGTH, "The blob store holds {held} bytes");
+        assert_eq!(Some(test.stop_loading()), test.webview.active_document_id());
+        assert_eq!(test.evaluate_now(STATE_SCRIPT), ready_state);
+        assert_eq!(test.blob_store_bytes(), held);
+        assert_eq!(log.count("/doc.pdf"), 1);
         server.close();
     }
 }
