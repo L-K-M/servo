@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The .nonce IDL property authorizes inline style and script elements</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/urls-and-fetching.html#nonce-attributes">
+<link rel="help" href="https://w3c.github.io/webappsec-csp/#match-element-to-source-list">
+<script src="/resources/testharness.js" nonce="combray-test-nonce"></script>
+<script src="/resources/testharnessreport.js" nonce="combray-test-nonce"></script>
+<body>
+<script nonce="combray-test-nonce">
+const NONCE = "combray-test-nonce";
+const WRONG_NONCE = "wrong-nonce";
+const DELTA = "13px";
+
+let probeCount = 0;
+function newProbe(t) {
+  const probe = document.createElement("div");
+  probe.id = "csp-nonce-probe-" + ++probeCount;
+  document.body.appendChild(probe);
+  t.add_cleanup(() => probe.remove());
+  return probe;
+}
+
+function marginRule(id) {
+  return `#${id} { margin-top: ${DELTA}; }`;
+}
+
+test(t => {
+  const probe = newProbe(t);
+  const style = document.createElement("style");
+  style.nonce = NONCE;
+  // The IDL setter writes only the internal nonce, not the content attribute.
+  assert_equals(style.getAttribute("nonce"), null, "nonce IDL set creates no attribute");
+  style.textContent = marginRule(probe.id);
+  t.add_cleanup(() => style.remove());
+  document.head.appendChild(style);
+  assert_equals(getComputedStyle(probe).marginTop, DELTA);
+}, "style.nonce set before insertion applies the sheet");
+
+test(t => {
+  const probe = newProbe(t);
+  const style = document.createElement("style");
+  document.head.appendChild(style);
+  t.add_cleanup(() => style.remove());
+  style.nonce = NONCE;
+  assert_equals(style.getAttribute("nonce"), null, "nonce IDL set creates no attribute");
+  style.textContent = marginRule(probe.id);
+  assert_equals(getComputedStyle(probe).marginTop, DELTA);
+}, "style.nonce set after insertion but before text applies the sheet");
+
+test(t => {
+  const probe = newProbe(t);
+  const style = document.createElement("style");
+  style.textContent = marginRule(probe.id);
+  t.add_cleanup(() => style.remove());
+  document.head.appendChild(style);
+  assert_equals(getComputedStyle(probe).marginTop, "0px");
+}, "style element without a nonce stays blocked");
+
+test(t => {
+  const probe = newProbe(t);
+  const style = document.createElement("style");
+  style.nonce = WRONG_NONCE;
+  assert_equals(style.getAttribute("nonce"), null, "nonce IDL set creates no attribute");
+  style.textContent = marginRule(probe.id);
+  t.add_cleanup(() => style.remove());
+  document.head.appendChild(style);
+  assert_equals(getComputedStyle(probe).marginTop, "0px");
+}, "style element with a wrong nonce property stays blocked");
+
+test(t => {
+  const probe = newProbe(t);
+  const style = document.createElement("style");
+  style.setAttribute("nonce", NONCE);
+  style.textContent = marginRule(probe.id);
+  t.add_cleanup(() => style.remove());
+  document.head.appendChild(style);
+  assert_equals(getComputedStyle(probe).marginTop, DELTA);
+}, "style element with a matching nonce attribute applies the sheet");
+
+test(t => {
+  const host = newProbe(t);
+  host.nonce = NONCE;
+  assert_equals(host.getAttribute("nonce"), null, "nonce IDL set creates no attribute");
+  // A nonce never authorizes a style attribute.
+  host.setAttribute("style", `margin-top: ${DELTA}`);
+  assert_equals(getComputedStyle(host).marginTop, "0px");
+}, "a nonce on an element does not authorize its style attribute");
+
+test(t => {
+  const marker = "__inline_nonce_property_match";
+  const script = document.createElement("script");
+  script.nonce = NONCE;
+  assert_equals(script.getAttribute("nonce"), null, "nonce IDL set creates no attribute");
+  script.textContent = `window.${marker} = true;`;
+  t.add_cleanup(() => { script.remove(); delete window[marker]; });
+  document.head.appendChild(script);
+  assert_equals(window[marker], true);
+}, "script.nonce executes a dynamically created inline script");
+
+test(t => {
+  const marker = "__inline_nonce_property_wrong";
+  const script = document.createElement("script");
+  script.nonce = WRONG_NONCE;
+  assert_equals(script.getAttribute("nonce"), null, "nonce IDL set creates no attribute");
+  script.textContent = `window.${marker} = true;`;
+  t.add_cleanup(() => { script.remove(); delete window[marker]; });
+  document.head.appendChild(script);
+  assert_equals(window[marker], undefined);
+}, "script.nonce with a wrong value stays blocked");
+</script>

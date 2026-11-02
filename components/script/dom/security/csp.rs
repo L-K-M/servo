@@ -13,6 +13,7 @@ use content_security_policy::{
     Origin, ParserMetadata, PolicyDisposition, PolicySource, Request, Response as CspResponse,
     ViolationResource,
 };
+use html5ever::local_name;
 use http::header::{HeaderMap, HeaderValue, ValueIter};
 use hyper_serde::Serde;
 use js::context::JSContext;
@@ -262,7 +263,8 @@ impl CspReporting for Option<CspList> {
             return false;
         };
         let element = CspElement {
-            nonce: if el.is_nonceable() {
+            // IDL assignments store the nonce without creating a content attribute.
+            nonce: if !el.has_attribute(&local_name!("nonce")) || el.is_nonceable() {
                 Some(Cow::Owned(el.nonce_value().trim().to_owned()))
             } else {
                 None
