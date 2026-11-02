@@ -1046,7 +1046,8 @@ fn finish_pdf_viewer_load(
 }
 
 /// Combray: end the load of a PDF viewer document whose parser is aborted while the body
-/// still arrives, as by Stop, `window.stop()` or navigating away. Stop keeps the document,
+/// still arrives, as by Stop, `window.stop()` or a navigation the page starts (a load the
+/// embedder starts does not abort the document it leaves). Stop keeps the document,
 /// so the viewer module must learn that the body will not come. The navigation fetch is
 /// cancelled now rather than when the next chunk reaches the aborted parser: the network
 /// layer then drops that chunk and closes the connection, instead of forwarding it and

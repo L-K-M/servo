@@ -894,9 +894,10 @@ pdf_viewer_test! {
 }
 
 pdf_viewer_test! {
-    /// Leaving a viewer while its body is still arriving aborts its parser. The viewer then
-    /// drops the body and cancels the navigation fetch, which would otherwise keep
-    /// downloading the rest with nobody reading it.
+    /// A navigation that the viewer page starts while its body is still arriving aborts its
+    /// parser; a load the embedder starts does not. The viewer then drops the body and
+    /// cancels the navigation fetch, which would otherwise keep downloading the rest with
+    /// nobody reading it.
     fn test_pdf_viewer_aborted_load_cancels_fetch() {
         const HOLD_AT: usize = 1024 * 1024;
         let probe = Arc::new(BodyProbe::holding_at(HOLD_AT));
@@ -914,8 +915,8 @@ pdf_viewer_test! {
             probe.produced.load(Ordering::SeqCst) >= HOLD_AT
         });
 
-        // A navigation aborts the document it leaves. The test helper would wait for the
-        // viewer to finish loading, which it cannot while the body is held back.
+        // A navigation the page starts aborts the document it leaves. The test helper would
+        // wait for the viewer to finish loading, which it cannot while the body is held back.
         let other_url = base.join("/other.html").unwrap();
         test.delegate.load_complete.set(false);
         test.webview
