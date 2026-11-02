@@ -134,13 +134,12 @@ partial interface Window {
   [Replaceable] readonly attribute double devicePixelRatio;
 };
 
-// WebDriver extensions
+// WebDriver extensions, exposed only while WebDriver needs them
 partial interface Window {
-  // Shouldn't be public, but just to make things work for now
-  Element? webdriverElement(DOMString id);
-  WindowProxy? webdriverFrame(DOMString id);
-  WindowProxy webdriverWindow(DOMString id);
-  ShadowRoot? webdriverShadowRoot(DOMString id);
+  [Pref="dom_testing_webdriver_helpers_enabled"] Element? webdriverElement(DOMString id);
+  [Pref="dom_testing_webdriver_helpers_enabled"] WindowProxy? webdriverFrame(DOMString id);
+  [Pref="dom_testing_webdriver_helpers_enabled"] WindowProxy webdriverWindow(DOMString id);
+  [Pref="dom_testing_webdriver_helpers_enabled"] ShadowRoot? webdriverShadowRoot(DOMString id);
 };
 
 // https://html.spec.whatwg.org/multipage/#dom-sessionstorage

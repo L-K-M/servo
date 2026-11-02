@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebDriver helper methods stay off the Window unless enabled</title>
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+// Servo's WebDriver server passes element, frame, window and shadow root
+// arguments to scripts through these Window methods. Pages scan the global
+// for such names to detect automation, so the methods must stay absent
+// unless their preference is set. This test runs with it unset.
+for (const name of ["webdriverElement", "webdriverFrame", "webdriverWindow",
+                    "webdriverShadowRoot"]) {
+  test(() => {
+    assert_false(name in window, "on the global");
+    assert_false(name in Window.prototype, "on Window.prototype");
+  }, `${name} is absent`);
+}
+
+test(() => {
+  const names = [];
+  for (const name in window) {
+    if (/webdriver/i.test(name)) names.push(name);
+  }
+  assert_array_equals(names, []);
+}, "no enumerable global property mentions WebDriver");
+</script>

@@ -594,6 +594,12 @@ fn update_preferences_from_command_line_arguments(
         }
     }
 
+    // WebDriver passes element, frame, window and shadow root arguments to scripts through
+    // Window methods. Set before `--pref`, so the command line can still hide them.
+    if cmd_args.webdriver_port.is_some() {
+        preferences.dom_testing_webdriver_helpers_enabled = true;
+    }
+
     for pref in &cmd_args.pref {
         let split: Vec<&str> = pref.splitn(2, '=').collect();
         let pref_name = split[0];
