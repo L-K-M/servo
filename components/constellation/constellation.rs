@@ -4638,6 +4638,19 @@ where
             TargetSnapshotParams::default(),
             None,
         );
+
+        if self.pipelines.contains_key(&replacement_pipeline_id) {
+            return;
+        }
+
+        // A failed spawn has no exit callback; finish its pending request here.
+        if let Some(webview) = self.webviews.get_mut(&webview_id) {
+            webview.remove_pending_change_for_pipeline(replacement_pipeline_id);
+        }
+        self.complete_stop_loading_for_pipeline(
+            replacement_pipeline_id,
+            StopLoadingPipelineState::Discarded,
+        );
     }
 
     fn send_stop_loading_result(
