@@ -50,6 +50,40 @@ fn stop_loading(servo_test: &ServoTest, webview: &WebView) -> Result<PipelineId,
     result.borrow_mut().take().unwrap()
 }
 
+/// A completion callback may call the same API without retaining its registry borrow.
+#[test]
+fn test_stop_loading_callback_can_request_another_stop() {
+    let servo_test = ServoTest::new();
+    let (server, url) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"ready".to_vec());
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url.as_url().clone())
+        .build();
+    servo_test.spin(move || !delegate.load_status_changed.get());
+
+    let completions = Rc::new(Cell::new(0));
+    let callback_completions = completions.clone();
+    let callback_webview = webview.clone();
+    webview
+        .stop_loading(move |result| {
+            assert!(result.is_ok());
+            callback_completions.set(callback_completions.get() + 1);
+            let nested_completions = callback_completions.clone();
+            callback_webview
+                .stop_loading(move |result| {
+                    assert!(result.is_ok());
+                    nested_completions.set(nested_completions.get() + 1);
+                })
+                .expect("The callback may request another stop");
+        })
+        .expect("The first stop should be accepted");
+    servo_test.spin(move || completions.get() < 2);
+    server.close();
+}
+
 /// A partially loaded document must survive `stop_loading`: the parser is
 /// aborted, its pending fetch is cancelled, and delivering the blocked
 /// resource later must not execute it.
