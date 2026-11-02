@@ -11069,6 +11069,10 @@
      }
     },
     "csp": {
+     "inline-nonce-property.html.headers": [
+      "42297ea81274f1791e8d5b2babb947ce90a2c7ef",
+      []
+     ],
      "support": {
       "nonce-should-be-blocked.js": [
        "501f7a92088ec4dfd5197c5378e207d9007abe2f",
@@ -14012,6 +14016,13 @@
       {}
      ]
     ],
+    "console-runs-no-page-script.html": [
+     "07d175214a5e98e3ebf87435c30ef6b58eaa6374",
+     [
+      null,
+      {}
+     ]
+    ],
     "console-table-dirxml.html": [
      "7d7f4e117886e668a272a3e84f1156956e679c63",
      [
@@ -14043,6 +14054,13 @@
      ]
     },
     "csp": {
+     "inline-nonce-property.html": [
+      "e6b6d14e1ca1de1f5811eea0a4b2ee7b9c788cfa",
+      [
+       null,
+       {}
+      ]
+     ],
      "nonce-external-script-malformed-blocked.html": [
       "96b8d0ddb3d3945d2991fa873de0afb299b0e3b8",
       [
@@ -14840,6 +14858,13 @@
       {}
      ]
     ],
+    "message-port-event-origin.html": [
+     "daca2e4787fc3b8acddab5dc96d1dba59ba29fdd",
+     [
+      null,
+      {}
+     ]
+    ],
     "microdata": {
      "dup-prop-type-test.html": [
       "23afa74863c8b70ac627eafc2af39059e7039727",
@@ -15469,6 +15494,13 @@
     ],
     "weakref.html": [
      "091ff3e67e2999c54fc6e9ee95f7fd331f94501a",
+     [
+      null,
+      {}
+     ]
+    ],
+    "webdriver-helpers-hidden.html": [
+     "ab19094fce333d94cfb5c59816eaf95b406a2257",
      [
       null,
       {}

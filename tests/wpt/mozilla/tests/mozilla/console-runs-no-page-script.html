@@ -1,0 +1,177 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Console methods run no page script while formatting their arguments</title>
+<link rel="help" href="https://console.spec.whatwg.org/#printer">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+// Browsers format console arguments only for an attached devtools client, so
+// a page cannot observe its own logging. If formatting called a getter, proxy
+// trap or conversion method, the page could tell that its output is produced.
+
+function trap(calls, name) {
+  return () => {
+    calls.push(name);
+    return "";
+  };
+}
+
+function withGetter(calls) {
+  const object = {};
+  Object.defineProperty(object, "x", { get: trap(calls, "getter"), enumerable: true });
+  return object;
+}
+
+function trappingProxy(calls) {
+  const traps = {};
+  for (const name of ["get", "has", "ownKeys", "getOwnPropertyDescriptor",
+                      "getPrototypeOf", "defineProperty", "isExtensible"]) {
+    traps[name] = (target, ...rest) => {
+      calls.push(`proxy ${name}`);
+      return Reflect[name](target, ...rest);
+    };
+  }
+  return new Proxy({}, traps);
+}
+
+function test_silent(log, description) {
+  test(() => {
+    const calls = [];
+    log(calls);
+    assert_array_equals(calls, []);
+  }, description);
+}
+
+test_silent(calls => console.log(withGetter(calls)),
+            "an object's getter");
+
+test_silent(calls => {
+  const array = [];
+  Object.defineProperty(array, 0, { get: trap(calls, "index getter"), enumerable: true });
+  console.log(array);
+}, "an array's index getter");
+
+test_silent(calls => console.log({ nested: { deeper: withGetter(calls) } }),
+            "a nested object's getter");
+
+test_silent(calls => console.log(trappingProxy(calls)),
+            "a proxy's traps");
+
+test_silent(calls => console.log({ inner: trappingProxy(calls) }),
+            "a nested proxy's traps");
+
+test_silent(calls => {
+  const error = new Error("message");
+  Object.defineProperty(error, "message", { get: trap(calls, "message getter") });
+  Object.defineProperty(error, "name", { get: trap(calls, "name getter") });
+  Object.defineProperty(error, "stack", { get: trap(calls, "stack getter") });
+  console.log(error);
+}, "an error's getters");
+
+test_silent(calls => {
+  const error = new TypeError("message");
+  Object.setPrototypeOf(error, trappingProxy(calls));
+  console.log(error);
+}, "a proxy in an error's prototype chain");
+
+test_silent(calls => {
+  const array = [];
+  Object.defineProperty(array, 0, { get: trap(calls, "index getter"), enumerable: true });
+  const error = new Error("message");
+  Object.defineProperty(error, "message", { get: trap(calls, "message getter") });
+  const boxed = Object(10n);
+  boxed.proxy = trappingProxy(calls);
+  boxed.array = array;
+  boxed.error = error;
+  console.log(boxed);
+}, "the properties of a boxed BigInt");
+
+test_silent(calls => {
+  for (const boxed of [Object(1), Object("s"), Object(true), new Date(0)]) {
+    Object.defineProperty(boxed, "x", { get: trap(calls, "getter"), enumerable: true });
+    boxed.valueOf = trap(calls, "valueOf");
+    boxed.toString = trap(calls, "toString");
+    console.log(boxed);
+  }
+}, "boxed primitives and dates");
+
+test_silent(calls => {
+  const regexp = /a+b/g;
+  Object.defineProperty(regexp, "source", { get: trap(calls, "source getter") });
+  Object.defineProperty(regexp, "flags", { get: trap(calls, "flags getter") });
+  regexp.toString = trap(calls, "toString");
+  console.log(regexp);
+}, "a regular expression's getters and toString");
+
+test_silent(calls => {
+  const element = document.createElement("div");
+  element.toString = trap(calls, "toString");
+  element.toJSON = trap(calls, "toJSON");
+  Object.defineProperty(element, Symbol.toStringTag, { get: trap(calls, "toStringTag getter") });
+  console.log(element);
+}, "a DOM object's toString, toJSON and toStringTag");
+
+test_silent(calls => {
+  const list = document.querySelectorAll("nothing");
+  Object.defineProperty(list, "length", { get: trap(calls, "length getter"), enumerable: true });
+  console.log(list);
+}, "a DOM proxy's expando getter");
+
+test_silent(calls => {
+  const iteratorPrototype = Object.getPrototypeOf(new Map().entries());
+  const next = iteratorPrototype.next;
+  iteratorPrototype.next = function () {
+    calls.push("Map iterator next");
+    return next.call(this);
+  };
+  try {
+    console.log(new Map([[1, 2]]));
+  } finally {
+    iteratorPrototype.next = next;
+  }
+}, "a Map's iterator");
+
+test_silent(calls => {
+  console.log("%o %O %s", withGetter(calls), withGetter(calls), withGetter(calls));
+}, "getters behind %o, %O and %s");
+
+test_silent(calls => {
+  const number = {
+    valueOf: trap(calls, "valueOf"),
+    toString: trap(calls, "toString"),
+    [Symbol.toPrimitive]: trap(calls, "toPrimitive"),
+  };
+  console.log("%d %i %f", number, number, number);
+}, "conversions behind %d, %i and %f");
+
+for (const method of ["debug", "info", "warn", "error", "trace", "dirxml"]) {
+  test_silent(calls => console[method](withGetter(calls), trappingProxy(calls)),
+              `console.${method}`);
+}
+
+// The second argument of console.table is converted to a sequence by its IDL
+// signature, which may run page script, so only the data argument is checked.
+test_silent(calls => {
+  console.table(withGetter(calls));
+  console.table(trappingProxy(calls));
+}, "console.table");
+
+test_silent(calls => console.dir(trappingProxy(calls)),
+            "console.dir with a proxy");
+
+test_silent(calls => console.assert(false, withGetter(calls), trappingProxy(calls)),
+            "console.assert");
+
+test_silent(calls => {
+  console.group(withGetter(calls));
+  console.groupEnd();
+  console.groupCollapsed(trappingProxy(calls));
+  console.groupEnd();
+}, "console.group and console.groupCollapsed");
+
+test_silent(calls => {
+  console.time("console-runs-no-page-script");
+  console.timeLog("console-runs-no-page-script", withGetter(calls), trappingProxy(calls));
+  console.timeEnd("console-runs-no-page-script");
+}, "console.timeLog");
+</script>
