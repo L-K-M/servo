@@ -39,7 +39,7 @@ impl ConstellationProxy {
     }
 
     #[expect(clippy::result_large_err)]
-    fn try_send(
+    pub(crate) fn try_send(
         &self,
         msg: EmbedderToConstellationMessage,
     ) -> Result<(), SendError<EmbedderToConstellationMessage>> {

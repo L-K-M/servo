@@ -163,6 +163,10 @@ pub enum ScriptThreadMessage {
     /// used if a scheduled navigated was refused by the embedder.
     /// <https://html.spec.whatwg.org/multipage/#delaying-load-events-mode>
     StopDelayingLoadEventsMode(PipelineId),
+    /// Stop loading the document of the given pipeline, aborting its parser
+    /// and ongoing fetches as well as those of its descendant documents.
+    /// <https://html.spec.whatwg.org/multipage/#nav-stop>
+    StopLoading(PipelineId),
     /// Window resized.  Sends a DOM event eventually, but first we combine events.
     Resize(PipelineId, ViewportDetails, WindowSizeType),
     /// Inform the ScriptThread that some aspect of the WebViewState has changed.

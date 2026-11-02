@@ -1736,6 +1736,9 @@ impl ScriptThread {
             ScriptThreadMessage::StopDelayingLoadEventsMode(pipeline_id) => {
                 self.handle_stop_delaying_load_events_mode(pipeline_id)
             },
+            ScriptThreadMessage::StopLoading(pipeline_id) => {
+                self.handle_stop_loading_msg(pipeline_id, cx)
+            },
             ScriptThreadMessage::NavigateIframe(
                 parent_pipeline_id,
                 browsing_context_id,
@@ -3028,6 +3031,14 @@ impl ScriptThread {
                 // FIXME(#22512): enqueues a task; unnecessary delay.
                 window.post_message(origin, source_origin, &source, data)
             },
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#nav-stop>
+    fn handle_stop_loading_msg(&self, pipeline_id: PipelineId, cx: &mut js::context::JSContext) {
+        let window = self.documents.borrow().find_window(pipeline_id);
+        if let Some(window) = window {
+            window.stop_loading(cx);
         }
     }
 

@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crossbeam_channel::Sender;
-use embedder_traits::{EventLoopWaker, ShutdownState};
+use embedder_traits::{EventLoopWaker, InputEventResult, ShutdownState};
 use paint_api::{PaintMessage, PaintProxy};
 use profile_traits::{mem, time};
 use servo_base::generic_channel::RoutedReceiver;
@@ -33,6 +33,13 @@ mod web_content_animation;
 #[cfg(feature = "webgl")]
 mod webrender_external_images;
 mod webview_renderer;
+
+/// Input forwarded to script, or completed locally without a DOM dispatch.
+#[derive(Clone, Copy)]
+pub enum InputEventDispatch {
+    Forwarded,
+    Handled(InputEventResult),
+}
 
 /// Data used to initialize the `Paint` subsystem.
 pub struct InitialPaintState {

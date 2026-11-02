@@ -58,7 +58,6 @@ use webrender_api::{
 };
 use wr_malloc_size_of::MallocSizeOfOps;
 
-use crate::Paint;
 use crate::paint::{RepaintReason, WebRenderDebugOption};
 use crate::refresh_driver::{AnimationRefreshDriverObserver, BaseRefreshDriver};
 use crate::render_notifier::RenderNotifier;
@@ -67,6 +66,7 @@ use crate::web_content_animation::WebContentAnimator;
 #[cfg(feature = "webgl")]
 use crate::webrender_external_images::WebGLExternalImages;
 use crate::webview_renderer::{PinchZoomResult, ScrollResult, UnknownWebView, WebViewRenderer};
+use crate::{InputEventDispatch, Paint};
 
 /// A [`Painter`] is responsible for all of the painting to a particular [`RenderingContext`].
 /// This holds all of the WebRender specific data structures and state necessary for painting
@@ -1379,28 +1379,27 @@ impl Painter {
         &mut self,
         webview_id: WebViewId,
         event: InputEventAndId,
-    ) -> bool {
-        self.webview_renderers
-            .get_mut(&webview_id)
-            .is_some_and(|webview_renderer| {
-                match &event.event {
-                    InputEvent::MouseMove(event) => {
-                        // We only track the last mouse move position for non-touch events.
-                        if !event.is_compatibility_event_for_touch {
-                            let event_point = event
-                                .point
-                                .as_device_point(webview_renderer.device_pixels_per_page_pixel());
-                            self.last_mouse_move_position = Some(event_point);
-                        }
-                    },
-                    InputEvent::MouseLeftViewport(_) => {
-                        self.last_mouse_move_position = None;
-                    },
-                    _ => {},
+    ) -> InputEventDispatch {
+        let Some(webview_renderer) = self.webview_renderers.get_mut(&webview_id) else {
+            return InputEventDispatch::Handled(InputEventResult::DispatchFailed);
+        };
+        match &event.event {
+            InputEvent::MouseMove(event) => {
+                // We only track the last mouse move position for non-touch events.
+                if !event.is_compatibility_event_for_touch {
+                    let event_point = event
+                        .point
+                        .as_device_point(webview_renderer.device_pixels_per_page_pixel());
+                    self.last_mouse_move_position = Some(event_point);
                 }
+            },
+            InputEvent::MouseLeftViewport(_) => {
+                self.last_mouse_move_position = None;
+            },
+            _ => {},
+        }
 
-                webview_renderer.notify_input_event(&self.webrender_api, &self.needs_repaint, event)
-            })
+        webview_renderer.notify_input_event(&self.webrender_api, &self.needs_repaint, event)
     }
 
     pub(crate) fn notify_scroll_event(
