@@ -108,6 +108,7 @@ use crate::proxies::ConstellationProxy;
 use crate::responders::ServoErrorChannel;
 use crate::servo_delegate::{DefaultServoDelegate, ServoDelegate, ServoError};
 use crate::site_data_manager::{CookieOperationResponse, SiteDataManager};
+use crate::stop_loading_handler::StopLoadingHandler;
 use crate::webview::{MINIMUM_WEBVIEW_SIZE, WebView, WebViewInner};
 use crate::webview_delegate::{
     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, EmbedderControl,
@@ -238,6 +239,7 @@ impl<'a> EmbedderMessageSelector<'a> {
 pub struct PendingHandledInputEvent {
     pub event_id: InputEventId,
     pub webview_id: WebViewId,
+    pub(crate) result: InputEventResult,
 }
 
 struct ServoInner {
@@ -252,6 +254,9 @@ struct ServoInner {
     /// A struct that tracks ongoing JavaScript evaluations and is responsible for
     /// calling the callback when the evaluation is complete.
     javascript_evaluator: Rc<RefCell<JavaScriptEvaluator>>,
+    /// A struct that tracks ongoing `WebView::stop_loading` requests and is responsible
+    /// for calling the callback when the `Constellation` reports the result.
+    stop_loading_handler: Rc<RefCell<StopLoadingHandler>>,
     /// Tracks whether we are in the process of shutting down, or have shut down.
     /// This is shared with `WebView`s and the `ServoRenderer`.
     shutdown_state: Rc<Cell<ShutdownState>>,
@@ -323,19 +328,16 @@ impl ServoInner {
         for PendingHandledInputEvent {
             event_id,
             webview_id,
+            result,
         } in pending_handled_input_events
         {
-            self.paint.borrow_mut().notify_input_event_handled(
-                webview_id,
-                event_id,
-                InputEventResult::DispatchFailed,
-            );
+            self.paint
+                .borrow_mut()
+                .notify_input_event_handled(webview_id, event_id, result);
             if let Some(webview) = self.get_webview_handle(webview_id) {
-                webview.delegate().notify_input_event_handled(
-                    webview,
-                    event_id,
-                    InputEventResult::DispatchFailed,
-                );
+                webview
+                    .delegate()
+                    .notify_input_event_handled(webview, event_id, result);
             }
         }
 
@@ -821,6 +823,15 @@ impl ServoInner {
                     .borrow_mut()
                     .finish_evaluation(evaluation_id, result);
             },
+            ConstellationToEmbedderMsg::StopLoadingCompleted(stop_loading_id, result) => {
+                let callback = self
+                    .stop_loading_handler
+                    .borrow_mut()
+                    .take_callback(stop_loading_id);
+
+                // Release the registry borrow before client code can request another stop.
+                callback(result);
+            },
             ConstellationToEmbedderMsg::InputEventsHandled(webview_id, event_outcomes) => {
                 let webview = self.get_webview_handle(webview_id);
                 for InputEventOutcome {
@@ -1047,6 +1058,9 @@ impl Servo {
             javascript_evaluator: Rc::new(RefCell::new(JavaScriptEvaluator::new(
                 constellation_proxy.clone(),
             ))),
+            stop_loading_handler: Rc::new(RefCell::new(StopLoadingHandler::new(
+                constellation_proxy.clone(),
+            ))),
             constellation_proxy,
             embedder_receiver,
             net_embedder_receiver,
@@ -1159,6 +1173,10 @@ impl Servo {
 
     pub(crate) fn javascript_evaluator_mut<'a>(&'a self) -> RefMut<'a, JavaScriptEvaluator> {
         self.0.javascript_evaluator.borrow_mut()
+    }
+
+    pub(crate) fn stop_loading_handler_mut<'a>(&'a self) -> RefMut<'a, StopLoadingHandler> {
+        self.0.stop_loading_handler.borrow_mut()
     }
 
     pub(crate) fn add_pending_handled_input_event(&self, residue_event: PendingHandledInputEvent) {

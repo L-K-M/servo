@@ -20,8 +20,8 @@ use embedder_traits::user_contents::{
 };
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, InputEventAndId, JavaScriptEvaluationId,
-    MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, Theme, TraversalId, UrlRequest,
-    ViewportDetails, WebDriverCommandMsg,
+    MediaSessionActionType, NewWebViewDetails, PaintHitTestResult, StopLoadingId, Theme,
+    TraversalId, UrlRequest, ViewportDetails, WebDriverCommandMsg,
 };
 pub use from_script_message::*;
 use malloc_size_of_derive::MallocSizeOf;
@@ -51,6 +51,11 @@ pub enum EmbedderToConstellationMessage {
     LoadUrl(WebViewId, UrlRequest),
     /// Request to traverse the joint session history of the provided browsing context.
     TraverseHistory(SessionHistoryTraversalRequest),
+    /// Stop the ongoing loads of the given `WebView`: abort its active document and
+    /// descendant documents, cancel uncommitted navigations, and refuse pending
+    /// navigation approvals. The `Constellation` responds with
+    /// `ConstellationToEmbedderMsg::StopLoadingCompleted`.
+    StopLoading(WebViewId, StopLoadingId),
     /// Inform the Constellation that a `WebView`'s [`ViewportDetails`] have changed.
     ChangeViewportDetails(WebViewId, ViewportDetails, WindowSizeType),
     /// Inform the constellation of a theme change.

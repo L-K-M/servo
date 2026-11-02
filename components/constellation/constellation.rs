@@ -112,8 +112,8 @@ use embedder_traits::{
     GenericEmbedderProxy, InputEvent, InputEventAndId, InputEventOutcome, JSValue,
     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
     MediaSessionEvent, MediaSessionPlaybackState, MouseButtonAction, MouseButtonEvent,
-    NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WakeLockDelegate, WakeLockType,
-    WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
+    NewWebViewDetails, PaintHitTestResult, StopLoadingError, StopLoadingId, Theme, ViewportDetails,
+    WakeLockDelegate, WakeLockType, WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
 };
 use euclid::default::Size2D as UntypedSize2D;
 use fonts::SystemFontServiceProxy;
@@ -197,6 +197,20 @@ struct PendingApprovalNavigation {
 }
 
 type PendingApprovalNavigations = FxHashMap<PipelineId, PendingApprovalNavigation>;
+
+#[derive(Clone, Copy)]
+enum StopLoadingPipelineState {
+    Committed,
+    Discarded,
+}
+
+/// A `WebView::stop_loading` request whose completion still has to be reported
+/// to the embedder, deferred until its replacement initial document commits or
+/// the `WebView` goes away.
+struct PendingStopLoadingCompletion {
+    webview_id: WebViewId,
+    stop_loading_id: StopLoadingId,
+}
 
 #[derive(Debug)]
 /// The state used by MessagePortInfo to represent the various states the port can be in.
@@ -464,6 +478,13 @@ pub struct Constellation<STF, SWF> {
     /// Navigation requests from script awaiting approval from the embedder.
     pending_approval_navigations: PendingApprovalNavigations,
 
+    /// `WebView::stop_loading` requests whose result is deferred until the
+    /// keyed replacement pipeline either commits or exits. This is only used
+    /// when stopping cancels the initial load of a `WebView`: the replacement
+    /// empty document must first become the active document of its browsing
+    /// context before the `PipelineId` reported to the embedder is meaningful.
+    pending_stop_loading_completions: FxHashMap<PipelineId, Vec<PendingStopLoadingCompletion>>,
+
     /// Bitmask which indicates which combination of mouse buttons are
     /// currently being pressed.
     pressed_mouse_buttons: MouseButtons,
@@ -719,6 +740,7 @@ where
                     webxr_registry: state.webxr_registry,
                     canvas: OnceCell::new(),
                     pending_approval_navigations: Default::default(),
+                    pending_stop_loading_completions: Default::default(),
                     pressed_mouse_buttons: MouseButtons::empty(),
                     active_keyboard_modifiers: Modifiers::empty(),
                     hard_fail,
@@ -1354,6 +1376,9 @@ where
             // Handle a forward or back request
             EmbedderToConstellationMessage::TraverseHistory(request) => {
                 self.handle_traverse_session_history_msg(request);
+            },
+            EmbedderToConstellationMessage::StopLoading(webview_id, stop_loading_id) => {
+                self.handle_stop_loading(webview_id, stop_loading_id);
             },
             EmbedderToConstellationMessage::ChangeViewportDetails(
                 webview_id,
@@ -2989,6 +3014,10 @@ where
             return;
         };
 
+        // A pipeline that was carrying a deferred `stop_loading` result is gone
+        // without committing; report it as unavailable (or as a closed `WebView`).
+        self.complete_stop_loading_for_pipeline(pipeline_id, StopLoadingPipelineState::Discarded);
+
         // Clean up any registered interests for this pipeline.
         self.pipeline_interests.retain(|_, set| {
             set.remove(&pipeline_id);
@@ -3436,6 +3465,10 @@ where
                 self.notify_embedder_of_completed_session_history_traversal_request(&request);
             }
         }
+
+        // Any `stop_loading` request that was still waiting for a replacement
+        // initial document resolves now with a closed `WebView`.
+        self.complete_stop_loading_for_closed_webview(webview_id);
 
         // Step 4. Remove traversable from the user interface (e.g., close or hide its tab in a tabbed browser).
         self.constellation_to_embedder_proxy
@@ -4395,6 +4428,288 @@ where
                 &self.pipelines,
             );
         };
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#nav-stop>
+    ///
+    /// Stop the ongoing loads of a `WebView`: abort the parser and fetches of its
+    /// active documents, cancel uncommitted navigations, and refuse navigation
+    /// requests that are still waiting for embedder approval. The result is sent
+    /// to the embedder either immediately or once a replacement initial document
+    /// has committed, always exactly once per request.
+    #[servo_tracing::instrument(skip_all)]
+    fn handle_stop_loading(&mut self, webview_id: WebViewId, stop_loading_id: StopLoadingId) {
+        if !self.webviews.contains_key(&webview_id) {
+            self.send_stop_loading_result(
+                stop_loading_id,
+                Err(StopLoadingError::WebViewClosed),
+            );
+            return;
+        }
+
+        // Refuse all pending navigation approvals for pipelines of this `WebView`,
+        // so that an `AllowNavigationResponse` arriving after this point cannot
+        // create a pipeline that would resurrect a stopped navigation.
+        let pending_approval_pipeline_ids: Vec<PipelineId> = self
+            .pending_approval_navigations
+            .keys()
+            .filter(|pipeline_id| {
+                self.pipelines
+                    .get(pipeline_id)
+                    .is_some_and(|pipeline| pipeline.webview_id == webview_id)
+            })
+            .copied()
+            .collect();
+        for pipeline_id in pending_approval_pipeline_ids {
+            self.handle_allow_navigation_response(pipeline_id, false);
+        }
+
+        // Partition pending session history changes into the initial load of this
+        // `WebView`'s own (not yet created) browsing context, initial documents of
+        // newly created nested browsing contexts (kept, as the first document of an
+        // iframe is not a navigation), and uncommitted navigations (cancelled).
+        let top_level_browsing_context_id = BrowsingContextId::from(webview_id);
+        let mut initial_load_change = None;
+        let mut cancelled_navigations = vec![];
+        if let Some(webview) = self.webviews.get_mut(&webview_id) {
+            for change in std::mem::take(&mut webview.pending_changes) {
+                match change.new_browsing_context_info {
+                    Some(_) if change.browsing_context_id == top_level_browsing_context_id => {
+                        if initial_load_change.replace(change).is_some() {
+                            warn!("{webview_id}: Stopping multiple pending initial loads");
+                        }
+                    },
+                    Some(_) => webview.pending_changes.push(change),
+                    None => cancelled_navigations.push(change),
+                }
+            }
+        }
+
+        // Abort the parser and ongoing fetches of every fully active document in
+        // this `WebView`; `Document.abort()` also queues the abort of descendant
+        // iframe documents in their own script threads.
+        let active_pipeline_ids: Vec<PipelineId> = self
+            .fully_active_browsing_contexts_iter(webview_id)
+            .map(|browsing_context| browsing_context.pipeline_id)
+            .collect();
+        for pipeline_id in active_pipeline_ids {
+            self.send_message_to_pipeline(
+                pipeline_id,
+                ScriptThreadMessage::StopLoading(pipeline_id),
+                "Stopped loading after closure",
+            );
+        }
+
+        // Cancel the uncommitted navigations so that they can never enter the
+        // session history. For nested browsing contexts, release the "delaying
+        // load events mode" that the cancelled navigation was holding in the
+        // parent document.
+        for change in cancelled_navigations {
+            if let Some(browsing_context) = self.browsing_contexts.get(&change.browsing_context_id) &&
+                browsing_context.parent_pipeline_id.is_some()
+            {
+                let pipeline_id = browsing_context.pipeline_id;
+                self.send_message_to_pipeline(
+                    pipeline_id,
+                    ScriptThreadMessage::StopDelayingLoadEventsMode(pipeline_id),
+                    "Stop delaying load events after closure",
+                );
+            }
+            self.close_pipeline(
+                change.new_pipeline_id,
+                DiscardBrowsingContext::No,
+                ExitPipelineMode::Normal,
+            );
+        }
+
+        match initial_load_change {
+            None => {
+                let result = match self
+                    .webviews
+                    .get(&webview_id)
+                    .and_then(|webview| webview.active_top_level_pipeline_id)
+                {
+                    Some(pipeline_id) if self.pipelines.contains_key(&pipeline_id) => {
+                        Ok(pipeline_id)
+                    },
+                    _ => Err(StopLoadingError::DocumentUnavailable),
+                };
+                self.send_stop_loading_result(stop_loading_id, result);
+            },
+            Some(change) => {
+                self.stop_loading_initial_load(webview_id, stop_loading_id, change);
+            },
+        }
+    }
+
+    /// Handle the case where `stop_loading` cancels the initial load of a
+    /// `WebView`: closing the initial pipeline would leave the `WebView`
+    /// without any browsing context, so replace the cancelled load with a new
+    /// pipeline that creates an empty initial document, preserving the
+    /// cancelled pipeline's context configuration (browsing context info,
+    /// viewport, privacy, opener and the origin-inheriting load data).
+    /// The result is reported once the replacement document commits.
+    fn stop_loading_initial_load(
+        &mut self,
+        webview_id: WebViewId,
+        stop_loading_id: StopLoadingId,
+        change: SessionHistoryChange,
+    ) {
+        let Some(new_browsing_context_info) = change.new_browsing_context_info else {
+            return warn!("{webview_id}: Initial load change without browsing context info");
+        };
+        let parent_pipeline_id = new_browsing_context_info.parent_pipeline_id;
+        let is_private = new_browsing_context_info.is_private;
+        let Some((cancelled_load_data, opener)) = self
+            .pipelines
+            .get(&change.new_pipeline_id)
+            .map(|pipeline| (pipeline.load_data.clone(), pipeline.opener))
+        else {
+            self.send_stop_loading_result(
+                stop_loading_id,
+                Err(StopLoadingError::DocumentUnavailable),
+            );
+            return warn!("{}: Initial pipeline already closed", change.new_pipeline_id);
+        };
+
+        let mut load_data = LoadData::new_for_new_unrelated_webview(
+            ServoUrl::parse("about:blank").expect("about:blank is a valid URL"),
+        );
+        // The replacement document is the initial `about:blank` document of the
+        // `WebView`'s browsing context. Preserve the fields that give it the
+        // cancelled load's origin, creator and sandboxing configuration.
+        load_data.load_origin = cancelled_load_data.load_origin;
+        load_data.about_base_url = cancelled_load_data.about_base_url;
+        load_data.creator_pipeline_id = cancelled_load_data.creator_pipeline_id;
+        load_data.policy_container = cancelled_load_data.policy_container;
+        load_data.inherited_secure_context = cancelled_load_data.inherited_secure_context;
+        load_data.inherited_insecure_requests_policy =
+            cancelled_load_data.inherited_insecure_requests_policy;
+        load_data.has_trustworthy_ancestor_origin =
+            cancelled_load_data.has_trustworthy_ancestor_origin;
+        load_data.creation_sandboxing_flag_set = cancelled_load_data.creation_sandboxing_flag_set;
+        load_data.is_initial_about_blank = true;
+
+        let replacement_pipeline_id = PipelineId::new();
+        let Some(webview) = self.webviews.get_mut(&webview_id) else {
+            self.send_stop_loading_result(stop_loading_id, Err(StopLoadingError::WebViewClosed));
+            return;
+        };
+        webview.add_pending_change(SessionHistoryChange {
+            webview_id,
+            browsing_context_id: change.browsing_context_id,
+            new_pipeline_id: replacement_pipeline_id,
+            replace: None,
+            new_browsing_context_info: Some(new_browsing_context_info),
+            viewport_details: change.viewport_details,
+        });
+
+        // Completions that were still pending on the cancelled initial pipeline
+        // (an earlier `stop_loading` call whose replacement this one supersedes)
+        // are rekeyed to the new pipeline *before* the old one is closed: they
+        // resolve with the document that actually remains usable, not with the
+        // discarded pipeline's exit.
+        let mut completions = self
+            .pending_stop_loading_completions
+            .remove(&change.new_pipeline_id)
+            .unwrap_or_default();
+        completions.push(PendingStopLoadingCompletion {
+            webview_id,
+            stop_loading_id,
+        });
+        self.pending_stop_loading_completions
+            .insert(replacement_pipeline_id, completions);
+
+        self.close_pipeline(
+            change.new_pipeline_id,
+            DiscardBrowsingContext::No,
+            ExitPipelineMode::Normal,
+        );
+
+        self.new_pipeline(
+            replacement_pipeline_id,
+            change.browsing_context_id,
+            webview_id,
+            parent_pipeline_id,
+            opener,
+            change.viewport_details,
+            load_data,
+            is_private,
+            TargetSnapshotParams::default(),
+            None,
+        );
+
+        if self.pipelines.contains_key(&replacement_pipeline_id) {
+            return;
+        }
+
+        // A failed spawn has no exit callback; finish its pending request here.
+        if let Some(webview) = self.webviews.get_mut(&webview_id) {
+            webview.remove_pending_change_for_pipeline(replacement_pipeline_id);
+        }
+        self.complete_stop_loading_for_pipeline(
+            replacement_pipeline_id,
+            StopLoadingPipelineState::Discarded,
+        );
+    }
+
+    fn send_stop_loading_result(
+        &self,
+        stop_loading_id: StopLoadingId,
+        result: Result<PipelineId, StopLoadingError>,
+    ) {
+        self.constellation_to_embedder_proxy
+            .send(ConstellationToEmbedderMsg::StopLoadingCompleted(
+                stop_loading_id,
+                result,
+            ));
+    }
+
+    /// Report a deferred `stop_loading` result for every request that was
+    /// waiting on `pipeline_id`. Used when a replacement initial document
+    /// commits or exits.
+    fn complete_stop_loading_for_pipeline(
+        &mut self,
+        pipeline_id: PipelineId,
+        state: StopLoadingPipelineState,
+    ) {
+        let Some(completions) = self
+            .pending_stop_loading_completions
+            .remove(&pipeline_id)
+        else {
+            return;
+        };
+        for completion in completions {
+            let result = if matches!(state, StopLoadingPipelineState::Committed) {
+                Ok(pipeline_id)
+            } else if self.webviews.contains_key(&completion.webview_id) {
+                Err(StopLoadingError::DocumentUnavailable)
+            } else {
+                Err(StopLoadingError::WebViewClosed)
+            };
+            self.send_stop_loading_result(completion.stop_loading_id, result);
+        }
+    }
+
+    /// Fail every deferred `stop_loading` result for `webview_id`, used when the
+    /// `WebView` is closed while a request is in flight.
+    fn complete_stop_loading_for_closed_webview(&mut self, webview_id: WebViewId) {
+        let mut completed_ids = vec![];
+        self.pending_stop_loading_completions
+            .retain(|_, completions| {
+                completions.retain(|completion| {
+                    if completion.webview_id == webview_id {
+                        completed_ids.push(completion.stop_loading_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                !completions.is_empty()
+            });
+        for stop_loading_id in completed_ids {
+            self.send_stop_loading_result(stop_loading_id, Err(StopLoadingError::WebViewClosed));
+        }
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -5775,7 +6090,26 @@ where
             let _ = parent_pipeline.event_loop.send(msg);
         }
 
+        let change_browsing_context_id = change.browsing_context_id;
         self.change_session_history(change);
+
+        // A replacement initial document created by `stop_loading` commits
+        // here; report the document that remains usable to the embedder.
+        if self
+            .pending_stop_loading_completions
+            .contains_key(&pipeline_id)
+        {
+            let state = if self
+                .browsing_contexts
+                .get(&change_browsing_context_id)
+                .is_some_and(|ctx| ctx.pipeline_id == pipeline_id)
+            {
+                StopLoadingPipelineState::Committed
+            } else {
+                StopLoadingPipelineState::Discarded
+            };
+            self.complete_stop_loading_for_pipeline(pipeline_id, state);
+        }
 
         if let Some(webview) = self.webviews.get_mut(&webview_id) {
             webview.send_screenshot_readiness_requests_to_pipelines(

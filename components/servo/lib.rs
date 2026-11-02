@@ -53,6 +53,7 @@ mod responders;
 mod servo;
 mod servo_delegate;
 mod site_data_manager;
+mod stop_loading_handler;
 mod user_content_manager;
 mod webview;
 mod webview_delegate;

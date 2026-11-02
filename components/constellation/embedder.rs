@@ -4,7 +4,7 @@
 
 use embedder_traits::{
     InputEventOutcome, JSValue, JavaScriptEvaluationError, JavaScriptEvaluationId,
-    MediaSessionEvent, NewWebViewDetails, TraversalId,
+    MediaSessionEvent, NewWebViewDetails, StopLoadingError, StopLoadingId, TraversalId,
 };
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{PipelineId, WebViewId};
@@ -34,6 +34,10 @@ pub enum ConstellationToEmbedderMsg {
         JavaScriptEvaluationId,
         Result<JSValue, JavaScriptEvaluationError>,
     ),
+    /// Inform the embedding layer that a `WebView::stop_loading` request has
+    /// finished. `Ok` carries the [`PipelineId`] of the top-level document that
+    /// remains usable in the `WebView`.
+    StopLoadingCompleted(StopLoadingId, Result<PipelineId, StopLoadingError>),
     /// Whether or not to allow script to open a new tab/browser
     AllowOpeningWebView(WebViewId, GenericSender<Option<NewWebViewDetails>>),
     /// Whether or not to allow a pipeline to load a url.

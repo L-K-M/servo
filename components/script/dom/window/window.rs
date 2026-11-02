@@ -872,7 +872,7 @@ impl Window {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#nav-stop>
-    fn stop_loading(&self, cx: &mut JSContext) {
+    pub(crate) fn stop_loading(&self, cx: &mut JSContext) {
         // 1. Let document be navigable's active document.
         let doc = self.Document();
 

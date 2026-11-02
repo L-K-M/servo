@@ -31,6 +31,7 @@ use webrender::RenderApi;
 use webrender_api::units::{DevicePixel, DevicePoint, DeviceRect, DeviceVector2D, LayoutVector2D};
 use webrender_api::{DocumentId, ExternalScrollId, ScrollLocation};
 
+use crate::InputEventDispatch;
 use crate::paint::RepaintReason;
 use crate::painter::Painter;
 use crate::pinch_zoom::PinchZoom;
@@ -409,7 +410,7 @@ impl WebViewRenderer {
         &mut self,
         render_api: &RenderApi,
         event: InputEventAndId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         let event_point = event
             .event
             .point()
@@ -430,7 +431,7 @@ impl WebViewRenderer {
                 .or_else(|| self.hit_test(render_api, point).into_iter().nth(0));
                 if hit_test_result.is_none() {
                     warn!("Empty hit test result for input event, ignoring.");
-                    return false;
+                    return InputEventDispatch::Handled(InputEventResult::DispatchFailed);
                 }
                 hit_test_result
             },
@@ -465,9 +466,9 @@ impl WebViewRenderer {
             EmbedderToConstellationMessage::ForwardInputEvent(self.id, event, hit_test_result),
         ) {
             warn!("Sending event to constellation failed ({error:?}).");
-            false
+            InputEventDispatch::Handled(InputEventResult::DispatchFailed)
         } else {
-            true
+            InputEventDispatch::Forwarded
         }
     }
 
@@ -476,7 +477,7 @@ impl WebViewRenderer {
         render_api: &RenderApi,
         repaint_reason: &Cell<RepaintReason>,
         event_and_id: InputEventAndId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         if let InputEvent::Touch(touch_event) = event_and_id.event {
             return self.on_touch_event(render_api, repaint_reason, touch_event, event_and_id.id);
         }
@@ -494,7 +495,7 @@ impl WebViewRenderer {
         render_api: &RenderApi,
         event: TouchEvent,
         id: InputEventId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         let cancelable = event.is_cancelable();
         let event_type = event.event_type;
 
@@ -508,7 +509,7 @@ impl WebViewRenderer {
         // We only post-process events that are actually cancelable. Uncancelable ones
         // are processed immediately and can be ignored once they have been sent to the
         // Constellation.
-        if cancelable && result {
+        if cancelable && matches!(result, InputEventDispatch::Forwarded) {
             self.touch_handler
                 .add_pending_touch_input_event(id, event.touch_id, event_type);
         }
@@ -522,7 +523,7 @@ impl WebViewRenderer {
         repaint_reason: &Cell<RepaintReason>,
         event: TouchEvent,
         id: InputEventId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         let result = match event.event_type {
             TouchEventType::Down => self.on_touch_down(render_api, event, id),
             TouchEventType::Move => self.on_touch_move(render_api, event, id),
@@ -543,7 +544,7 @@ impl WebViewRenderer {
         render_api: &RenderApi,
         event: TouchEvent,
         id: InputEventId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         let point = event
             .point
             .as_device_point(self.device_pixels_per_page_pixel());
@@ -556,7 +557,7 @@ impl WebViewRenderer {
         render_api: &RenderApi,
         mut event: TouchEvent,
         id: InputEventId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         let point = event
             .point
             .as_device_point(self.device_pixels_per_page_pixel());
@@ -578,27 +579,31 @@ impl WebViewRenderer {
                 self.pending_scroll_zoom_events.push(action);
             }
         }
-        let mut reached_constellation = false;
-        // When the event is touchmove, if the script thread is processing the touch
-        // move event, we skip sending the event to the script thread.
-        // This prevents the script thread from stacking up for a large amount of time.
-        if !self.touch_handler.is_handling_touch_move_for_touch_id(
+        // Coalescing is intentional consumption, not failure. The pending DOM move owns the veto.
+        if self.touch_handler.is_handling_touch_move_for_touch_id(
             self.touch_handler.current_sequence_id,
             event.touch_id,
         ) {
-            reached_constellation = self.send_touch_event(render_api, event, id);
-            if reached_constellation && event.is_cancelable() {
-                self.touch_handler.set_handling_touch_move_for_touch_id(
-                    self.touch_handler.current_sequence_id,
-                    event.touch_id,
-                    TouchIdMoveTracking::Track,
-                );
-            }
+            return InputEventDispatch::Handled(InputEventResult::Consumed);
         }
-        reached_constellation
+
+        let result = self.send_touch_event(render_api, event, id);
+        if matches!(result, InputEventDispatch::Forwarded) && event.is_cancelable() {
+            self.touch_handler.set_handling_touch_move_for_touch_id(
+                self.touch_handler.current_sequence_id,
+                event.touch_id,
+                TouchIdMoveTracking::Track,
+            );
+        }
+        result
     }
 
-    fn on_touch_up(&mut self, render_api: &RenderApi, event: TouchEvent, id: InputEventId) -> bool {
+    fn on_touch_up(
+        &mut self,
+        render_api: &RenderApi,
+        event: TouchEvent,
+        id: InputEventId,
+    ) -> InputEventDispatch {
         let point = event
             .point
             .as_device_point(self.device_pixels_per_page_pixel());
@@ -611,7 +616,7 @@ impl WebViewRenderer {
         render_api: &RenderApi,
         event: TouchEvent,
         id: InputEventId,
-    ) -> bool {
+    ) -> InputEventDispatch {
         let point = event
             .point
             .as_device_point(self.device_pixels_per_page_pixel());

@@ -1,0 +1,460 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+//! Tests for `WebView::stop_loading`.
+
+mod common;
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::Mutex;
+use std::sync::mpsc::channel;
+use std::time::Duration;
+
+use http_body_util::combinators::BoxBody;
+use hyper::body::{Bytes, Incoming};
+use hyper::{Request as HyperRequest, Response as HyperResponse};
+use net::test_util::{make_body, make_server};
+use servo::{
+    JSValue, LoadStatus, NavigationRequest, PipelineId, StopLoadingError, WebView, WebViewBuilder,
+    WebViewDelegate,
+};
+
+use crate::common::{ServoTest, WebViewDelegateImpl};
+
+const LATE_RESPONSE_SETTLE: Duration = Duration::from_millis(200);
+
+/// Evaluate `script` in the `WebView`'s active document and wait for the result.
+/// Unlike `common::evaluate_javascript`, this does not first wait for
+/// [`LoadStatus::Complete`], which may never arrive once loading is stopped.
+fn evaluate(servo_test: &ServoTest, webview: &WebView, script: &str) -> JSValue {
+    let result = Rc::new(RefCell::new(None));
+    let callback_result = result.clone();
+    webview.evaluate_javascript(script.to_string(), move |value| {
+        *callback_result.borrow_mut() = Some(value.expect("JavaScript evaluation should succeed"));
+    });
+    let spin_result = result.clone();
+    servo_test.spin(move || spin_result.borrow().is_none());
+    result.borrow_mut().take().unwrap()
+}
+
+/// Call [`WebView::stop_loading`] and wait for the completion callback.
+fn stop_loading(servo_test: &ServoTest, webview: &WebView) -> Result<PipelineId, StopLoadingError> {
+    let result = Rc::new(RefCell::new(None));
+    let callback_result = result.clone();
+    webview
+        .stop_loading(move |value| {
+            *callback_result.borrow_mut() = Some(value);
+        })
+        .expect("stop_loading should not fail synchronously");
+    let spin_result = result.clone();
+    servo_test.spin(move || spin_result.borrow().is_none());
+    result.borrow_mut().take().unwrap()
+}
+
+/// Ignore late completion from the stopped document when checking that navigation still works.
+fn load_next_document(servo_test: &ServoTest, webview: &WebView, url: url::Url) {
+    let previous_document = webview.active_document_id();
+    webview.load(url.clone());
+    servo_test.spin(|| {
+        webview.active_document_id() == previous_document
+            || webview.url().as_ref() != Some(&url)
+            || webview.load_status() != LoadStatus::Complete
+    });
+}
+
+/// A completion callback may call the same API without retaining its registry borrow.
+#[test]
+fn test_stop_loading_callback_can_request_another_stop() {
+    let servo_test = ServoTest::new();
+    let (server, url) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"ready".to_vec());
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url.as_url().clone())
+        .build();
+    servo_test.spin(move || !delegate.load_status_changed.get());
+
+    let completions = Rc::new(Cell::new(0));
+    let callback_completions = completions.clone();
+    let callback_webview = webview.clone();
+    webview
+        .stop_loading(move |result| {
+            assert!(result.is_ok());
+            callback_completions.set(callback_completions.get() + 1);
+            let nested_completions = callback_completions.clone();
+            callback_webview
+                .stop_loading(move |result| {
+                    assert!(result.is_ok());
+                    nested_completions.set(nested_completions.get() + 1);
+                })
+                .expect("The callback may request another stop");
+        })
+        .expect("The first stop should be accepted");
+    servo_test.spin(move || completions.get() < 2);
+    server.close();
+}
+
+/// A partially loaded document must survive `stop_loading`: the parser is
+/// aborted, its pending fetch is cancelled, and delivering the blocked
+/// resource later must not execute it.
+#[test]
+fn test_stop_loading_aborts_blocked_script_and_keeps_document() {
+    let servo_test = ServoTest::new();
+
+    let (script_requested, script_request) = channel::<()>();
+    let (release_script, release_gate) = channel::<()>();
+    let release_gate = Mutex::new(release_gate);
+    let handler =
+        move |request: HyperRequest<Incoming>,
+              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
+            if request.uri().path() == "/blocked.js" {
+                let _ = script_requested.send(());
+                // Hold the script response until the test releases it.
+                let _ = release_gate.lock().unwrap().recv();
+                *response.body_mut() = make_body(b"window.__blockedScriptRan = true;".to_vec());
+            } else {
+                *response.body_mut() = make_body(
+                    b"<html><body>\
+                    <article id=\"partial\"></article>\
+                    <script src=\"/blocked.js\"></script>\
+                    <div id=\"after\"></div>\
+                </body></html>"
+                        .to_vec(),
+                );
+            }
+        };
+    let (server, url) = make_server(handler);
+
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url.as_url().clone())
+        .build();
+
+    // Wait until the parser-blocking script request has been made. At this point
+    // the document is committed and its parser is stalled on the blocked fetch.
+    servo_test.spin(|| script_request.try_recv().is_err());
+
+    let pipeline_id = stop_loading(&servo_test, &webview).expect("stop_loading should succeed");
+    assert_eq!(webview.active_document_id(), Some(pipeline_id));
+
+    // The committed part of the document is preserved, while content after the
+    // blocked script was never parsed.
+    assert_eq!(
+        evaluate(
+            &servo_test,
+            &webview,
+            "document.getElementById('partial') != null"
+        ),
+        JSValue::Boolean(true)
+    );
+    assert_eq!(
+        evaluate(
+            &servo_test,
+            &webview,
+            "document.getElementById('after') != null"
+        ),
+        JSValue::Boolean(false)
+    );
+
+    // Releasing the blocked response must not execute the cancelled script.
+    release_script
+        .send(())
+        .expect("Should release the blocked script");
+    std::thread::sleep(LATE_RESPONSE_SETTLE);
+    servo_test.servo().spin_event_loop();
+    assert_eq!(
+        evaluate(&servo_test, &webview, "window.__blockedScriptRan"),
+        JSValue::Undefined
+    );
+
+    server.close();
+}
+
+/// Stop also cancels a child navigation that has not produced its first response.
+#[test]
+fn test_stop_loading_cancels_a_pending_iframe_load() {
+    let servo_test = ServoTest::new();
+    let (child_requested, child_request) = channel::<()>();
+    let (release_child, child_gate) = channel::<()>();
+    let child_gate = Mutex::new(child_gate);
+    let (child_server, child_url) = make_server(move |_, response| {
+        let _ = child_requested.send(());
+        let _ = child_gate.lock().unwrap().recv();
+        *response.body_mut() =
+            make_body(b"<script>parent.postMessage('late-child', '*')</script>".to_vec());
+    });
+    let html = format!(
+        "<html><body><script>window.childRan = false;\
+         addEventListener('message', event => {{\
+             if (event.data === 'late-child') window.childRan = true;\
+         }});</script><iframe id='child' src='{}'></iframe></body></html>",
+        child_url.as_url(),
+    );
+    let (parent_server, parent_url) = make_server(move |_, response| {
+        *response.body_mut() = make_body(html.as_bytes().to_vec());
+    });
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .url(parent_url.as_url().clone())
+        .build();
+    servo_test.spin(|| child_request.try_recv().is_err());
+
+    stop_loading(&servo_test, &webview).expect("The parent and pending iframe should stop");
+    assert_eq!(
+        evaluate(
+            &servo_test,
+            &webview,
+            "!!document.getElementById('child').contentWindow"
+        ),
+        JSValue::Boolean(true)
+    );
+
+    release_child
+        .send(())
+        .expect("Release the stopped child response");
+    std::thread::sleep(LATE_RESPONSE_SETTLE);
+    servo_test.servo().spin_event_loop();
+    assert_eq!(
+        evaluate(&servo_test, &webview, "window.childRan"),
+        JSValue::Boolean(false)
+    );
+    parent_server.close();
+    child_server.close();
+}
+
+/// A navigation that has not committed yet must be cancelled by
+/// `stop_loading` and must never enter session history. A subsequent
+/// navigation must still succeed.
+#[test]
+fn test_stop_loading_cancels_pending_navigation() {
+    let servo_test = ServoTest::new();
+
+    let (server_a, url_a) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"page a".to_vec());
+    });
+    let (navigation_requested, navigation_request) = channel::<()>();
+    let (release_navigation, navigation_gate) = channel::<()>();
+    let navigation_gate = Mutex::new(navigation_gate);
+    let (server_b, url_b) = make_server(move |_, response| {
+        let _ = navigation_requested.send(());
+        // Hold the response until the test releases it.
+        let _ = navigation_gate.lock().unwrap().recv();
+        *response.body_mut() = make_body(b"page b".to_vec());
+    });
+    let (server_c, url_c) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"page c".to_vec());
+    });
+
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url_a.as_url().clone())
+        .build();
+    servo_test.spin(|| !delegate.load_status_changed.get());
+    assert_eq!(webview.url(), Some(url_a.as_url().clone()));
+
+    // Start a navigation and wait for its fetch to start, so that `stop_loading`
+    // runs while the navigation is committed nowhere yet.
+    webview.load(url_b.as_url().clone());
+    servo_test.spin(|| navigation_request.try_recv().is_err());
+
+    let pipeline_id = stop_loading(&servo_test, &webview).expect("stop_loading should succeed");
+    assert_eq!(webview.active_document_id(), Some(pipeline_id));
+    assert_eq!(webview.url(), Some(url_a.as_url().clone()));
+    assert!(!webview.can_go_back());
+
+    // Releasing the pending response changes nothing.
+    release_navigation
+        .send(())
+        .expect("Should release the pending navigation");
+    std::thread::sleep(LATE_RESPONSE_SETTLE);
+    servo_test.servo().spin_event_loop();
+    assert_eq!(webview.url(), Some(url_a.as_url().clone()));
+    assert!(!webview.can_go_back());
+
+    // A subsequent navigation succeeds normally.
+    load_next_document(&servo_test, &webview, url_c.as_url().clone());
+    assert_eq!(webview.url(), Some(url_c.as_url().clone()));
+    assert!(webview.can_go_back());
+
+    server_a.close();
+    server_b.close();
+    server_c.close();
+}
+
+/// Stopping before the first document has committed must leave the `WebView`
+/// with an empty but usable initial document.
+#[test]
+fn test_stop_loading_before_first_commit_leaves_reusable_view() {
+    let servo_test = ServoTest::new();
+
+    let (initial_requested, initial_request) = channel::<()>();
+    let (release_initial, initial_gate) = channel::<()>();
+    let initial_gate = Mutex::new(initial_gate);
+    let (server_a, url_a) = make_server(move |_, response| {
+        let _ = initial_requested.send(());
+        // Hold the response until the test releases it.
+        let _ = initial_gate.lock().unwrap().recv();
+        *response.body_mut() = make_body(b"page a".to_vec());
+    });
+    let (server_b, url_b) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"page b".to_vec());
+    });
+
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url_a.as_url().clone())
+        .build();
+
+    // Wait until the initial load's fetch has started, then stop it.
+    servo_test.spin(|| initial_request.try_recv().is_err());
+
+    let pipeline_id = stop_loading(&servo_test, &webview).expect("stop_loading should succeed");
+
+    // The WebView now shows an empty initial document that can still be used.
+    assert_eq!(webview.active_document_id(), Some(pipeline_id));
+    assert_eq!(webview.url(), Some(url::Url::parse("about:blank").unwrap()));
+
+    // Releasing the cancelled load changes nothing.
+    release_initial
+        .send(())
+        .expect("Should release the initial load");
+    std::thread::sleep(LATE_RESPONSE_SETTLE);
+    servo_test.servo().spin_event_loop();
+    assert_eq!(webview.url(), Some(url::Url::parse("about:blank").unwrap()));
+
+    // A subsequent navigation succeeds.
+    load_next_document(&servo_test, &webview, url_b.as_url().clone());
+    assert_eq!(webview.url(), Some(url_b.as_url().clone()));
+    assert!(webview.can_go_back());
+
+    server_a.close();
+    server_b.close();
+}
+
+/// A delegate that holds script-initiated navigation approvals until the test
+/// responds to them.
+#[derive(Default)]
+struct DelayedApprovalDelegate {
+    url_changed: Cell<bool>,
+    load_status_changed: Cell<bool>,
+    pending_navigations: RefCell<Vec<NavigationRequest>>,
+}
+
+impl WebViewDelegate for DelayedApprovalDelegate {
+    fn notify_url_changed(&self, _webview: WebView, _url: url::Url) {
+        self.url_changed.set(true);
+    }
+
+    fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
+        if status == LoadStatus::Complete {
+            self.load_status_changed.set(true);
+        }
+    }
+
+    fn request_navigation(&self, _webview: WebView, navigation_request: NavigationRequest) {
+        self.pending_navigations
+            .borrow_mut()
+            .push(navigation_request);
+    }
+}
+
+/// A navigation waiting on embedder approval is cancelled by `stop_loading`;
+/// a late approval must not resurrect it.
+#[test]
+fn test_stop_loading_cancels_navigation_pending_approval() {
+    let servo_test = ServoTest::new();
+
+    let (server_a, url_a) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"page a".to_vec());
+    });
+    let (server_b, url_b) = make_server(|_, response| {
+        *response.body_mut() = make_body(b"page b".to_vec());
+    });
+
+    let delegate = Rc::new(DelayedApprovalDelegate::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url_a.as_url().clone())
+        .build();
+    servo_test.spin(|| !delegate.load_status_changed.get());
+    assert_eq!(webview.url(), Some(url_a.as_url().clone()));
+
+    // Trigger a script navigation; the delegate captures the approval request
+    // and holds it.
+    webview.evaluate_javascript(
+        format!("window.location.href = '{}';", url_b.as_url()),
+        |_| {},
+    );
+    servo_test.spin(|| delegate.pending_navigations.borrow().is_empty());
+
+    let pipeline_id = stop_loading(&servo_test, &webview).expect("stop_loading should succeed");
+    assert_eq!(webview.active_document_id(), Some(pipeline_id));
+
+    // A late approval must not resurrect the cancelled navigation.
+    delegate
+        .pending_navigations
+        .borrow_mut()
+        .drain(..)
+        .for_each(|request| request.allow());
+    std::thread::sleep(LATE_RESPONSE_SETTLE);
+    servo_test.servo().spin_event_loop();
+    assert_eq!(webview.url(), Some(url_a.as_url().clone()));
+    assert!(!webview.can_go_back());
+
+    server_a.close();
+    server_b.close();
+}
+
+/// When the `WebView` is closed while a `stop_loading` result is pending, the
+/// callback still runs exactly once with [`StopLoadingError::WebViewClosed`].
+#[test]
+fn test_stop_loading_reports_webview_closed() {
+    let servo_test = ServoTest::new();
+
+    let (initial_requested, initial_request) = channel::<()>();
+    let (release_initial, initial_gate) = channel::<()>();
+    let initial_gate = Mutex::new(initial_gate);
+    let (server, url) = make_server(move |_, response| {
+        let _ = initial_requested.send(());
+        // Hold the response until the test releases it.
+        let _ = initial_gate.lock().unwrap().recv();
+        *response.body_mut() = make_body(b"page a".to_vec());
+    });
+
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(url.as_url().clone())
+        .build();
+
+    // Wait until the initial load's fetch has started, then stop it and
+    // immediately close the `WebView` while the result is still pending.
+    servo_test.spin(|| initial_request.try_recv().is_err());
+
+    let result = Rc::new(RefCell::new(None));
+    let callback_result = result.clone();
+    webview
+        .stop_loading(move |value| {
+            *callback_result.borrow_mut() = Some(value);
+        })
+        .expect("stop_loading should not fail synchronously");
+    drop(webview);
+
+    let spin_result = result.clone();
+    servo_test.spin(move || spin_result.borrow().is_none());
+    assert_eq!(
+        result.borrow_mut().take().unwrap(),
+        Err(StopLoadingError::WebViewClosed)
+    );
+
+    release_initial
+        .send(())
+        .expect("Should release the initial load");
+    server.close();
+}
