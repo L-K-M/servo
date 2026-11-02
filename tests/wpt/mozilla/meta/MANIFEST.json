@@ -15499,6 +15499,13 @@
       {}
      ]
     ],
+    "webdriver-helpers-hidden.html": [
+     "ab19094fce333d94cfb5c59816eaf95b406a2257",
+     [
+      null,
+      {}
+     ]
+    ],
     "webgl": {
      "bindBuffer.html": [
       "e1a38f57e698f0aca07550288ddc4376deefcf6c",

@@ -207,6 +207,10 @@ pub struct Preferences {
     pub dom_testbinding_preference_value_truthy: bool,
     pub dom_testing_element_activation_enabled: bool,
     pub dom_testing_html_input_element_select_files_enabled: bool,
+    /// Expose the `Window` methods through which WebDriver passes element, frame, window and
+    /// shadow root arguments to scripts. Pages must not see them otherwise, so an embedder
+    /// that runs the WebDriver server must enable this; servoshell does for `--webdriver`.
+    pub dom_testing_webdriver_helpers_enabled: bool,
     pub dom_testperf_enabled: bool,
     // https://testutils.spec.whatwg.org#availability
     pub dom_testutils_enabled: bool,
@@ -474,6 +478,7 @@ impl Preferences {
             dom_testbinding_preference_value_truthy: false,
             dom_testing_element_activation_enabled: false,
             dom_testing_html_input_element_select_files_enabled: false,
+            dom_testing_webdriver_helpers_enabled: false,
             dom_testperf_enabled: false,
             dom_testutils_enabled: false,
             // Following Firefox and Chrome, we are enabling the touch events legacy APIs for android.
