@@ -1,0 +1,161 @@
+name: GLM 5.3 PR Review
+
+# The independent review AGENTS.md requires before a merge, by a model family
+# other than the author's; copied from L-K-M/Combray (owner decision, 29 October
+# 2026). It posts only on this repository's own pull requests and contacts no
+# other project.
+#
+# `pull_request`, not Combray's `pull_request_target`: the workflow then runs
+# from the PR's own branch, so the PR that adds it is reviewed too. Same-repo
+# branches still get the secrets and the write token below; fork PRs get
+# neither, and the job skips them anyway.
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+# One review per PR at a time; superseded reviews of an outdated diff are
+# worthless, so cancel them. Keyed on the PR number, which is stable across
+# pushes to the same PR.
+concurrency:
+  group: zai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review PR with GLM 5.3
+    # A ZAI_REVIEW_RUNNER repository variable (e.g. truenas) moves the review
+    # to self-hosted runners with that label; unset, GitHub hosts it.
+    runs-on: ${{ vars.ZAI_REVIEW_RUNNER || 'ubuntu-latest' }}
+    # Backstop only. The review step below carries the real budget and is
+    # shorter, so it always fires first. That keeps running out of time a step
+    # failure, which the reporting step can act on, and leaves "cancelled" to
+    # mean only what the concurrency group above means by it: a newer push took
+    # over.
+    timeout-minutes: 340
+    # The job uses repository secrets and a write-capable token. Never run it
+    # for branches from forks.
+    if: >-
+      ${{ github.event.pull_request.draft == false &&
+          github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+    steps:
+      - name: Record when the review started
+        if: ${{ env.ZAI_API_KEY != '' }}
+        run: echo "REVIEW_STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
+
+      - name: Z.ai Code Review
+        id: review
+        if: ${{ env.ZAI_API_KEY != '' }}
+        # Wall clock here is the sum of the model requests: the action sends one
+        # request per chunk of patch and waits each one out, so it tracks diff
+        # size. Measured on Seance PR #89 (29 reviewed files, +5856/-205): a clean
+        # revision took 16 chunks at a 4.7 min mean, 76 min total; the next one
+        # needed 17 chunks at a 6.2 min mean, about 105 min, and overran the
+        # former 90 min budget twice in a row while posting nothing. Combray PR
+        # #112 (+6533/-655) split into 26 chunks at an 8.4 min mean, about 220
+        # min, and overran the former 170 min budget after 19 of them. 330 min
+        # covers roughly 39 chunks at that mean. GitHub-hosted runners stop a
+        # job at 360 min, so the job backstop above stays below that.
+        timeout-minutes: 330
+        # Pin privileged third-party actions to an immutable commit.
+        # 13a9ddb = v0.0.15. Verify before bumping:
+        #   git ls-remote https://github.com/L-K-M/zai-code-review 'refs/tags/v0.0.15*'
+        uses: L-K-M/zai-code-review@13a9ddba4ff2e2086dbd91af184f74dee6587c17
+        with:
+          ZAI_API_KEY: ${{ env.ZAI_API_KEY }}
+          # Xiaomi MiMo reviews the chunks Z.ai still fails on (rate limits,
+          # outages). An empty MIMO_API_KEY secret disables the fallback.
+          FALLBACK_API_KEY: ${{ secrets.MIMO_API_KEY }}
+          FALLBACK_API_URL: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
+          FALLBACK_MODEL: mimo-v2.6-pro
+          ZAI_MODEL: glm-5.3
+          ZAI_MODEL_FAST: glm-5.3-flash
+          ZAI_REASONING_EFFORT: high
+          ZAI_MAX_OUTPUT_TOKENS: 98304  # glm documented max output cap
+          ZAI_REQUEST_TIMEOUT_SECONDS: 900
+          # A follow-up round reviews the delta since the last fully reviewed
+          # head plus a bounded rotating sample of the rest, so a PR that gets
+          # eight review rounds does not re-review all of itself eight times.
+          # The first review of a PR has no state to compare against and still
+          # runs full, which is what the budget above is sized for. Override per
+          # PR with a zai-review:full / zai-review:hybrid / zai-review:incremental
+          # label, applied before the push that triggers the next review.
+          ZAI_REVIEW_MODE: hybrid
+          # Left at the action's own default. Raising it to cut the request
+          # count backfires: at 25000, three of Seance PR #89's 17 chunks spent the
+          # whole 32768-token output budget on reasoning and returned no review
+          # at all (finish reason "length", 116k to 123k reasoning characters),
+          # and each of those cost a wasted request plus the two smaller ones
+          # the action then retries with. Bigger chunks would hit that more
+          # often, not less.
+          MAX_CHUNK_CHARS: 25000
+          # The action's default lockfile patterns plus Markdown. Combray PR
+          # #112 still overran 330 min: its 26 chunks finished, then five
+          # escalated re-reviews did not, and about five chunks were Markdown
+          # (ANALYSIS.md, the changelog, the plan). Code gets the time; docs are
+          # left to scripts/check_docs.py and human review. A pattern matches the
+          # path or the file name, so "*.md" also covers docs/. The review
+          # comment lists the files it skipped.
+          EXCLUDE_PATTERNS: "*.lock,package-lock.json,yarn.lock,pnpm-lock.yaml,*.md"
+          ZAI_REVIEWER_NAME: GLM 5.3 Code Review
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Report an unfinished review on the PR
+        # A failed review step means this revision got no findings, whether the
+        # budget ran out or every chunk failed. Say so on the PR: silence is
+        # otherwise indistinguishable from a reviewer that found nothing.
+        # Cancellations are excluded deliberately, because the concurrency group
+        # cancels a superseded run on every new push and that is not a failure.
+        if: ${{ !cancelled() && steps.review.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          # Keep in step with the review step's timeout-minutes above.
+          REVIEW_BUDGET_MINUTES: "330"
+        run: |
+          set -euo pipefail
+
+          started_at="${REVIEW_STARTED_AT:-}"
+          if [ -n "$started_at" ]; then
+            elapsed_minutes=$(( ( $(date -u +%s) - started_at ) / 60 ))
+            if [ "$elapsed_minutes" -ge "$(( REVIEW_BUDGET_MINUTES - 2 ))" ]; then
+              summary="ran out of time after ${elapsed_minutes} minutes, against its ${REVIEW_BUDGET_MINUTES} minute budget"
+            else
+              summary="failed after ${elapsed_minutes} minutes"
+            fi
+          else
+            summary="did not finish"
+          fi
+
+          notice="${RUNNER_TEMP}/review-unfinished.md"
+          {
+            echo "### GLM 5.3 Code Review did not finish"
+            echo
+            echo "The reviewer ${summary}, so this revision has no findings. Read the missing review as missing, not as a clean one."
+            echo
+            echo "[Workflow run](${RUN_URL})"
+            echo
+            echo "The reviewer sends one model request per chunk of the diff and waits each one out, so its wall clock tracks the size of the change. If this repeats, split the pull request or raise the budget in \`.github/workflows/zai-code-review.yml\`."
+          } > "$notice"
+
+          cat "$notice" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=GLM 5.3 review did not finish::The reviewer ${summary}. No findings were posted for this revision."
+
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -F "body=@${notice}"
+
+      - name: Skip when Z.ai API key is unavailable
+        if: ${{ env.ZAI_API_KEY == '' }}
+        run: echo "Skipping Z.ai review because ZAI_API_KEY is not configured."
