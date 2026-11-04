@@ -1363,10 +1363,11 @@ pdf_viewer_test! {
 }
 
 pdf_viewer_test! {
-    /// The PDF response's `Referrer-Policy` does not apply in the viewer document: across
-    /// origins, its requests send the PDF's origin, as for a response without the header, and
-    /// never its path or query. With an opaque origin, `fetch` sends no `Referer` at all, but a
-    /// web font and a navigation send the document's URL under its referrer policy.
+    /// The PDF response's `Referrer-Policy` does not apply in the viewer document: a web font
+    /// and a navigation the viewer starts across origins send at most the PDF's origin, as for
+    /// a response without the header, and never its path or query. The specifications send no
+    /// `Referer` from the viewer's opaque origin; Servo deviates and sends the document's URL
+    /// under its referrer policy, which gives the origin, so the test accepts either.
     fn test_pdf_viewer_ignores_referrer_policy() {
         // A font from, then a navigation to, another origin on the same server. The font
         // loads through the `FontFace` API, which is behind a preference.
@@ -1397,7 +1398,7 @@ pdf_viewer_test! {
         assert_ne!(preferences.combray_pdf_viewer_csp, viewer_csp());
         prefs::set(preferences);
 
-        let pdf_origin = Some(base.join("/").unwrap().to_string());
+        let pdf_origin = base.join("/").unwrap().to_string();
         for path in ["/default.pdf", "/unsafe-url.pdf"] {
             let next = other.join(&format!("/next{path}")).unwrap();
             test.webview
@@ -1406,12 +1407,16 @@ pdf_viewer_test! {
                 test.webview.url().as_ref() == Some(&next) &&
                     test.webview.load_status() == LoadStatus::Complete
             });
-            let referrers = [
-                log.referrers(&format!("/font{path}")),
-                log.referrers(&format!("/next{path}")),
-            ];
-            let expected = [pdf_origin.clone()];
-            assert_eq!(referrers, [expected.clone(), expected], "{path}");
+            for request in [format!("/font{path}"), format!("/next{path}")] {
+                let referrers = log.referrers(&request);
+                let [referrer] = referrers.as_slice() else {
+                    panic!("expected one request for {request}: {referrers:?}");
+                };
+                assert!(
+                    referrer.as_ref().is_none_or(|referrer| *referrer == pdf_origin),
+                    "{request} sent more than the PDF's origin: {referrer:?}"
+                );
+            }
         }
         server.close();
     }
