@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The min-content size of a single-line row flex container sums its items' min-content contributions</title>
+<link rel="help" href="https://drafts.csswg.org/css-flexbox-1/#intrinsic-main-sizes-compat">
+<link rel="help" href="https://drafts.csswg.org/css-flexbox-1/#intrinsic-item-contributions">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  body { margin: 0; font: 10px/1 Ahem; }
+  .min-content { width: min-content; }
+  .flex { display: flex; }
+  .icon { width: 16px; height: 10px; flex-shrink: 0; }
+</style>
+<!-- With Ahem at 10px, "XXX XXXXX XX" has a min-content width of 50px and a
+     max-content width of 120px. A single word has equal min-content and
+     max-content widths, so its desired flex fraction is zero. The flex base
+     size clamps of the "inflexible" and "capped" cases come from the item
+     contributions section, which Servo follows for both. Chromium applies the
+     cap but not the floor: it gives the "inflexible" row 30 + 50 = 80px, not
+     the 70 + 50 = 120px expected here. -->
+<div class="min-content"><div class="flex" id="word">
+  <span>XX</span><span>XXX XXXXX XX</span>
+</div></div>
+<div class="min-content"><div class="flex" id="icon">
+  <span class="icon"></span><span>XXX XXXXX XX</span>
+</div></div>
+<div class="min-content"><div class="flex" id="gap" style="column-gap: 10px">
+  <span>XX</span><span>XXX XXXXX XX</span>
+</div></div>
+<div class="min-content"><div class="flex" id="inflexible">
+  <span style="flex: none">XXX XXX</span><span>XXX XXXXX XX</span>
+</div></div>
+<div class="min-content"><div class="flex" id="capped">
+  <span style="flex: 0 1 30px; min-width: 0">XXXXXXX</span><span>XXX XXXXX XX</span>
+</div></div>
+<div class="min-content"><div class="flex" id="multi-line" style="flex-wrap: wrap">
+  <span>XX</span><span>XXX XXXXX XX</span>
+</div></div>
+<div style="display: grid; width: 100px">
+  <div class="flex" id="grid-item"><span class="icon"></span><span id="grid-text">XXX XXXXX XX</span></div>
+</div>
+<script>
+function width(id) {
+  return document.getElementById(id).getBoundingClientRect().width;
+}
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("word"), 70);
+}, "A single word does not keep a sentence on one line");
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("icon"), 66);
+}, "An inflexible icon does not keep a sentence on one line");
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("gap"), 80);
+}, "Gaps between items add to the sum");
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("inflexible"), 120);
+}, "An item that cannot shrink contributes at least its flex base size");
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("capped"), 80);
+}, "An item that cannot grow contributes at most its flex base size");
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("multi-line"), 50);
+}, "A multi-line container takes its largest item contribution");
+
+promise_test(async () => {
+  await document.fonts.ready;
+  assert_equals(width("grid-item"), 100);
+  assert_equals(document.getElementById("grid-text").getBoundingClientRect().width, 84);
+}, "An auto grid track holding an icon and a sentence keeps the grid width");
+</script>
