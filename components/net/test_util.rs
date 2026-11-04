@@ -13,10 +13,10 @@ use futures::future::ready;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
-use hyper::server::conn::http1;
+use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
 use hyper::{Request as HyperRequest, Response as HyperResponse};
-use hyper_util::rt::tokio::TokioIo;
+use hyper_util::rt::tokio::{TokioExecutor, TokioIo};
 use net_traits::AsyncRuntime;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use rustls_pki_types::pem::PemObject;
@@ -169,7 +169,27 @@ fn load_private_key_from_file() -> Result<PrivateKeyDer<'static>, Box<dyn std::e
     }
 }
 
+/// The HTTP version that a TLS test server offers through ALPN.
+#[derive(Clone, Copy)]
+pub enum TlsServerProtocol {
+    Http1,
+    Http2,
+}
+
 pub fn make_ssl_server<H>(handler: H) -> (Server, UrlWithBlobClaim)
+where
+    H: Fn(HyperRequest<Incoming>, &mut HyperResponse<BoxBody<Bytes, hyper::Error>>)
+        + Send
+        + Sync
+        + 'static,
+{
+    make_ssl_server_with_protocol(handler, TlsServerProtocol::Http1)
+}
+
+pub fn make_ssl_server_with_protocol<H>(
+    handler: H,
+    protocol: TlsServerProtocol,
+) -> (Server, UrlWithBlobClaim)
 where
     H: Fn(HyperRequest<Incoming>, &mut HyperResponse<BoxBody<Bytes, hyper::Error>>)
         + Send
@@ -190,11 +210,14 @@ where
     let certificates = load_certificates_from_pem().expect("Invalid certificate");
     let key = load_private_key_from_file().expect("Invalid key");
 
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certificates.clone(), key)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
         .expect("Could not create rustls ServerConfig");
+    if let TlsServerProtocol::Http2 = protocol {
+        config.alpn_protocols = vec![b"h2".to_vec()];
+    }
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
@@ -222,17 +245,24 @@ where
                 },
             };
 
-            let _ = http1::Builder::new()
-                .serve_connection(
-                    TokioIo::new(stream),
-                    service_fn(move |req: HyperRequest<Incoming>| {
-                        let mut response =
-                            HyperResponse::new(Empty::new().map_err(|_| unreachable!()).boxed());
-                        handler(req, &mut response);
-                        ready(Ok::<_, Infallible>(response))
-                    }),
-                )
-                .await;
+            let service = service_fn(move |req: HyperRequest<Incoming>| {
+                let mut response =
+                    HyperResponse::new(Empty::new().map_err(|_| unreachable!()).boxed());
+                handler(req, &mut response);
+                ready(Ok::<_, Infallible>(response))
+            });
+            let _ = match protocol {
+                TlsServerProtocol::Http1 => {
+                    http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                },
+                TlsServerProtocol::Http2 => {
+                    http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await
+                },
+            };
         }
     };
 
