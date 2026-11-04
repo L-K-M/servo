@@ -401,9 +401,8 @@ struct FlexItemBoxInlineContentSizesInfo {
     outer_flex_base_size: Au,
     outer_min_main_size: Au,
     outer_max_main_size: Option<Au>,
-    min_flex_factors: DesiredFlexFractionAndGrowOrShrinkFactor,
     max_flex_factors: DesiredFlexFractionAndGrowOrShrinkFactor,
-    min_content_main_size_for_multiline_container: Au,
+    min_content_contribution: Au,
     depends_on_block_constraints: bool,
 }
 
@@ -477,12 +476,12 @@ impl FlexContainer {
         // (and check for ‘writing-mode’?)
         // - TODO: Collapsed flex items need to be skipped for intrinsic size calculation.
 
-        // <https://drafts.csswg.org/css-flexbox-1/#intrinsic-main-sizes>
+        // The max-content size follows the ideal algorithm:
+        // <https://drafts.csswg.org/css-flexbox-1/#intrinsic-main-sizes-ideal>
         // > It is calculated, considering only non-collapsed flex items, by:
         // > 1. For each flex item, subtract its outer flex base size from its max-content
         // > contribution size.
         let mut chosen_max_flex_fraction = f32::NEG_INFINITY;
-        let mut chosen_min_flex_fraction = f32::NEG_INFINITY;
         let mut sum_of_flex_grow_factors = 0.0;
         let mut sum_of_flex_shrink_factors = 0.0;
         let mut item_infos = vec![];
@@ -507,8 +506,6 @@ impl FlexContainer {
                     // > fraction.
                     chosen_max_flex_fraction =
                         chosen_max_flex_fraction.max(info.max_flex_factors.desired_flex_fraction);
-                    chosen_min_flex_fraction =
-                        chosen_min_flex_fraction.max(info.min_flex_factors.desired_flex_fraction);
 
                     item_infos.push(info)
                 },
@@ -532,7 +529,6 @@ impl FlexContainer {
             }
         };
 
-        let chosen_min_flex_fraction = normalize_flex_fraction(chosen_min_flex_fraction);
         let chosen_max_flex_fraction = normalize_flex_fraction(chosen_max_flex_fraction);
 
         let main_gap = match self.config.flex_axis {
@@ -558,9 +554,8 @@ impl FlexContainer {
             outer_flex_base_size,
             outer_min_main_size,
             outer_max_main_size,
-            min_flex_factors,
             max_flex_factors,
-            min_content_main_size_for_multiline_container,
+            min_content_contribution,
             depends_on_block_constraints,
         } in item_infos.iter()
         {
@@ -575,25 +570,23 @@ impl FlexContainer {
                 ))
             .clamp_between_extremums(*outer_min_main_size, *outer_max_main_size);
 
-            // > The min-content main size of a single-line flex container is calculated
-            // > identically to the max-content main size, except that the flex items’
-            // > min-content contributions are used instead of their max-content contributions.
-            //
-            // > However, for a multi-line container, the min-content main size is simply the
-            // > largest min-content contribution of all the non-collapsed flex items in the
-            // > flex container. For this purpose, each item’s contribution is capped by the
-            // > item’s flex base size if the item is not growable, floored by the item’s flex
-            // > base size if the item is not shrinkable, and then further clamped by the item’s
-            // > min and max main sizes.
+            // The min-content size follows the Web-compatible algorithm. Computing it like the
+            // max-content size, as the ideal algorithm does, is not Web-compatible: one item
+            // whose desired flex fraction is zero (a single word, an icon) keeps every other item
+            // at its flex base size, so a row of an icon and a sentence needed the whole sentence
+            // on one line, and an auto grid track or table column holding it overflowed.
+            // <https://drafts.csswg.org/css-flexbox-1/#intrinsic-main-sizes-compat>
+            // > For the min-content size of a single-line container, take the sum of the
+            // > min-content contributions of all the non-collapsed flex items in the flex
+            // > container.
+            // <https://drafts.csswg.org/css-flexbox-1/#intrinsic-main-sizes-multiline>
+            // > For a multi-line container, the min-content main size is simply the largest
+            // > min-content contribution of all the non-collapsed flex items in the flex
+            // > container.
             if self.config.flex_wrap == FlexWrap::NOWRAP {
-                container_min_content_size += (*outer_flex_base_size +
-                    Au::from_f32_px(
-                        min_flex_factors.flex_grow_or_shrink_factor * chosen_min_flex_fraction,
-                    ))
-                .clamp_between_extremums(*outer_min_main_size, *outer_max_main_size);
+                container_min_content_size += *min_content_contribution;
             } else {
-                container_min_content_size
-                    .max_assign(*min_content_main_size_for_multiline_container);
+                container_min_content_size.max_assign(*min_content_contribution);
             }
 
             container_depends_on_block_constraints |= depends_on_block_constraints;
@@ -1138,22 +1131,12 @@ fn do_initial_flex_line_layout<'items>(
     mut items: Vec<FlexItem<'items>>,
     main_gap: Au,
 ) -> Vec<InitialFlexLineLayout<'items>> {
-    let construct_line = |(items, outer_hypothetical_main_size)| {
-        InitialFlexLineLayout::new(
-            flex_context,
-            items,
-            outer_hypothetical_main_size,
-            container_main_size,
-            main_gap,
-        )
+    let construct_line = |items: Vec<FlexItem<'items>>| {
+        InitialFlexLineLayout::new(flex_context, items, container_main_size, main_gap)
     };
 
     if flex_context.config.container_is_single_line {
-        let outer_hypothetical_main_sizes_sum = items
-            .iter()
-            .map(|item| item.hypothetical_main_size + item.pbm_auto_is_zero.main)
-            .sum();
-        return vec![construct_line((items, outer_hypothetical_main_sizes_sum))];
+        return vec![construct_line(items)];
     }
 
     let mut lines = Vec::new();
@@ -1177,7 +1160,7 @@ fn do_initial_flex_line_layout<'items>(
 
         // We found something that doesn’t fit. This line ends *before* this item.
         let remaining = items.split_off(index);
-        lines.push((items, line_size_so_far));
+        lines.push(items);
         items = remaining;
 
         // The next line has this item.
@@ -1186,11 +1169,11 @@ fn do_initial_flex_line_layout<'items>(
     }
 
     // We didn't reach the end of the last line, so add all remaining items there.
-    lines.push((items, line_size_so_far));
+    lines.push(items);
 
     let job_sizes = lines
         .iter()
-        .map(|line| line.0.iter().map(FlexItem::subtree_size).sum());
+        .map(|line| line.iter().map(FlexItem::subtree_size).sum());
     if flex_context
         .layout_context
         .should_parallelize_layout(job_sizes)
@@ -1219,14 +1202,12 @@ impl InitialFlexLineLayout<'_> {
     fn new<'items>(
         flex_context: &FlexContext,
         items: Vec<FlexItem<'items>>,
-        outer_hypothetical_main_sizes_sum: Au,
         container_main_size: Au,
         main_gap: Au,
     ) -> InitialFlexLineLayout<'items> {
         let item_count = items.len();
         let (item_used_main_sizes, free_space_in_main_axis) = Self::resolve_flexible_lengths(
             &items,
-            outer_hypothetical_main_sizes_sum,
             container_main_size - main_gap * (item_count as i32 - 1),
         );
 
@@ -1282,7 +1263,6 @@ impl InitialFlexLineLayout<'_> {
     /// <https://drafts.csswg.org/css-flexbox/#resolve-flexible-lengths>
     fn resolve_flexible_lengths<'items>(
         items: &'items [FlexItem<'items>],
-        outer_hypothetical_main_sizes_sum: Au,
         container_main_size: Au,
     ) -> (Vec<Au>, Au) {
         struct FlexibleLengthResolutionItem<'items> {
@@ -1297,6 +1277,10 @@ impl InitialFlexLineLayout<'_> {
         // > items on the line. If the sum is less than the flex container’s inner main
         // > size, use the flex grow factor for the rest of this algorithm; otherwise, use
         // > the flex shrink factor.
+        let outer_hypothetical_main_sizes_sum: Au = items
+            .iter()
+            .map(|item| item.hypothetical_main_size + item.pbm_auto_is_zero.main)
+            .sum();
         let grow = outer_hypothetical_main_sizes_sum < container_main_size;
 
         let mut frozen_count = 0;
@@ -2542,41 +2526,27 @@ impl FlexItemBox {
             outer_flex_base_size,
         );
 
-        // > The min-content main size of a single-line flex container is calculated
-        // > identically to the max-content main size, except that the flex items’
-        // > min-content contributions are used instead of their max-content contributions.
-        let min_flex_factors = self.desired_flex_factors_for_preferred_width(
-            content_contribution_sizes.min_content,
-            flex_base_size,
-            outer_flex_base_size,
-        );
-
-        // > However, for a multi-line container, the min-content main size is simply the
-        // > largest min-content contribution of all the non-collapsed flex items in the
-        // > flex container. For this purpose, each item’s contribution is capped by the
-        // > item’s flex base size if the item is not growable, floored by the item’s flex
-        // > base size if the item is not shrinkable, and then further clamped by the item’s
-        // > min and max main sizes.
-        let mut min_content_main_size_for_multiline_container =
-            content_contribution_sizes.min_content;
+        // <https://drafts.csswg.org/css-flexbox-1/#intrinsic-item-contributions>
+        // > For this purpose, each contribution is capped by the item’s flex base size if the
+        // > item is not growable, floored by the item’s flex base size if the item is not
+        // > shrinkable, and then further clamped by the item’s min/max main size.
+        let mut min_content_contribution = content_contribution_sizes.min_content;
         let style_position = &self.style().get_position();
         if style_position.flex_grow.is_zero() {
-            min_content_main_size_for_multiline_container.min_assign(outer_flex_base_size);
+            min_content_contribution.min_assign(outer_flex_base_size);
         }
         if style_position.flex_shrink.is_zero() {
-            min_content_main_size_for_multiline_container.max_assign(outer_flex_base_size);
+            min_content_contribution.max_assign(outer_flex_base_size);
         }
-        min_content_main_size_for_multiline_container =
-            min_content_main_size_for_multiline_container
-                .clamp_between_extremums(outer_min_main_size, outer_max_main_size);
+        min_content_contribution = min_content_contribution
+            .clamp_between_extremums(outer_min_main_size, outer_max_main_size);
 
         FlexItemBoxInlineContentSizesInfo {
             outer_flex_base_size,
             outer_min_main_size,
             outer_max_main_size,
-            min_flex_factors,
             max_flex_factors,
-            min_content_main_size_for_multiline_container,
+            min_content_contribution,
             depends_on_block_constraints,
         }
     }
