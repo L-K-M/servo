@@ -29,7 +29,7 @@ use js::context::JSContext;
 use markup5ever::TokenizerResult;
 use mime::{self, Mime};
 use net_traits::mime_classifier::{ApacheBugFlag, MediaType, MimeClassifier, NoSniffFlag};
-use net_traits::policy_container::PolicyContainer;
+use net_traits::policy_container::{EmbedderPolicy, PolicyContainer};
 use net_traits::{
     FetchMetadata, LoadContext, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming,
 };
@@ -1625,11 +1625,12 @@ impl ParserContext {
             })
             .unwrap_or_default();
 
-        // Combray: the viewer's policy replaces the PDF response's, so a `sandbox` directive
-        // in the response cannot stop the viewer module either. The response may not
-        // preload, preconnect or set reporting endpoints for the viewer; CSP does not govern
-        // preconnects.
-        let (policy_container, endpoints_list, link_headers) = match pdf_viewer {
+        // Combray: the viewer gets a new policy container, not the PDF response's: the viewer's
+        // policy, so a `sandbox` directive in the response cannot stop the viewer module either,
+        // and the default referrer and embedder policies. Naming every field makes each new one
+        // a decision. The response may not preload, preconnect, set reporting endpoints or set
+        // the viewer's language; CSP does not govern preconnects.
+        let (policy_container, endpoints_list, link_headers, content_language) = match pdf_viewer {
             Some((_, ref csp)) => (
                 PolicyContainer {
                     csp_list: Some(CspList::parse(
@@ -1637,12 +1638,19 @@ impl ParserContext {
                         PolicySource::Header,
                         PolicyDisposition::Enforce,
                     )),
-                    ..policy_container
+                    embedder_policy: EmbedderPolicy::default(),
+                    referrer_policy: ReferrerPolicy::default(),
                 },
                 None,
                 Vec::new(),
+                None,
             ),
-            None => (policy_container, endpoints_list, link_headers),
+            None => (
+                policy_container,
+                endpoints_list,
+                link_headers,
+                content_language,
+            ),
         };
 
         // Step 21.10. Set finalSandboxFlags to the union of targetSnapshotParams's

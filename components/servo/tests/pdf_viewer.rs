@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE};
+use http::header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERER};
 use http::{HeaderName, HeaderValue, Method};
 use http_body_util::BodyExt;
 use http_body_util::combinators::BoxBody;
@@ -438,13 +438,23 @@ impl PdfTest {
 
 type HttpResponse = HyperResponse<BoxBody<Bytes, hyper::Error>>;
 
-/// The paths of the requests the test server received.
+/// The path and the `Referer` of each request the test server received.
 #[derive(Clone, Default)]
-struct ServerLog(Arc<Mutex<Vec<String>>>);
+struct ServerLog(Arc<Mutex<Vec<(String, Option<String>)>>>);
 
 impl ServerLog {
     fn count(&self, path: &str) -> usize {
-        self.0.lock().unwrap().iter().filter(|p| *p == path).count()
+        let log = self.0.lock().unwrap();
+        log.iter().filter(|(p, _)| p == path).count()
+    }
+
+    /// The `Referer` of each request for `path`, in order.
+    fn referrers(&self, path: &str) -> Vec<Option<String>> {
+        let log = self.0.lock().unwrap();
+        log.iter()
+            .filter(|(p, _)| p == path)
+            .map(|(_, referrer)| referrer.clone())
+            .collect()
     }
 }
 
@@ -457,7 +467,11 @@ fn start_server(
     let (server, url) = make_server(
         move |request: HyperRequest<Incoming>, response: &mut HttpResponse| {
             let path = request.uri().path().to_owned();
-            server_log.0.lock().unwrap().push(path.clone());
+            let referrer = request
+                .headers()
+                .get(REFERER)
+                .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned());
+            server_log.0.lock().unwrap().push((path.clone(), referrer));
             route(&path, response);
         },
     );
@@ -1344,6 +1358,85 @@ pdf_viewer_test! {
         assert_eq!(test.wait_for_report(&test.webview, "/doc.pdf"), "ready");
         test.spin_for(Duration::from_millis(500));
         assert_eq!(log.count("/pdf-preload.css"), 0);
+        server.close();
+    }
+}
+
+pdf_viewer_test! {
+    /// The PDF response's `Referrer-Policy` does not apply in the viewer document: across
+    /// origins, its requests send the PDF's origin, as for a response without the header, and
+    /// never its path or query. With an opaque origin, `fetch` sends no `Referer` at all, but a
+    /// web font and a navigation send the document's URL under its referrer policy.
+    fn test_pdf_viewer_ignores_referrer_policy() {
+        // A font from, then a navigation to, another origin on the same server. The font
+        // loads through the `FontFace` API, which is behind a preference.
+        let module = "
+            const other = `http://127.0.0.1:${location.port}`;
+            const path = location.pathname;
+            new FontFace('probe', `url(${other}/font${path})`).load().catch(() => {}).then(() => {
+                location.href = `${other}/next${path}`;
+            });
+        ";
+        let test = PdfTest::new(ViewerFiles::new(module), |preferences| {
+            preferences.dom_fontface_enabled = true;
+        });
+        let (server, base, log) = start_server(|path, response| match path {
+            "/unsafe-url.pdf" => {
+                serve_pdf(response, PDF_LENGTH);
+                set_header(response, "referrer-policy", "unsafe-url");
+            },
+            "/default.pdf" => serve_pdf(response, PDF_LENGTH),
+            _ => serve_html(response, "<!DOCTYPE html>other"),
+        });
+        let mut other = base.clone();
+        other.set_host(Some("127.0.0.1")).unwrap();
+        let other_origin = other.origin().ascii_serialization();
+        let mut preferences = prefs::get().clone();
+        preferences.combray_pdf_viewer_csp =
+            viewer_csp().replace("font-src 'none'", &format!("font-src {other_origin}"));
+        assert_ne!(preferences.combray_pdf_viewer_csp, viewer_csp());
+        prefs::set(preferences);
+
+        let pdf_origin = Some(base.join("/").unwrap().to_string());
+        for path in ["/default.pdf", "/unsafe-url.pdf"] {
+            let next = other.join(&format!("/next{path}")).unwrap();
+            test.webview
+                .load(base.join(&format!("{path}?secret=1")).unwrap());
+            test.spin_until(&format!("the viewer of {path} to navigate"), || {
+                test.webview.url().as_ref() == Some(&next) &&
+                    test.webview.load_status() == LoadStatus::Complete
+            });
+            let referrers = [
+                log.referrers(&format!("/font{path}")),
+                log.referrers(&format!("/next{path}")),
+            ];
+            let expected = [pdf_origin.clone()];
+            assert_eq!(referrers, [expected.clone(), expected], "{path}");
+        }
+        server.close();
+    }
+}
+
+pdf_viewer_test! {
+    /// The PDF response's `Content-Language` does not set the viewer document's language.
+    fn test_pdf_viewer_ignores_content_language() {
+        const LANGUAGE_SCRIPT: &str = "String(document.documentElement.matches(':lang(fr)'))";
+        let test = PdfTest::new(ViewerFiles::new(SETTLED_VIEWER_MODULE), |_| {});
+        let (server, base, _) = start_server(|path, response| {
+            match path {
+                "/page.html" => serve_html(response, "<!DOCTYPE html>page"),
+                _ => serve_pdf(response, PDF_LENGTH),
+            }
+            set_header(response, "content-language", "fr");
+        });
+
+        // The same header on a page sets its language, so the check below means something.
+        test.load(&base.join("/page.html").unwrap());
+        assert_eq!(test.evaluate(LANGUAGE_SCRIPT), "true");
+
+        test.load(&base.join("/doc.pdf").unwrap());
+        assert_eq!(test.wait_for_report(&test.webview, "/doc.pdf"), "ready");
+        assert_eq!(test.evaluate(LANGUAGE_SCRIPT), "false");
         server.close();
     }
 }
