@@ -62,7 +62,10 @@ fn test_panic_reporter_reports_script_thread_panic_as_crash() {
     log::set_max_level(LevelFilter::Trace);
 
     let reporter: PanicReporter = servo_test.servo().panic_reporter();
+    // Chain the test harness's hook, so that panic messages and locations still show.
+    let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info: &PanicHookInfo| {
+        previous_hook(info);
         log::error!("{}", panic_message(info));
         if !should_panic_hook_suppress_termination() {
             reporter.report_panic(panic_message(info));
