@@ -150,14 +150,20 @@ impl HTMLMetaElement {
         };
 
         if let Ok(viewport) = ViewportDescription::from_str(&content) {
-            let initial_scale = viewport.initial_scale.get();
+            let initial_scale = viewport
+                .initial_scale_specified
+                .then_some(viewport.initial_scale.get());
             let window = self.owner_window();
             window
                 .paint_api()
                 .viewport(window.webview_id(), window.pipeline_id(), viewport);
-            window
-                .get_or_init_visual_viewport(cx)
-                .update_scale(initial_scale);
+            // Without an `initial-scale`, `Paint` picks the scale from the page's width and
+            // reports it.
+            if let Some(initial_scale) = initial_scale {
+                window
+                    .get_or_init_visual_viewport(cx)
+                    .update_scale(initial_scale);
+            }
         }
     }
 

@@ -118,9 +118,10 @@ pub(crate) struct WebViewRenderer {
     /// Whether or not this [`WebViewRenderer`] isn't throttled and has a pipeline with
     /// active animations or animation frame callbacks.
     animating: bool,
-    /// Whether the user changed the pinch zoom of the root pipeline's document. Until then,
-    /// its pinch zoom follows the document's initial scale while its layout viewport grows.
-    pinch_zoom_changed_by_user: bool,
+    /// The page scale the user chose for the root pipeline's document by zooming, if any.
+    /// Until the user zooms, the document shows at its initial scale while its layout
+    /// viewport grows; after that, at this scale where the limits of the moment allow it.
+    user_page_scale: Option<f32>,
 
     /// The [`ViewportDetails`] last sent to the constellation, if any.
     last_sent_viewport_details: Option<ViewportDetails>,
@@ -165,7 +166,7 @@ impl WebViewRenderer {
             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
             hidden: false,
             animating: false,
-            pinch_zoom_changed_by_user: false,
+            user_page_scale: None,
             last_sent_viewport_details: Some(viewport_details),
             screen_size: viewport_details.device_size,
             embedder_to_constellation_sender,
@@ -275,7 +276,7 @@ impl WebViewRenderer {
     /// `<meta viewport>` constraints rather than the previous document's, whose zoom was
     /// `old_zoom`.
     fn reset_pinch_zoom_for_new_document(&mut self, old_zoom: ZoomState) {
-        self.pinch_zoom_changed_by_user = false;
+        self.user_page_scale = None;
         self.pinch_zoom = PinchZoom::new(self.rect);
         self.pinch_zoom
             .set_zoom_and_origin(self.initial_pinch_zoom_factor(), DevicePoint::origin());
@@ -333,11 +334,7 @@ impl WebViewRenderer {
             return false;
         }
 
-        let factor = match self.pinch_zoom_changed_by_user {
-            true => self.pinch_zoom.zoom_factor().0 * expansion / old_expansion,
-            false => self.initial_pinch_zoom_factor(),
-        };
-        let factor = factor.clamp(1.0, self.maximum_pinch_zoom_factor());
+        let factor = self.target_pinch_zoom_factor();
 
         // Device pixels per CSS pixel in the unscaled viewport change by this factor.
         let scale_change = old_expansion / expansion;
@@ -942,8 +939,11 @@ impl WebViewRenderer {
                     let new_scale = viewport_description
                         .clamp_zoom(unzoomed_scale * new_pinch_zoom.zoom_factor().0 * magnification)
                         .max(unzoomed_scale);
+                    let before = new_pinch_zoom;
                     new_pinch_zoom.set_zoom(new_scale / unzoomed_scale, center);
-                    pinch_zoomed = true;
+                    // A pinch already at its limit changes nothing and leaves the page
+                    // following its initial scale.
+                    pinch_zoomed |= new_pinch_zoom != before;
                 },
                 ScrollZoomEvent::Scroll(scroll_event_info) => {
                     let combined_event = match combined_scroll_event.as_mut() {
@@ -1005,7 +1005,7 @@ impl WebViewRenderer {
         }
 
         if pinch_zoomed {
-            self.pinch_zoom_changed_by_user = true;
+            self.user_page_scale = Some(unzoomed_scale * new_pinch_zoom.zoom_factor().0);
         }
 
         // Additionally notify pinch zoom update to the script.
@@ -1114,8 +1114,8 @@ impl WebViewRenderer {
         if root_pipeline
             .scroll_tree
             .scroll_offset(ExternalScrollId(0, root_pipeline_id.into()))?
-            .y >
-            0.0
+            .y
+            > 0.0
         {
             return Some(true);
         }
@@ -1137,8 +1137,8 @@ impl WebViewRenderer {
         let mut saw_unknown_chain = false;
         let mut previous_pipeline_id = None;
         for hit_test_result in hit_test_results {
-            if previous_pipeline_id.replace(hit_test_result.pipeline_id) ==
-                Some(hit_test_result.pipeline_id)
+            if previous_pipeline_id.replace(hit_test_result.pipeline_id)
+                == Some(hit_test_result.pipeline_id)
             {
                 continue;
             }
@@ -1281,6 +1281,17 @@ impl WebViewRenderer {
             true => self.layout_viewport_expansion(),
             false => 1.0,
         }
+    }
+
+    /// The pinch zoom factor to show the root document at: the page scale the user chose or,
+    /// until the user zooms, its initial scale, within the limits of the moment. The user's
+    /// scale survives a layout viewport too small for it for a while.
+    fn target_pinch_zoom_factor(&self) -> f32 {
+        let factor = match self.user_page_scale {
+            Some(page_scale) => page_scale / self.unzoomed_page_scale(),
+            None => self.initial_pinch_zoom_factor(),
+        };
+        factor.clamp(1.0, self.maximum_pinch_zoom_factor())
     }
 
     /// The largest pinch zoom factor, from the root document's `maximum-scale`.
@@ -1440,11 +1451,14 @@ impl WebViewRenderer {
         }
 
         self.send_window_size_message();
-        if !self.pinch_zoom_changed_by_user {
-            let origin = self.pinch_zoom.origin();
-            self.pinch_zoom
-                .set_zoom_and_origin(self.initial_pinch_zoom_factor(), origin);
-        }
+
+        // The unscaled viewport's device pixels per CSS pixel change with `initial-scale`:
+        // keep the content at the pinch zoom viewport's top left corner.
+        let scale_change = self.unscaled_viewport_device_pixels_per_page_pixel().get() /
+            old_zoom.unscaled_viewport_scale.get();
+        let origin = self.pinch_zoom.origin() * scale_change;
+        self.pinch_zoom
+            .set_zoom_and_origin(self.target_pinch_zoom_factor(), origin);
         self.notify_zoom_changes(old_zoom)
     }
 

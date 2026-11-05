@@ -741,8 +741,8 @@ impl WebView {
     /// The final pinch zoom values will be clamped to defaults (the inclusive range [1.0, 10.0]).
     /// The values used for clamping can be adjusted by page content when `<meta viewport>`
     /// parsing is enabled via `Prefs::viewport_meta_enabled`, exclusively on mobile devices.
-    /// Then pinch zoom can also go below 1.0, down to the scale that shows the full width of
-    /// content wider than the viewport.
+    /// With that preference, pinch zoom can also go below 1.0, down to the scale that shows
+    /// the full width of content wider than the viewport.
     pub fn adjust_pinch_zoom(&self, pinch_zoom_delta: f32, center: DevicePoint) {
         self.servo()
             .paint()

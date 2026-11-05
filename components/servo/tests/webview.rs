@@ -1520,6 +1520,45 @@ fn test_viewport_zooms_out_to_a_quarter_without_minimum_scale() {
 }
 
 #[test]
+fn test_viewport_user_zoom_survives_a_new_viewport_meta() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(
+            "<meta name=viewport content='width=device-width,initial-scale=1'>",
+        ))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    webview.adjust_pinch_zoom(0.5, DevicePoint::new(0., 0.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        0.5,
+        "pinch zoom after zooming out",
+    );
+
+    // A `<meta viewport>` the page adds later changes the initial containing block and the
+    // layout viewport, but not the scale the user chose.
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "let meta = document.createElement('meta'); meta.name = 'viewport'; \
+         meta.content = 'width=device-width,initial-scale=2'; document.head.append(meta);",
+    );
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        0.5,
+        "pinch zoom after the new meta",
+    );
+    let inner_width = evaluate_number(&servo_test, &webview, "innerWidth");
+    assert_close(inner_width, 250., "innerWidth at initial-scale=2");
+}
+
+#[test]
 fn test_viewport_hidden_horizontal_overflow_does_not_zoom_out() {
     let servo_test = mobile_viewport_servo_test();
     let delegate = Rc::new(WebViewDelegateImpl::default());
