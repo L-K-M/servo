@@ -337,6 +337,14 @@ impl MessagePortMethods<crate::DomTypeHolder> for MessagePort {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-messageport-close>
     fn Close(&self, cx: &mut JSContext) {
+        // A detached port was closed already, or transferred: the port now lives in its new
+        // owner and this object is a stale handle. Closing that handle must not disentangle the
+        // channel the transferred port still uses. (The spec disentangles here and entangles the
+        // transferred port again once it is received; Chromium and Gecko ignore the call.)
+        if self.detached.get() {
+            return;
+        }
+
         // Set this's [[Detached]] internal slot value to true.
         self.detached.set(true);
 

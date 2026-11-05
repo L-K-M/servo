@@ -104,6 +104,7 @@ use crate::clipboard_delegate::StringRequest;
 use crate::gamepad_delegate::{GamepadHapticEffectRequest, GamepadHapticEffectRequestType};
 use crate::javascript_evaluator::JavaScriptEvaluator;
 use crate::network_manager::NetworkManager;
+use crate::panic_reporter::PanicReporter;
 use crate::proxies::ConstellationProxy;
 use crate::responders::ServoErrorChannel;
 use crate::servo_delegate::{DefaultServoDelegate, ServoDelegate, ServoError};
@@ -1108,6 +1109,13 @@ impl Servo {
 
         log::set_boxed_logger(Box::new(logger)).expect("Failed to set logger.");
         log::set_max_level(filter);
+    }
+
+    /// A [`PanicReporter`] for embedders that install their own logger instead of calling
+    /// [`Self::setup_logging`], so that their panic hook can report the panics of Servo's script
+    /// threads as crashes.
+    pub fn panic_reporter(&self) -> PanicReporter {
+        PanicReporter::new(FromEmbedderLogger::new(self.0.constellation_proxy.sender()))
     }
 
     pub fn create_memory_report(&self, snd: GenericCallback<MemoryReportResult>) {
