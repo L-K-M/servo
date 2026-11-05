@@ -148,15 +148,16 @@ impl ViewportDescription {
         description
     }
 
-    /// Parses a viewport zoom value.
+    /// Parses a viewport zoom value. A zoom of zero is no zoom: Servo divides by these
+    /// scales, so positive values below [`MIN_PAGE_ZOOM`] become it.
     fn parse_viewport_value_as_zoom(
         value: &str,
     ) -> Option<Scale<f32, CSSPixel, DeviceIndependentPixel>> {
         value
             .parse::<f32>()
             .ok()
-            .filter(|&n| (0.0..=10.0).contains(&n))
-            .map(Scale::new)
+            .filter(|&n| n > 0.0 && n <= MAX_PAGE_ZOOM.get())
+            .map(|n| Scale::new(n.max(MIN_PAGE_ZOOM.get())))
     }
 
     /// Constrains a zoom value within the allowed scale range
@@ -205,5 +206,44 @@ impl FromStr for ViewportDescription {
             .collect::<HashMap<String, String>>();
 
         Ok(Self::process_viewport_key_value_pairs(parsed_values))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_and_tiny_zoom_values_never_become_a_zero_scale() {
+        let description =
+            ViewportDescription::from_str("initial-scale=0, minimum-scale=0").unwrap();
+        assert!(!description.initial_scale_specified);
+        assert_eq!(description.initial_scale, DEFAULT_PAGE_ZOOM);
+        assert!(!description.minimum_scale_specified);
+
+        let description =
+            ViewportDescription::from_str("initial-scale=0.001, minimum-scale=0.001").unwrap();
+        assert_eq!(description.initial_scale, MIN_PAGE_ZOOM);
+        assert_eq!(description.minimum_scale, MIN_PAGE_ZOOM);
+        assert_eq!(description.max_layout_viewport_expansion(), 1.0);
+    }
+
+    #[test]
+    fn layout_viewport_expansion_follows_initial_and_minimum_scale() {
+        let expansion = |content: &str| {
+            ViewportDescription::from_str(content)
+                .unwrap()
+                .max_layout_viewport_expansion()
+        };
+        // Chrome's 25% without a minimum-scale.
+        assert_eq!(
+            ViewportDescription::default().max_layout_viewport_expansion(),
+            4.0
+        );
+        assert_eq!(expansion("width=device-width"), 4.0);
+        assert_eq!(expansion("initial-scale=1, minimum-scale=0.5"), 2.0);
+        assert_eq!(expansion("initial-scale=1, minimum-scale=1"), 1.0);
+        // An initial-scale below 25% is itself the floor.
+        assert_eq!(expansion("initial-scale=0.2"), 1.0);
     }
 }
