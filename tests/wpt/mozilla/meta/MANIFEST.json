@@ -14879,6 +14879,13 @@
       {}
      ]
     ],
+    "messageport-close-after-transfer.html": [
+     "3becd3b21e99bcf0b86da609b701ace027c6cb20",
+     [
+      null,
+      {}
+     ]
+    ],
     "microdata": {
      "dup-prop-type-test.html": [
       "23afa74863c8b70ac627eafc2af39059e7039727",

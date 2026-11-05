@@ -1,0 +1,84 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>close() on a MessagePort after it was transferred</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-messageport-close">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#message-ports:transfer-steps">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+// Transferring a port detaches the object the script still holds. Calling
+// close() on that object in the same task used to panic the script thread,
+// because its global no longer managed the port.
+
+function nextMessage(target) {
+  return new Promise(resolve => {
+    target.addEventListener("message", resolve, {once: true});
+  });
+}
+
+function startWorker(t, source) {
+  const url = URL.createObjectURL(new Blob([source], {type: "text/javascript"}));
+  const worker = new Worker(url);
+  t.add_cleanup(() => {
+    worker.terminate();
+    URL.revokeObjectURL(url);
+  });
+  return worker;
+}
+
+promise_test(async t => {
+  const {port1} = new MessageChannel();
+  const received = nextMessage(window);
+  window.postMessage("port", "*", [port1]);
+  port1.close();
+  const event = await received;
+  assert_equals(event.ports.length, 1, "the port still arrives");
+}, "close() after window.postMessage transferred the port");
+
+promise_test(async t => {
+  const carrier = new MessageChannel();
+  const {port1} = new MessageChannel();
+  const received = new Promise(resolve => carrier.port2.onmessage = resolve);
+  carrier.port1.postMessage("port", [port1]);
+  port1.close();
+  const event = await received;
+  assert_equals(event.ports.length, 1, "the port still arrives");
+}, "close() after MessagePort.postMessage transferred the port");
+
+promise_test(async t => {
+  const worker = startWorker(t, `
+    onmessage = e => postMessage(e.ports.length);
+  `);
+  const {port1} = new MessageChannel();
+  const received = nextMessage(worker);
+  worker.postMessage("port", [port1]);
+  port1.close();
+  assert_equals((await received).data, 1, "the worker receives the port");
+}, "close() after Worker.postMessage transferred the port");
+
+promise_test(async t => {
+  const {port1} = new MessageChannel();
+  window.postMessage("port", "*", [port1]);
+  port1.close();
+  port1.close();
+  await new Promise(resolve => t.step_timeout(resolve, 0));
+}, "close() twice after a transfer");
+
+// Whether the spec's disentangle-then-entangle-on-receipt runs or close() is
+// ignored, as in Chromium and Gecko, the transferred port keeps its channel.
+promise_test(async t => {
+  const {port1, port2} = new MessageChannel();
+  const received = nextMessage(window);
+  window.postMessage("port", "*", [port1]);
+  port1.close();
+  const moved = (await received).ports[0];
+
+  const toMoved = new Promise(resolve => moved.onmessage = resolve);
+  port2.postMessage("to the moved port");
+  assert_equals((await toMoved).data, "to the moved port");
+
+  const toRemote = new Promise(resolve => port2.onmessage = resolve);
+  moved.postMessage("to the remote port");
+  assert_equals((await toRemote).data, "to the remote port");
+}, "the transferred port keeps its channel after close() on the object left behind");
+</script>
