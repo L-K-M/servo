@@ -925,6 +925,9 @@ impl Painter {
             return;
         };
 
+        let old_offset = pipeline_details
+            .scroll_tree
+            .scroll_offset(external_scroll_id);
         let Some(offset) = pipeline_details
             .scroll_tree
             .set_scroll_offset_for_node_with_external_scroll_id(
@@ -938,8 +941,19 @@ impl Painter {
             warn!("Could not scroll node with id: {external_scroll_id:?}");
             return;
         };
+        let scroll_range = pipeline_details
+            .scroll_tree
+            .scroll_range(external_scroll_id);
 
         let mut transaction = Transaction::new();
+        let is_root_scroll_node = Some(pipeline_id) == webview_renderer.root_pipeline_id &&
+            external_scroll_id == ExternalScrollId(0, pipeline_id.into());
+        if let (true, Some(old_offset), Some(scroll_range)) =
+            (is_root_scroll_node, old_offset, scroll_range) &&
+            webview_renderer.follow_root_scroll_to_edge(old_offset, offset, scroll_range)
+        {
+            self.send_root_pipeline_display_list_in_transaction(&mut transaction);
+        }
         transaction.set_scroll_offsets(
             external_scroll_id,
             vec![SampledScrollOffset {

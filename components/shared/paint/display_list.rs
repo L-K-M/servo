@@ -752,6 +752,17 @@ impl ScrollTree {
         })
     }
 
+    /// Get how far the node with the given [`ExternalScrollId`] can scroll in each axis, or
+    /// `None` if that node cannot be found in the tree.
+    pub fn scroll_range(&self, id: ExternalScrollId) -> Option<LayoutSize> {
+        self.nodes.iter().find_map(|node| match node.info {
+            SpatialTreeNodeInfo::Scroll(ref info) if info.external_id == id => {
+                Some(info.scrollable_size().max(LayoutSize::zero()))
+            },
+            _ => None,
+        })
+    }
+
     /// Find a transformation that can convert a point in the node coordinate system to a
     /// point in the root coordinate system.
     pub fn cumulative_node_to_root_transform(

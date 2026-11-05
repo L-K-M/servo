@@ -29,7 +29,9 @@ use servo_constellation_traits::{
 use servo_geometry::DeviceIndependentPixel;
 use style_traits::CSSPixel;
 use webrender::RenderApi;
-use webrender_api::units::{DevicePixel, DevicePoint, DeviceRect, DeviceVector2D, LayoutVector2D};
+use webrender_api::units::{
+    DevicePixel, DevicePoint, DeviceRect, DeviceVector2D, LayoutSize, LayoutVector2D,
+};
 use webrender_api::{DocumentId, ExternalScrollId, ScrollLocation};
 
 use crate::InputEventDispatch;
@@ -344,6 +346,47 @@ impl WebViewRenderer {
         let origin = self.pinch_zoom.origin() * scale_change + lost_root_scroll;
 
         self.pinch_zoom.set_zoom_and_origin(factor, origin);
+        self.notify_zoom_changes(old_zoom)
+    }
+
+    /// Script moved the root scroller from `old_offset` to `new_offset`, within a scroll
+    /// range of `scroll_range`. Script moves only the layout viewport, so a page zoomed in
+    /// within its layout viewport (by the user, or at its `initial-scale` inside a layout
+    /// viewport grown for wide content) would still show a part away from the edge it
+    /// scrolled to. When the root reaches an edge of its range in an axis it moved along,
+    /// move the pinch zoom viewport to the same edge. Returns `true` when the root pipeline's
+    /// transform changed.
+    pub(crate) fn follow_root_scroll_to_edge(
+        &mut self,
+        old_offset: LayoutVector2D,
+        new_offset: LayoutVector2D,
+        scroll_range: LayoutSize,
+    ) -> bool {
+        // Past every pinch zoom viewport position; `set_zoom_and_origin` clamps it.
+        let far_edge = self.rect.max.x.max(self.rect.max.y);
+        let edge = |old: f32, new: f32, range: f32, origin: f32| {
+            if old == new {
+                origin
+            } else if new <= 0.0 {
+                0.0
+            } else if new >= range {
+                far_edge
+            } else {
+                origin
+            }
+        };
+        let origin = self.pinch_zoom.origin();
+        let new_origin = DevicePoint::new(
+            edge(old_offset.x, new_offset.x, scroll_range.width, origin.x),
+            edge(old_offset.y, new_offset.y, scroll_range.height, origin.y),
+        );
+        if new_origin == origin {
+            return false;
+        }
+
+        let old_zoom = self.zoom_state();
+        self.pinch_zoom
+            .set_zoom_and_origin(self.pinch_zoom.zoom_factor().0, new_origin);
         self.notify_zoom_changes(old_zoom)
     }
 
