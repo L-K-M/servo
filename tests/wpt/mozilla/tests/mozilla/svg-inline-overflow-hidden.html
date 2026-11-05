@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Inline SVG roots clip their content and add no scrollable overflow</title>
+<link rel="help" href="https://www.w3.org/TR/SVG2/styling.html#UAStyleSheet">
+<link rel="help" href="https://drafts.csswg.org/css-overflow-3/#scrollable">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #scroller { position: relative; width: 100px; height: 100px; overflow: auto; }
+  .slot { position: absolute; top: 0; left: 75px; width: 25px; height: 25px; }
+  svg { display: block; width: 100%; height: 100%; }
+</style>
+<div id="scroller">
+  <!-- The rect, and the default size of an SVG document without a viewBox, exceed the 25px boxes. -->
+  <div class="slot"><svg id="empty"></svg></div>
+  <div class="slot" style="top: 30px"><svg id="shape"><rect width="100" height="100"/></svg></div>
+</div>
+<svg id="sized" width="25" height="25"><rect width="100" height="100"/></svg>
+<script>
+  test(() => {
+    assert_equals(getComputedStyle(document.getElementById("empty")).overflow, "hidden");
+    assert_equals(getComputedStyle(document.getElementById("sized")).overflow, "hidden");
+  }, "The user agent style sheet sets overflow: hidden on inline SVG roots");
+
+  // Servo rasterizes inline SVG after serializing it, so give it the load and a few frames.
+  const rendered = new Promise(resolve => addEventListener("load", resolve)).then(async () => {
+    for (let i = 0; i < 3; i++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+  });
+
+  promise_test(async () => {
+    await rendered;
+    const scroller = document.getElementById("scroller");
+    assert_equals(scroller.scrollWidth, 100, "scrollWidth");
+    assert_equals(scroller.scrollHeight, 100, "scrollHeight");
+  }, "Inline SVG content larger than the SVG box adds no scrollable overflow");
+</script>
