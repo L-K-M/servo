@@ -1580,6 +1580,79 @@ fn test_viewport_hidden_horizontal_overflow_does_not_zoom_out() {
 }
 
 #[test]
+fn test_viewport_hidden_vertical_overflow_does_not_zoom_out() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(
+            "<style>body{overflow-y:hidden}</style>\
+            <div style='position:absolute;top:600px;width:500px;height:600px;background:red'>\
+            </div>",
+        ))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Zoomed out, the larger layout viewport would show the red box below the initial
+    // containing block, which the page hides (at 0.4 it would cover y 240 to 480).
+    assert_close(webview.pinch_zoom() as f64, 1., "pinch zoom");
+    let image = webview
+        .rendering_context()
+        .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+        .expect("Should be able to read image");
+    assert_ne!(image.get_pixel(100, 400), &image::Rgba([255, 0, 0, 255]));
+}
+
+#[test]
+fn test_viewport_does_not_zoom_out_to_overflow_on_the_left() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html><html dir=rtl>\
+                <body style='margin:0'><div style='width:1250px;height:100px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Right-to-left content overflows to the left, where the page cannot scroll: zooming
+    // out would show only empty space to the right.
+    assert_close(webview.pinch_zoom() as f64, 1., "pinch zoom");
+}
+
+#[test]
+fn test_desktop_pinch_zoom_survives_navigation() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<!DOCTYPE html><body>first").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    // Without `<meta viewport>` processing, pinch zoom stays as before: a magnifier that
+    // the next document keeps.
+    webview.adjust_pinch_zoom(2., DevicePoint::new(0., 0.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    load_and_wait(
+        &servo_test,
+        &webview,
+        "data:text/html,<!DOCTYPE html><body>second",
+    );
+    assert_close(
+        webview.pinch_zoom() as f64,
+        2.,
+        "pinch zoom after navigating",
+    );
+}
+
+#[test]
 fn test_viewport_scale_and_description_reset_on_navigation() {
     let servo_test = mobile_viewport_servo_test();
     let delegate = Rc::new(WebViewDelegateImpl::default());
