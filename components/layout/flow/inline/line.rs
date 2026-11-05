@@ -522,6 +522,12 @@ impl LineItemLayout<'_, '_> {
         }
         let pbm_sums = padding + border + margin;
 
+        // A negative `letter-spacing` can make the children's advances sum to less than zero,
+        // but a box cannot have a negative size, so floor its content inline size at zero.
+        // The parent still advances by the unfloored sum, which is what line breaking and
+        // alignment measured for this line.
+        let content_inline_size = inner_state.inline_advance.max(Au::zero());
+
         // Make `content_rect` relative to the parent Fragment.
         let mut content_rect = LogicalRect {
             start_corner: LogicalVec2 {
@@ -529,7 +535,7 @@ impl LineItemLayout<'_, '_> {
                 block: inner_state.parent_offset.block - self.current_state.parent_offset.block,
             },
             size: LogicalVec2 {
-                inline: inner_state.inline_advance,
+                inline: content_inline_size,
                 block: if self.is_phantom_line {
                     Au::zero()
                 } else {
