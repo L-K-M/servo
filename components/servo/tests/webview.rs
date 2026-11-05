@@ -1653,6 +1653,81 @@ fn test_desktop_pinch_zoom_survives_navigation() {
 }
 
 #[test]
+fn test_viewport_fitting_content_at_a_fractional_width_is_not_zoomed() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <meta name=viewport content='width=device-width,initial-scale=1'>\
+                <body style='margin:0'><div style='height:3000px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    // At 130%, the viewport is 384.6 CSS pixels wide, which app units round.
+    webview.set_page_zoom(1.3);
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Content that fits the viewport leaves nothing to zoom out to, so a scroll moves the
+    // page, not a pinch zoom viewport magnified a hair above 1.
+    webview.notify_scroll_event(
+        Scroll::Delta(WebViewVector::Device(DeviceVector2D::new(0., 100.))),
+        WebViewPoint::Device(DevicePoint::new(250., 250.)),
+    );
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
+    assert_eq!(offset_top, 0., "visualViewport.offsetTop");
+    let scroll_y = evaluate_number(&servo_test, &webview, "scrollY");
+    assert!(scroll_y > 0., "scrollY should be positive, not {scroll_y}");
+}
+
+#[test]
+fn test_viewport_script_scroll_to_the_top_brings_the_visual_viewport_along() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <meta name=viewport content='width=device-width,initial-scale=1'>\
+                <body style='margin:0'><div style='width:1250px;height:5000px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // At its initial scale the page shows the top left of a layout viewport 2.5 times as
+    // large, so scrolling down first moves the visual viewport within it, then the page.
+    for _ in 0..4 {
+        webview.notify_scroll_event(
+            Scroll::Delta(WebViewVector::Device(DeviceVector2D::new(0., 500.))),
+            WebViewPoint::Device(DevicePoint::new(250., 250.)),
+        );
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    }
+    let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
+    assert_close(offset_top, 750., "visualViewport.offsetTop after scrolling");
+
+    // A script scroll to the top, like a scroll-to-top button, shows the page's top again,
+    // so nothing is left to scroll up to.
+    let _ = evaluate_javascript(&servo_test, webview.clone(), "window.scrollTo(0, 0)");
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
+    assert_close(offset_top, 0., "visualViewport.offsetTop after scrolling to the top");
+    assert_eq!(
+        webview.can_scroll_up_at_point(WebViewPoint::Device(DevicePoint::new(250., 250.))),
+        Some(false)
+    );
+}
+
+#[test]
 fn test_viewport_scale_and_description_reset_on_navigation() {
     let servo_test = mobile_viewport_servo_test();
     let delegate = Rc::new(WebViewDelegateImpl::default());
