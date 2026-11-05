@@ -449,6 +449,11 @@ svg > * {
   display: none;
 }
 
+/* https://www.w3.org/TR/SVG2/styling.html#UAStyleSheet */
+svg:not(:root) {
+  overflow: hidden;
+}
+
 *|*::-servo-anonymous-box {
   unicode-bidi: inherit;
   direction: inherit;
