@@ -1490,6 +1490,36 @@ fn test_viewport_minimum_scale_limits_zooming_out() {
 }
 
 #[test]
+fn test_viewport_zooms_out_to_a_quarter_without_minimum_scale() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <body style='margin:0'><div style='width:5000px;height:100px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Content ten times as wide as the viewport opens at a quarter, not a tenth, and
+    // the page scrolls sideways to the rest.
+    assert_close(webview.pinch_zoom() as f64, 0.25, "pinch zoom");
+    let width = evaluate_number(&servo_test, &webview, "visualViewport.width");
+    assert_close(width, 2000., "visualViewport.width");
+    let scroll_x = evaluate_number(
+        &servo_test,
+        &webview,
+        "window.scrollTo(10000, 0); window.scrollX",
+    );
+    assert_close(scroll_x, 3000., "scrollX");
+}
+
+#[test]
 fn test_viewport_hidden_horizontal_overflow_does_not_zoom_out() {
     let servo_test = mobile_viewport_servo_test();
     let delegate = Rc::new(WebViewDelegateImpl::default());

@@ -21,6 +21,11 @@ pub const MAX_PAGE_ZOOM: Scale<f32, CSSPixel, DeviceIndependentPixel> = Scale::n
 /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#initial-scale>
 pub const DEFAULT_PAGE_ZOOM: Scale<f32, CSSPixel, DeviceIndependentPixel> = Scale::new(1.0);
 
+/// The smallest page scale to zoom out to, to show content wider than the viewport, when a
+/// page sets no `minimum-scale`: Chrome's default, so that a stray box far to the right does
+/// not shrink a page to a sliver.
+const DEFAULT_MINIMUM_SCALE_FOR_ZOOMING_OUT: f32 = 0.25;
+
 /// <https://drafts.csswg.org/css-viewport/#parsing-algorithm>
 const SEPARATORS: [char; 2] = [',', ';']; // Comma (0x2c) and Semicolon (0x3b)
 
@@ -47,6 +52,9 @@ pub struct ViewportDescription {
     /// The minimum page zoom that is allowed on this viewport's page.
     /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#minimum_scale>
     pub minimum_scale: Scale<f32, CSSPixel, DeviceIndependentPixel>,
+
+    /// Whether the page set `minimum-scale`.
+    pub minimum_scale_specified: bool,
 
     /// The maximum page zoom that is allowed on this viewport's page.
     /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#maximum_scale>
@@ -97,6 +105,7 @@ impl Default for ViewportDescription {
             initial_scale: DEFAULT_PAGE_ZOOM,
             initial_scale_specified: false,
             minimum_scale: MIN_PAGE_ZOOM,
+            minimum_scale_specified: false,
             maximum_scale: MAX_PAGE_ZOOM,
             user_scalable: UserScalable::Yes,
         }
@@ -118,6 +127,7 @@ impl ViewportDescription {
                 "minimum-scale" => {
                     if let Some(zoom) = Self::parse_viewport_value_as_zoom(value) {
                         description.minimum_scale = zoom;
+                        description.minimum_scale_specified = true;
                     }
                 },
                 "maximum-scale" => {
@@ -158,8 +168,11 @@ impl ViewportDescription {
     /// layout viewport) may grow, so that the user can zoom out from `initial-scale` to
     /// `minimum-scale` and see content that overflows the initial containing block.
     pub fn max_layout_viewport_expansion(&self) -> f32 {
-        let minimum_scale = self.minimum_scale.get().max(MIN_PAGE_ZOOM.get());
-        (self.initial_scale.get() / minimum_scale).max(1.0)
+        let minimum_scale = match self.minimum_scale_specified {
+            true => self.minimum_scale.get(),
+            false => DEFAULT_MINIMUM_SCALE_FOR_ZOOMING_OUT.min(self.initial_scale.get()),
+        };
+        (self.initial_scale.get() / minimum_scale.max(MIN_PAGE_ZOOM.get())).max(1.0)
     }
 }
 
