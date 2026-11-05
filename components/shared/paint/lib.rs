@@ -810,7 +810,9 @@ bitflags! {
 /// pinch-zoom and resizing due to overlay UIs are not applicable there.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PinchZoomInfos {
-    /// The zoom factor (or pinch-zoom).
+    /// The page's scale with its pinch zoom, as `<meta viewport>` expresses scales: what
+    /// `visualViewport.scale` reports. Below 1.0 when the page is zoomed out to content
+    /// wider than its initial containing block.
     pub zoom_factor: Scale<f32, DevicePixel, DevicePixel>,
 
     /// The size relative to layout viewport.

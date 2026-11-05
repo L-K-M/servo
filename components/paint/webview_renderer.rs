@@ -267,7 +267,8 @@ impl WebViewRenderer {
 
         self.set_frame_tree_on_pipeline_details(frame_tree, None);
 
-        if old_pipeline_id != self.root_pipeline_id {
+        // Desktop keeps a pinch zoom across documents, as before `<meta viewport>` support.
+        if old_pipeline_id != self.root_pipeline_id && pref!(viewport_meta_enabled) {
             self.reset_pinch_zoom_for_new_document(old_zoom);
         }
     }

@@ -124,10 +124,11 @@ pub(crate) struct StackingContextTree {
     pub clip_store: StackingContextTreeClipStore,
 }
 
-/// How many times larger than the initial containing block, `viewport_details`'s size,
-/// the root scrollport must be for content `content_width` CSS pixels wide to fit its
-/// width, within `viewport_details.max_layout_viewport_expansion`. A viewport that the
-/// user cannot scroll sideways (`overflow-x: hidden` or `clip` on the root) does not grow.
+/// How many times wider than the initial containing block, `viewport_details`'s size,
+/// the root scrollport must be for content reaching `content_width` CSS pixels to fit its
+/// width, within `viewport_details.max_layout_viewport_expansion`. The scrollport keeps the
+/// initial containing block's aspect ratio, so a root that hides overflow in either axis
+/// (`overflow: hidden` or `clip`) does not grow: zooming out would reveal what it hides.
 fn layout_viewport_expansion(
     viewport_details: &ViewportDetails,
     content_width: f32,
@@ -135,12 +136,13 @@ fn layout_viewport_expansion(
 ) -> f32 {
     let initial_containing_block_width = viewport_details.size.width;
     let max_expansion = viewport_details.max_layout_viewport_expansion;
-    if max_expansion <= 1.0 ||
-        initial_containing_block_width <= 0.0 ||
-        !viewport_scroll_sensitivity
-            .x
-            .contains(ScrollType::InputEvents)
-    {
+    let user_scrollable = viewport_scroll_sensitivity
+        .x
+        .contains(ScrollType::InputEvents) &&
+        viewport_scroll_sensitivity
+            .y
+            .contains(ScrollType::InputEvents);
+    if max_expansion <= 1.0 || initial_containing_block_width <= 0.0 || !user_scrollable {
         return 1.0;
     }
     (content_width / initial_containing_block_width).clamp(1.0, max_expansion)
@@ -158,6 +160,9 @@ impl StackingContextTree {
     ) -> Self {
         let scrollable_overflow = fragment_tree.scrollable_overflow();
         let scroll_area = scrollable_overflow.union(&fragment_tree.initial_containing_block);
+        // Overflow to the left of the viewport, as in right-to-left pages, cannot be
+        // scrolled to, so zooming out would only show empty space for it.
+        let content_right_edge = scroll_area.max_x().to_f32_px();
         let scroll_area = LayoutSize::from_untyped(Size2D::new(
             scroll_area.size.width.to_f32_px(),
             scroll_area.size.height.to_f32_px(),
@@ -169,7 +174,7 @@ impl StackingContextTree {
         // its layout, and fixed-position boxes stay in the initial containing block.
         let layout_viewport_expansion = layout_viewport_expansion(
             &viewport_details,
-            scroll_area.width,
+            content_right_edge,
             fragment_tree.viewport_scroll_sensitivity,
         );
         let viewport_details = ViewportDetails {
