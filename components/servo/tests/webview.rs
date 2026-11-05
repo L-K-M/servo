@@ -840,6 +840,51 @@ fn test_show_and_hide_ime() {
     servo_test.spin(move || captured_delegate.number_of_controls_hidden.get() != 1);
 }
 
+/// Text an input method commits without a composition is inserted at the
+/// caret (upstream's `test_commit_without_composition`, ported to this file's
+/// helpers).
+#[test]
+fn test_commit_without_composition() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <input id=\"field\"> \
+                <script> \
+                    window.__seen = []; \
+                    document.getElementById('field').addEventListener('input', event => \
+                        __seen.push(event.inputType + ':' + event.data)); \
+                </script>",
+            )
+            .unwrap(),
+        )
+        .build();
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.getElementById('field').focus()",
+    )
+    .expect("focus() should evaluate");
+
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("hello".to_owned())));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("世界".to_owned())));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "document.getElementById('field').value === 'hello世界' && \
+                window.__seen.join() === 'insertText:hello,insertText:世界'",
+            std::time::Duration::from_secs(5)
+        ),
+        "committed text was not inserted, or its input events were wrong"
+    );
+}
+
 /// Spin the event loop until `condition` holds or `timeout` elapses, returning
 /// whether `condition` was met. Unlike [`ServoTest::spin`] this cannot wait
 /// forever, which is what a regression test needs when the behavior it checks
