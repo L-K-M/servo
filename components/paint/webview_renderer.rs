@@ -254,6 +254,7 @@ impl WebViewRenderer {
 
     pub(crate) fn set_frame_tree(&mut self, frame_tree: &SendableFrameTree) {
         let pipeline_id = frame_tree.pipeline.id;
+        let old_zoom = self.zoom_state();
         let old_pipeline_id = self.root_pipeline_id.replace(pipeline_id);
 
         if old_pipeline_id != self.root_pipeline_id {
@@ -266,20 +267,44 @@ impl WebViewRenderer {
         self.set_frame_tree_on_pipeline_details(frame_tree, None);
 
         if old_pipeline_id != self.root_pipeline_id {
-            self.reset_pinch_zoom_for_new_document();
+            self.reset_pinch_zoom_for_new_document(old_zoom);
         }
     }
 
     /// A new document became the root: show it at its own initial scale and with its own
-    /// `<meta viewport>` constraints rather than the previous document's.
-    fn reset_pinch_zoom_for_new_document(&mut self) {
+    /// `<meta viewport>` constraints rather than the previous document's, whose zoom was
+    /// `old_zoom`.
+    fn reset_pinch_zoom_for_new_document(&mut self, old_zoom: ZoomState) {
         self.pinch_zoom_changed_by_user = false;
         self.pinch_zoom = PinchZoom::new(self.rect);
         self.pinch_zoom
             .set_zoom_and_origin(self.initial_pinch_zoom_factor(), DevicePoint::origin());
         self.send_window_size_message();
+        self.notify_zoom_changes(old_zoom);
+    }
+
+    /// The zoom that [`Self::notify_zoom_changes`] compares.
+    fn zoom_state(&self) -> ZoomState {
+        ZoomState {
+            pinch_zoom: self.pinch_zoom,
+            page_scale: self.page_scale(),
+            unscaled_viewport_scale: self.unscaled_viewport_device_pixels_per_page_pixel(),
+        }
+    }
+
+    /// Tell script about a changed pinch zoom viewport, and the embedder about a changed
+    /// page scale, since `old_zoom`. Returns `true` when the root pipeline's transform
+    /// changed.
+    fn notify_zoom_changes(&self, old_zoom: ZoomState) -> bool {
+        let new_zoom = self.zoom_state();
+        if new_zoom == old_zoom {
+            return false;
+        }
         self.send_pinch_zoom_infos_to_script();
-        self.webview.notify_viewport_updated();
+        if new_zoom.page_scale != old_zoom.page_scale {
+            self.webview.notify_viewport_updated();
+        }
+        true
     }
 
     /// Record the layout viewport expansion of a new display list of `pipeline_id` (see
@@ -297,6 +322,7 @@ impl WebViewRenderer {
         expansion: f32,
         lost_root_scroll: LayoutVector2D,
     ) -> bool {
+        let old_zoom = self.zoom_state();
         // Before its first display list, a document's pinch zoom assumes no expansion.
         let old_expansion = self
             .ensure_pipeline_details(pipeline_id)
@@ -319,12 +345,8 @@ impl WebViewRenderer {
             self.unscaled_viewport_device_pixels_per_page_pixel().get();
         let origin = self.pinch_zoom.origin() * scale_change + lost_root_scroll;
 
-        let mut new_pinch_zoom = self.pinch_zoom;
-        new_pinch_zoom.set_zoom_and_origin(factor, origin);
-        self.pinch_zoom = new_pinch_zoom;
-        self.send_pinch_zoom_infos_to_script();
-        self.webview.notify_viewport_updated();
-        true
+        self.pinch_zoom.set_zoom_and_origin(factor, origin);
+        self.notify_zoom_changes(old_zoom)
     }
 
     pub(crate) fn send_scroll_positions_to_layout_for_pipeline(
@@ -1092,8 +1114,8 @@ impl WebViewRenderer {
         if root_pipeline
             .scroll_tree
             .scroll_offset(ExternalScrollId(0, root_pipeline_id.into()))?
-            .y
-            > 0.0
+            .y >
+            0.0
         {
             return Some(true);
         }
@@ -1115,8 +1137,8 @@ impl WebViewRenderer {
         let mut saw_unknown_chain = false;
         let mut previous_pipeline_id = None;
         for hit_test_result in hit_test_results {
-            if previous_pipeline_id.replace(hit_test_result.pipeline_id)
-                == Some(hit_test_result.pipeline_id)
+            if previous_pipeline_id.replace(hit_test_result.pipeline_id) ==
+                Some(hit_test_result.pipeline_id)
             {
                 continue;
             }
@@ -1410,6 +1432,7 @@ impl WebViewRenderer {
         pipeline_id: PipelineId,
         viewport_description: ViewportDescription,
     ) -> bool {
+        let old_zoom = self.zoom_state();
         self.ensure_pipeline_details(pipeline_id)
             .viewport_description = Some(viewport_description);
         if Some(pipeline_id) != self.root_pipeline_id {
@@ -1422,9 +1445,7 @@ impl WebViewRenderer {
             self.pinch_zoom
                 .set_zoom_and_origin(self.initial_pinch_zoom_factor(), origin);
         }
-        self.send_pinch_zoom_infos_to_script();
-        self.webview.notify_viewport_updated();
-        true
+        self.notify_zoom_changes(old_zoom)
     }
 
     pub(crate) fn scroll_trees_memory_usage(
@@ -1468,3 +1489,11 @@ impl WebViewRenderer {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UnknownWebView(pub WebViewId);
+
+/// What a [`WebViewRenderer`]'s zoom looks like to script, the embedder and WebRender.
+#[derive(Clone, Copy, PartialEq)]
+struct ZoomState {
+    pinch_zoom: PinchZoom,
+    page_scale: f32,
+    unscaled_viewport_scale: Scale<f32, CSSPixel, DevicePixel>,
+}
