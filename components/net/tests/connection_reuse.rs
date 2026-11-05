@@ -345,8 +345,9 @@ fn test_get_is_sent_again_after_an_http2_goaway_before_its_stream() {
 
 #[test]
 fn test_post_is_not_sent_again_after_an_http2_goaway() {
-    // h2 also reports a GOAWAY without error to a stream it opened just before, below the
-    // GOAWAY's last stream id, which the server may process.
+    // This GOAWAY names stream 1, so the server never processed stream 3. But h2 reports the
+    // same error to a stream it had just opened below a GOAWAY's last stream id, which the
+    // server may process, and the error does not say which case it is.
     let log = ServerLog::default();
     let (url, certificates) = spawn_http2_server(LaterRequests::GoAway, log.clone());
 
