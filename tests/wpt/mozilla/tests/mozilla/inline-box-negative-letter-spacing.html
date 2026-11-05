@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>An inline box whose negative letter-spacing exceeds its glyph advances has a zero content inline size</title>
+<link rel="help" href="https://drafts.csswg.org/css-text-3/#letter-spacing-property">
+<link rel="help" href="https://www.w3.org/TR/CSS22/visudet.html#the-width-property">
+<link rel="help" href="https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  body { margin: 0; font: 10px/1 Ahem; }
+  .tight { letter-spacing: -100px; }
+</style>
+<div><span id="plain" class="tight">abc</span></div>
+<div><span id="boxed" class="tight" style="padding: 0 3px; border: 1px solid">abc</span></div>
+<div><span id="outer" style="padding: 0 2px">x<span id="inner" class="tight">abc</span></span></div>
+<script>
+  promise_test(async () => {
+    await document.fonts.ready;
+    const plain = document.getElementById("plain");
+    assert_equals(plain.getBoundingClientRect().width, 0, "getBoundingClientRect()");
+    assert_equals(plain.getClientRects()[0].width, 0, "getClientRects()");
+    assert_equals(plain.offsetWidth, 0, "offsetWidth");
+  }, "The content inline size is floored at zero");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(document.getElementById("boxed").getBoundingClientRect().width, 8);
+  }, "Padding and borders still add to the floored content inline size");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(document.getElementById("inner").getBoundingClientRect().width, 0, "inner");
+    assert_greater_than_equal(document.getElementById("outer").getBoundingClientRect().width, 4, "outer");
+  }, "Nested inline boxes never get a negative size");
+</script>
