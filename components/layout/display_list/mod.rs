@@ -960,13 +960,17 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         // but we need a rectangle with finite coordinates.
         //
         // If the document is smaller than the viewport (and doesn’t scroll),
-        // we still want to paint the rest of the viewport.
+        // we still want to paint the rest of the viewport, the layout viewport, which
+        // is larger than the initial containing block when zoomed out.
         // If it’s larger, we also want to paint areas reachable after scrolling.
         let painting_area = self
             .fragment_tree
             .initial_containing_block
             .union(&self.fragment_tree.scrollable_overflow())
-            .to_webrender();
+            .to_webrender()
+            .union(&LayoutRect::from_size(
+                self.paint_info.viewport_details.layout_size(),
+            ));
 
         let background_color =
             source_style.resolve_color(&source_style.get_background().background_color);

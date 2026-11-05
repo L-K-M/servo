@@ -22,6 +22,7 @@ use paint_api::viewport_description::{
 use paint_api::{PipelineExitSource, SendableFrameTree, WebViewTrait};
 use rustc_hash::FxHashMap;
 use servo_base::id::{PipelineId, WebViewId};
+use servo_config::pref;
 use servo_constellation_traits::{
     EmbedderToConstellationMessage, ScrollStateUpdate, WindowSizeType,
 };
@@ -117,9 +118,12 @@ pub(crate) struct WebViewRenderer {
     /// Whether or not this [`WebViewRenderer`] isn't throttled and has a pipeline with
     /// active animations or animation frame callbacks.
     animating: bool,
-    /// A [`ViewportDescription`] for this [`WebViewRenderer`], which contains the limitations
-    /// and initial values for zoom derived from the `viewport` meta tag in web content.
-    viewport_description: ViewportDescription,
+    /// Whether the user changed the pinch zoom of the root pipeline's document. Until then,
+    /// its pinch zoom follows the document's initial scale while its layout viewport grows.
+    pinch_zoom_changed_by_user: bool,
+
+    /// The [`ViewportDetails`] last sent to the constellation, if any.
+    last_sent_viewport_details: Option<ViewportDetails>,
 
     /// The dimensions of the screen on which this WebView is rendering.
     screen_size: Size2D<f32, DevicePixel>,
@@ -161,7 +165,8 @@ impl WebViewRenderer {
             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
             hidden: false,
             animating: false,
-            viewport_description: Default::default(),
+            pinch_zoom_changed_by_user: false,
+            last_sent_viewport_details: Some(viewport_details),
             screen_size: viewport_details.device_size,
             embedder_to_constellation_sender,
             refresh_driver,
@@ -259,6 +264,67 @@ impl WebViewRenderer {
         }
 
         self.set_frame_tree_on_pipeline_details(frame_tree, None);
+
+        if old_pipeline_id != self.root_pipeline_id {
+            self.reset_pinch_zoom_for_new_document();
+        }
+    }
+
+    /// A new document became the root: show it at its own initial scale and with its own
+    /// `<meta viewport>` constraints rather than the previous document's.
+    fn reset_pinch_zoom_for_new_document(&mut self) {
+        self.pinch_zoom_changed_by_user = false;
+        self.pinch_zoom = PinchZoom::new(self.rect);
+        self.pinch_zoom
+            .set_zoom_and_origin(self.initial_pinch_zoom_factor(), DevicePoint::origin());
+        self.send_window_size_message();
+        self.send_pinch_zoom_infos_to_script();
+        self.webview.notify_viewport_updated();
+    }
+
+    /// Record the layout viewport expansion of a new display list of `pipeline_id` (see
+    /// `PaintDisplayListInfo::layout_viewport_expansion`). The unscaled viewport always shows
+    /// the root pipeline's whole layout viewport, so when that grows or shrinks, rescale the
+    /// pinch zoom: keep the user's scale and the content at the pinch zoom viewport's top
+    /// left corner or, until the user zooms, the document's initial scale. `lost_root_scroll`
+    /// is how far the root scroll offset moved back because the new layout viewport left
+    /// less room to scroll; the pinch zoom viewport moves by as much where it can.
+    ///
+    /// Returns `true` when the root pipeline's transform changed.
+    pub(crate) fn set_layout_viewport_expansion(
+        &mut self,
+        pipeline_id: PipelineId,
+        expansion: f32,
+        lost_root_scroll: LayoutVector2D,
+    ) -> bool {
+        // Before its first display list, a document's pinch zoom assumes no expansion.
+        let old_expansion = self
+            .ensure_pipeline_details(pipeline_id)
+            .layout_viewport_expansion
+            .replace(expansion)
+            .unwrap_or(1.0);
+        if Some(pipeline_id) != self.root_pipeline_id || old_expansion == expansion {
+            return false;
+        }
+
+        let factor = match self.pinch_zoom_changed_by_user {
+            true => self.pinch_zoom.zoom_factor().0 * expansion / old_expansion,
+            false => self.initial_pinch_zoom_factor(),
+        };
+        let factor = factor.clamp(1.0, self.maximum_pinch_zoom_factor());
+
+        // Device pixels per CSS pixel in the unscaled viewport change by this factor.
+        let scale_change = old_expansion / expansion;
+        let lost_root_scroll = DeviceVector2D::from_untyped(lost_root_scroll.to_untyped()) *
+            self.unscaled_viewport_device_pixels_per_page_pixel().get();
+        let origin = self.pinch_zoom.origin() * scale_change + lost_root_scroll;
+
+        let mut new_pinch_zoom = self.pinch_zoom;
+        new_pinch_zoom.set_zoom_and_origin(factor, origin);
+        self.pinch_zoom = new_pinch_zoom;
+        self.send_pinch_zoom_infos_to_script();
+        self.webview.notify_viewport_updated();
+        true
     }
 
     pub(crate) fn send_scroll_positions_to_layout_for_pipeline(
@@ -843,13 +909,19 @@ impl WebViewRenderer {
         let mut new_pinch_zoom = self.pinch_zoom;
         let device_pixels_per_page_pixel = self.device_pixels_per_page_pixel();
 
-        for scroll_event in self.pending_scroll_zoom_events.drain(..) {
+        // A pinch zoom of 1.0 shows the whole layout viewport, at this page scale. The page's
+        // `<meta viewport>` limits apply to page scales, not to pinch zoom factors.
+        let unzoomed_scale = self.unzoomed_page_scale();
+        let viewport_description = self.viewport_description();
+        let mut pinch_zoomed = false;
+        for scroll_event in std::mem::take(&mut self.pending_scroll_zoom_events) {
             match scroll_event {
                 ScrollZoomEvent::PinchZoom(magnification, center) => {
-                    let new_factor = self
-                        .viewport_description
-                        .clamp_zoom(self.pinch_zoom.zoom_factor().0 * magnification);
-                    new_pinch_zoom.set_zoom(new_factor, center);
+                    let new_scale = viewport_description
+                        .clamp_zoom(unzoomed_scale * new_pinch_zoom.zoom_factor().0 * magnification)
+                        .max(unzoomed_scale);
+                    new_pinch_zoom.set_zoom(new_scale / unzoomed_scale, center);
+                    pinch_zoomed = true;
                 },
                 ScrollZoomEvent::Scroll(scroll_event_info) => {
                     let combined_event = match combined_scroll_event.as_mut() {
@@ -908,6 +980,10 @@ impl WebViewRenderer {
             );
         } else {
             self.touch_handler.stop_fling_if_needed();
+        }
+
+        if pinch_zoomed {
+            self.pinch_zoom_changed_by_user = true;
         }
 
         // Additionally notify pinch zoom update to the script.
@@ -1131,7 +1207,8 @@ impl WebViewRenderer {
         };
 
         let pinch_zoom_infos = self.pinch_zoom.get_pinch_zoom_infos_for_script(
-            self.device_pixels_per_page_pixel_not_including_pinch_zoom(),
+            self.unscaled_viewport_device_pixels_per_page_pixel(),
+            self.page_scale(),
         );
 
         let _ = self.embedder_to_constellation_sender.send(
@@ -1141,6 +1218,52 @@ impl WebViewRenderer {
 
     pub(crate) fn pinch_zoom(&self) -> PinchZoom {
         self.pinch_zoom
+    }
+
+    /// The root pipeline's `<meta viewport>` description, or the default one when its
+    /// document has none.
+    fn viewport_description(&self) -> ViewportDescription {
+        self.root_pipeline_id
+            .and_then(|pipeline_id| self.pipelines.get(&pipeline_id))
+            .and_then(|pipeline| pipeline.viewport_description.clone())
+            .unwrap_or_default()
+    }
+
+    /// How many times larger than its initial containing block the root pipeline's layout
+    /// viewport is.
+    fn layout_viewport_expansion(&self) -> f32 {
+        self.root_pipeline_id
+            .and_then(|pipeline_id| self.pipelines.get(&pipeline_id))
+            .and_then(|pipeline| pipeline.layout_viewport_expansion)
+            .unwrap_or(1.0)
+    }
+
+    /// The page scale, as `<meta viewport>` expresses scales (device-independent pixels per
+    /// CSS pixel, before page zoom), at which the whole layout viewport fits this `WebView`:
+    /// the scale of a pinch zoom factor of 1.0, and the smallest scale.
+    fn unzoomed_page_scale(&self) -> f32 {
+        self.viewport_description().initial_scale.get() / self.layout_viewport_expansion()
+    }
+
+    /// The page scale with the current pinch zoom, as `<meta viewport>` expresses scales.
+    pub(crate) fn page_scale(&self) -> f32 {
+        self.unzoomed_page_scale() * self.pinch_zoom.zoom_factor().0
+    }
+
+    /// The pinch zoom factor at which the root document shows at its initial scale: its
+    /// `initial-scale` when it sets one, or else (like the "auto" initial scale of mobile
+    /// browsers) its whole layout viewport, so content wider than the initial containing
+    /// block fits.
+    fn initial_pinch_zoom_factor(&self) -> f32 {
+        match self.viewport_description().initial_scale_specified {
+            true => self.layout_viewport_expansion(),
+            false => 1.0,
+        }
+    }
+
+    /// The largest pinch zoom factor, from the root document's `maximum-scale`.
+    fn maximum_pinch_zoom_factor(&self) -> f32 {
+        (self.viewport_description().maximum_scale.get() / self.unzoomed_page_scale()).max(1.0)
     }
 
     fn set_pinch_zoom(&mut self, requested_pinch_zoom: PinchZoom) -> PinchZoomResult {
@@ -1177,7 +1300,17 @@ impl WebViewRenderer {
             .and_then(|pipeline_id| self.pipelines.get(&pipeline_id))
             .and_then(|pipeline| pipeline.viewport_scale)
             .unwrap_or_else(|| self.page_zoom * self.hidpi_scale_factor);
-        viewport_scale * self.pinch_zoom.zoom_factor()
+        viewport_scale * Scale::new(self.page_scale())
+    }
+
+    /// The device pixels per CSS pixel of the unscaled viewport, which shows the root
+    /// pipeline's whole layout viewport and which pinch zoom magnifies: HiDPI scale, page
+    /// zoom and [`Self::unzoomed_page_scale`].
+    pub(crate) fn unscaled_viewport_device_pixels_per_page_pixel(
+        &self,
+    ) -> Scale<f32, CSSPixel, DevicePixel> {
+        self.device_pixels_per_page_pixel_not_including_pinch_zoom() *
+            Scale::new(self.unzoomed_page_scale())
     }
 
     /// The current viewport scale (hidpi scale and page zoom and not pinch
@@ -1200,22 +1333,34 @@ impl WebViewRenderer {
             .push(ScrollZoomEvent::PinchZoom(magnification, center));
     }
 
-    fn send_window_size_message(&self) {
+    fn send_window_size_message(&mut self) {
         // The device pixel ratio used by the style system should include the scale from page pixels
         // to device pixels, but not including any pinch zoom.
         let device_pixel_ratio = self.device_pixels_per_page_pixel_not_including_pinch_zoom();
+        let viewport_description = self.viewport_description();
         // From <https://www.w3.org/TR/css-viewport-1/#actual-viewport>:
         // This is the viewport you get after processing the viewport <meta> tag.
         let layout_viewport = self.rect.size().to_f32() /
-            (device_pixel_ratio * Scale::new(self.viewport_description.initial_scale.get()));
+            (device_pixel_ratio * Scale::new(viewport_description.initial_scale.get()));
+        let max_layout_viewport_expansion = match pref!(viewport_meta_enabled) {
+            true => viewport_description.max_layout_viewport_expansion(),
+            false => 1.0,
+        };
+        let viewport_details = ViewportDetails {
+            hidpi_scale_factor: device_pixel_ratio,
+            size: layout_viewport,
+            device_size: self.screen_size,
+            max_layout_viewport_expansion,
+        };
+        // The constellation passes these to every pipeline of the browsing context, pending
+        // ones included, so the same details need not be sent again.
+        if self.last_sent_viewport_details.replace(viewport_details) == Some(viewport_details) {
+            return;
+        }
         let _ = self.embedder_to_constellation_sender.send(
             EmbedderToConstellationMessage::ChangeViewportDetails(
                 self.id,
-                ViewportDetails {
-                    hidpi_scale_factor: device_pixel_ratio,
-                    size: layout_viewport,
-                    device_size: self.screen_size,
-                },
+                viewport_details,
                 WindowSizeType::Resize,
             ),
         );
@@ -1257,13 +1402,29 @@ impl WebViewRenderer {
         old_rect != self.rect
     }
 
-    pub fn set_viewport_description(&mut self, viewport_description: ViewportDescription) {
-        self.viewport_description = viewport_description;
+    /// Keep the `<meta viewport>` description of `pipeline_id`'s document, and apply it
+    /// when that is the root pipeline. Returns `true` when the root pipeline's transform
+    /// changed.
+    pub fn set_viewport_description(
+        &mut self,
+        pipeline_id: PipelineId,
+        viewport_description: ViewportDescription,
+    ) -> bool {
+        self.ensure_pipeline_details(pipeline_id)
+            .viewport_description = Some(viewport_description);
+        if Some(pipeline_id) != self.root_pipeline_id {
+            return false;
+        }
+
         self.send_window_size_message();
-        self.adjust_pinch_zoom(
-            self.viewport_description.initial_scale.get(),
-            DevicePoint::origin(),
-        );
+        if !self.pinch_zoom_changed_by_user {
+            let origin = self.pinch_zoom.origin();
+            self.pinch_zoom
+                .set_zoom_and_origin(self.initial_pinch_zoom_factor(), origin);
+        }
+        self.send_pinch_zoom_infos_to_script();
+        self.webview.notify_viewport_updated();
+        true
     }
 
     pub(crate) fn scroll_trees_memory_usage(

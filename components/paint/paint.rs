@@ -585,9 +585,9 @@ impl Paint {
                     painter_id,
                 );
             },
-            PaintMessage::Viewport(webview_id, viewport_description) => {
+            PaintMessage::Viewport(webview_id, pipeline_id, viewport_description) => {
                 if let Some(mut painter) = self.maybe_painter_mut(webview_id.into()) {
-                    painter.set_viewport_description(webview_id, viewport_description);
+                    painter.set_viewport_description(webview_id, pipeline_id, viewport_description);
                 }
             },
             PaintMessage::ScreenshotReadinessReponse(webview_id, pipelines_and_epochs) => {

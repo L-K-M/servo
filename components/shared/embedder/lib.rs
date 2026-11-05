@@ -343,6 +343,14 @@ pub struct ViewportDetails {
 
     /// The device dimensions that this viewport is displayed within.
     pub device_size: Size2D<f32, DevicePixel>,
+
+    /// How many times larger than [`Self::size`] the root scrollport (the layout viewport)
+    /// of a top-level document may grow, so that pinch zoom can zoom out until content
+    /// wider than [`Self::size`] fits. The initial containing block keeps [`Self::size`],
+    /// so the page does not lay out again. Values of 1.0 or less, the default included,
+    /// keep the scrollport at [`Self::size`], as for `<iframe>`s and when `<meta viewport>`
+    /// is not processed.
+    pub max_layout_viewport_expansion: f32,
 }
 
 impl ViewportDetails {

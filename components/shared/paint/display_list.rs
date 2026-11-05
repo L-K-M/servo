@@ -1080,6 +1080,13 @@ pub struct PaintDisplayListInfo {
     /// If this display list contains a blinking caret, this value will be filled with its animation
     /// key and original color value so that the painter can animate the caret.
     pub caret_property_binding: Option<(PropertyBindingKey<ColorF>, ColorF)>,
+
+    /// How many times wider and taller than the initial containing block the root scrollport
+    /// (the layout viewport, [`Self::viewport_details`]'s size) is, at least 1.0. Layout
+    /// grows it for content wider than the initial containing block, up to
+    /// [`ViewportDetails::max_layout_viewport_expansion`], so that `Paint` can zoom out to
+    /// show that content.
+    pub layout_viewport_expansion: f32,
 }
 
 impl PaintDisplayListInfo {
@@ -1133,6 +1140,7 @@ impl PaintDisplayListInfo {
             paint_timing_report: PaintTimingReport::default(),
             paint_timing_info: PaintTimingInfo::now(),
             caret_property_binding: Default::default(),
+            layout_viewport_expansion: 1.0,
         }
     }
 

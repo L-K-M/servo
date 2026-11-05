@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 
 use euclid::Scale;
 use paint_api::display_list::{PaintTimingInfo, ScrollTree};
+use paint_api::viewport_description::ViewportDescription;
 use paint_api::{CompositionPipeline, PipelineExitSource};
 use servo_base::Epoch;
 use servo_base::id::{LCPCandidateID, PipelineId};
@@ -53,6 +54,14 @@ pub(crate) struct PipelineDetails {
     /// situations where the current display list is for an old scale.
     pub viewport_scale: Option<Scale<f32, CSSPixel, DevicePixel>>,
 
+    /// How many times larger than its initial containing block the root scrollport (the
+    /// layout viewport) of this pipeline's latest display list is, or `None` before its
+    /// first display list. See `PaintDisplayListInfo::layout_viewport_expansion`.
+    pub layout_viewport_expansion: Option<f32>,
+
+    /// The `<meta viewport>` description of this pipeline's document, if it has one.
+    pub viewport_description: Option<ViewportDescription>,
+
     /// Which parts of Servo have reported that this `Pipeline` has exited. Only when all
     /// have done so will it be discarded.
     pub exited: PipelineExitSource,
@@ -86,6 +95,8 @@ impl PipelineDetails {
             parent_pipeline_id: None,
             children: Default::default(),
             viewport_scale: None,
+            layout_viewport_expansion: None,
+            viewport_description: None,
             animations_running: false,
             animation_callbacks_running: false,
             throttled: false,

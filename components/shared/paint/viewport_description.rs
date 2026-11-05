@@ -39,6 +39,11 @@ pub struct ViewportDescription {
     /// the zoom level when the page is first loaded
     pub initial_scale: Scale<f32, CSSPixel, DeviceIndependentPixel>,
 
+    /// Whether the page set `initial-scale`. Without it, the initial scale is "auto": like
+    /// mobile browsers, a page whose content is wider than the viewport opens zoomed out
+    /// to show its full width.
+    pub initial_scale_specified: bool,
+
     /// The minimum page zoom that is allowed on this viewport's page.
     /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#minimum_scale>
     pub minimum_scale: Scale<f32, CSSPixel, DeviceIndependentPixel>,
@@ -90,6 +95,7 @@ impl Default for ViewportDescription {
     fn default() -> Self {
         ViewportDescription {
             initial_scale: DEFAULT_PAGE_ZOOM,
+            initial_scale_specified: false,
             minimum_scale: MIN_PAGE_ZOOM,
             maximum_scale: MAX_PAGE_ZOOM,
             user_scalable: UserScalable::Yes,
@@ -106,6 +112,7 @@ impl ViewportDescription {
                 "initial-scale" => {
                     if let Some(zoom) = Self::parse_viewport_value_as_zoom(value) {
                         description.initial_scale = zoom;
+                        description.initial_scale_specified = true;
                     }
                 },
                 "minimum-scale" => {
@@ -145,6 +152,14 @@ impl ViewportDescription {
     /// Constrains a zoom value within the allowed scale range
     pub fn clamp_zoom(&self, zoom: f32) -> f32 {
         zoom.clamp(self.minimum_scale.get(), self.maximum_scale.get())
+    }
+
+    /// How many times larger than the initial containing block the root scrollport (the
+    /// layout viewport) may grow, so that the user can zoom out from `initial-scale` to
+    /// `minimum-scale` and see content that overflows the initial containing block.
+    pub fn max_layout_viewport_expansion(&self) -> f32 {
+        let minimum_scale = self.minimum_scale.get().max(MIN_PAGE_ZOOM.get());
+        (self.initial_scale.get() / minimum_scale).max(1.0)
     }
 }
 

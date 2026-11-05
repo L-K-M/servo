@@ -124,6 +124,28 @@ pub(crate) struct StackingContextTree {
     pub clip_store: StackingContextTreeClipStore,
 }
 
+/// How many times larger than the initial containing block, `viewport_details`'s size,
+/// the root scrollport must be for content `content_width` CSS pixels wide to fit its
+/// width, within `viewport_details.max_layout_viewport_expansion`. A viewport that the
+/// user cannot scroll sideways (`overflow-x: hidden` or `clip` on the root) does not grow.
+fn layout_viewport_expansion(
+    viewport_details: &ViewportDetails,
+    content_width: f32,
+    viewport_scroll_sensitivity: AxesScrollSensitivity,
+) -> f32 {
+    let initial_containing_block_width = viewport_details.size.width;
+    let max_expansion = viewport_details.max_layout_viewport_expansion;
+    if max_expansion <= 1.0 ||
+        initial_containing_block_width <= 0.0 ||
+        !viewport_scroll_sensitivity
+            .x
+            .contains(ScrollType::InputEvents)
+    {
+        return 1.0;
+    }
+    (content_width / initial_containing_block_width).clamp(1.0, max_expansion)
+}
+
 impl StackingContextTree {
     /// Create a new [DisplayList] given the dimensions of the layout and the WebRender
     /// pipeline id.
@@ -141,8 +163,22 @@ impl StackingContextTree {
             scroll_area.size.height.to_f32_px(),
         ));
 
+        // The root scrollport (the layout viewport) may be larger than the initial
+        // containing block, so that `Paint` can zoom out to show content that is wider
+        // than the initial containing block. Only the scrollport grows: the page keeps
+        // its layout, and fixed-position boxes stay in the initial containing block.
+        let layout_viewport_expansion = layout_viewport_expansion(
+            &viewport_details,
+            scroll_area.width,
+            fragment_tree.viewport_scroll_sensitivity,
+        );
+        let viewport_details = ViewportDetails {
+            size: viewport_details.size * layout_viewport_expansion,
+            ..viewport_details
+        };
+
         let viewport_size = viewport_details.layout_size();
-        let paint_info = PaintDisplayListInfo::new(
+        let mut paint_info = PaintDisplayListInfo::new(
             viewport_details,
             scroll_area,
             pipeline_id,
@@ -151,6 +187,7 @@ impl StackingContextTree {
             fragment_tree.viewport_scroll_sensitivity,
             first_reflow,
         );
+        paint_info.layout_viewport_expansion = layout_viewport_expansion;
 
         let root_scroll_node_id = paint_info.root_scroll_node_id;
         let cb_for_non_fixed_descendants = ContainingBlock::new(

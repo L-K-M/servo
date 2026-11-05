@@ -152,7 +152,9 @@ impl HTMLMetaElement {
         if let Ok(viewport) = ViewportDescription::from_str(&content) {
             let initial_scale = viewport.initial_scale.get();
             let window = self.owner_window();
-            window.paint_api().viewport(window.webview_id(), viewport);
+            window
+                .paint_api()
+                .viewport(window.webview_id(), window.pipeline_id(), viewport);
             window
                 .get_or_init_visual_viewport(cx)
                 .update_scale(initial_scale);

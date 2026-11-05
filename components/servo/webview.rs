@@ -23,6 +23,7 @@ use log::debug;
 use paint::InputEventDispatch;
 use paint_api::WebViewTrait;
 use paint_api::rendering_context::RenderingContext;
+use paint_api::viewport_description::ViewportDescription;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{PipelineId, WebViewId};
@@ -277,10 +278,16 @@ impl WebView {
             .screen_geometry(self.clone())
             .map(|geometry| geometry.size.to_f32())
             .unwrap_or_else(|| viewport_size);
+        // `Paint` replaces this with the page's own limit once its `<meta viewport>` arrives.
+        let max_layout_viewport_expansion = match pref!(viewport_meta_enabled) {
+            true => ViewportDescription::default().max_layout_viewport_expansion(),
+            false => 1.0,
+        };
         ViewportDetails {
             size: scaled_viewport_size / Scale::new(1.0),
             hidpi_scale_factor: Scale::new(inner.hidpi_scale_factor.0),
             device_size,
+            max_layout_viewport_expansion,
         }
     }
 
@@ -734,13 +741,17 @@ impl WebView {
     /// The final pinch zoom values will be clamped to defaults (the inclusive range [1.0, 10.0]).
     /// The values used for clamping can be adjusted by page content when `<meta viewport>`
     /// parsing is enabled via `Prefs::viewport_meta_enabled`, exclusively on mobile devices.
+    /// Then pinch zoom can also go below 1.0, down to the scale that shows the full width of
+    /// content wider than the viewport.
     pub fn adjust_pinch_zoom(&self, pinch_zoom_delta: f32, center: DevicePoint) {
         self.servo()
             .paint()
             .adjust_pinch_zoom(self.id(), pinch_zoom_delta, center);
     }
 
-    /// Get the pinch zoom of the [`WebView`].
+    /// Get the pinch zoom of the [`WebView`]: the page's scale as `<meta viewport>` expresses
+    /// scales, so 1.0 when the page shows at its device-width size, and the page's
+    /// `initial-scale` before the user zooms.
     pub fn pinch_zoom(&self) -> f32 {
         self.servo().paint().pinch_zoom(self.id())
     }

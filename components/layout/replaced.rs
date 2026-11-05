@@ -583,6 +583,7 @@ impl ReplacedContents {
                             size,
                             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
                             device_size: layout_context.device_size.cast_unit(),
+                            ..Default::default()
                         },
                     },
                 );

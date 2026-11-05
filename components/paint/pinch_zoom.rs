@@ -75,6 +75,30 @@ impl PinchZoom {
             .then_scale(scale, scale);
     }
 
+    /// The top left corner of the pinch zoom viewport in the unscaled viewport.
+    pub(crate) fn origin(&self) -> DevicePoint {
+        self.pinch_zoom_rect_relative_to_unscaled_viewport()
+            .origin
+            .cast_unit()
+    }
+
+    /// Set the zoom factor and the top left corner of the pinch zoom viewport in the
+    /// unscaled viewport, keeping the pinch zoom viewport inside the unscaled viewport.
+    pub(crate) fn set_zoom_and_origin(&mut self, new_factor: f32, new_origin: DevicePoint) {
+        if new_factor <= 1.0 {
+            self.zoom_factor = 1.0;
+            self.transform = Transform2D::identity();
+            return;
+        }
+
+        self.zoom_factor = new_factor;
+        self.set_transform(
+            Transform2D::identity()
+                .then_translate(Vector2D::new(-new_origin.x, -new_origin.y))
+                .then_scale(new_factor, new_factor),
+        );
+    }
+
     pub(crate) fn set_zoom(&mut self, new_factor: f32, new_center: DevicePoint) {
         if new_factor <= 1.0 {
             self.zoom_factor = 1.0; // Update the zoom factor to 1.0 to avoid precision issues when zooming back in after zooming out fully.
@@ -164,13 +188,16 @@ impl PinchZoom {
             < 0.0
     }
 
-    /// Get the [`PinchZoomInfos`] from this [`PinchZoom`] state.
+    /// Get the [`PinchZoomInfos`] from this [`PinchZoom`] state. `viewport_scale` is the
+    /// scale of the unscaled viewport and `zoom_factor` the page's scale with this pinch zoom,
+    /// as `<meta viewport>` expresses scales.
     pub(crate) fn get_pinch_zoom_infos_for_script(
         &self,
         viewport_scale: Scale<f32, CSSPixel, DevicePixel>,
+        zoom_factor: f32,
     ) -> PinchZoomInfos {
         PinchZoomInfos {
-            zoom_factor: Scale::new(self.zoom_factor),
+            zoom_factor: Scale::new(zoom_factor),
             rect: self.pinch_zoom_rect_relative_to_unscaled_viewport() / viewport_scale,
         }
     }

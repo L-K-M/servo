@@ -648,14 +648,16 @@ impl Painter {
                 continue;
             };
 
+            // The unscaled viewport shows the root pipeline's whole layout viewport, which
+            // pinch zoom then magnifies.
             let pinch_zoom_transform = webview_renderer.pinch_zoom().transform().to_untyped();
-            let device_pixels_per_page_pixel_not_including_pinch_zoom = webview_renderer
-                .device_pixels_per_page_pixel_not_including_pinch_zoom()
+            let unscaled_viewport_device_pixels_per_page_pixel = webview_renderer
+                .unscaled_viewport_device_pixels_per_page_pixel()
                 .get();
 
             let transform = LayoutTransform::scale(
-                device_pixels_per_page_pixel_not_including_pinch_zoom,
-                device_pixels_per_page_pixel_not_including_pinch_zoom,
+                unscaled_viewport_device_pixels_per_page_pixel,
+                unscaled_viewport_device_pixels_per_page_pixel,
                 1.0,
             )
             .then(&LayoutTransform::from_untyped(
@@ -675,7 +677,7 @@ impl Painter {
             );
 
             let scaled_webview_rect = webview_renderer.rect /
-                webview_renderer.device_pixels_per_page_pixel_not_including_pinch_zoom();
+                webview_renderer.unscaled_viewport_device_pixels_per_page_pixel();
             builder.push_iframe(
                 LayoutRect::from_untyped(&scaled_webview_rect.to_untyped()),
                 LayoutRect::from_untyped(&scaled_webview_rect.to_untyped()),
@@ -1013,7 +1015,14 @@ impl Painter {
         let pipeline_id = display_list_info.pipeline_id;
         let details = webview_renderer.ensure_pipeline_details(pipeline_id.into());
 
+        let root_scroll_id = ExternalScrollId(0, pipeline_id);
+        let old_root_scroll = details.scroll_tree.scroll_offset(root_scroll_id);
         details.install_new_scroll_tree(display_list_info.scroll_tree);
+        let new_root_scroll = details.scroll_tree.scroll_offset(root_scroll_id);
+        let lost_root_scroll = match (old_root_scroll, new_root_scroll) {
+            (Some(old), Some(new)) => old - new,
+            _ => LayoutVector2D::zero(),
+        };
         details.viewport_scale = Some(display_list_info.viewport_details.hidpi_scale_factor);
 
         let epoch = display_list_info.epoch.into();
@@ -1049,9 +1058,18 @@ impl Painter {
             &self.web_content_animator,
         );
 
+        let root_transform_changed = webview_renderer.set_layout_viewport_expansion(
+            pipeline_id.into(),
+            display_list_info.layout_viewport_expansion,
+            lost_root_scroll,
+        );
+
         let mut transaction = Transaction::new();
         let is_root_pipeline = Some(pipeline_id.into()) == webview_renderer.root_pipeline_id;
-        if is_root_pipeline && old_scale != webview_renderer.device_pixels_per_page_pixel() {
+        if is_root_pipeline &&
+            (root_transform_changed ||
+                old_scale != webview_renderer.device_pixels_per_page_pixel())
+        {
             self.send_root_pipeline_display_list_in_transaction(&mut transaction);
         }
 
@@ -1239,10 +1257,14 @@ impl Painter {
     pub(crate) fn set_viewport_description(
         &mut self,
         webview_id: WebViewId,
+        pipeline_id: PipelineId,
         viewport_description: ViewportDescription,
     ) {
-        if let Some(webview) = self.webview_renderers.get_mut(&webview_id) {
-            webview.set_viewport_description(viewport_description);
+        let Some(webview) = self.webview_renderers.get_mut(&webview_id) else {
+            return;
+        };
+        if webview.set_viewport_description(pipeline_id, viewport_description) {
+            self.send_root_pipeline_display_list();
         }
     }
 
@@ -1437,7 +1459,7 @@ impl Painter {
     pub(crate) fn pinch_zoom(&self, webview_id: WebViewId) -> f32 {
         self.webview_renderers
             .get(&webview_id)
-            .map(|webview_renderer| webview_renderer.pinch_zoom().zoom_factor().0)
+            .map(|webview_renderer| webview_renderer.page_scale())
             .unwrap_or(1.)
     }
 
