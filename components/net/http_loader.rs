@@ -762,6 +762,7 @@ fn bodiless_copy(request: &HyperRequest<BoxedBody>) -> HyperRequest<BoxedBody> {
     *copy.uri_mut() = request.uri().clone();
     *copy.version_mut() = request.version();
     *copy.headers_mut() = request.headers().clone();
+    *copy.extensions_mut() = request.extensions().clone();
     copy
 }
 
@@ -769,7 +770,7 @@ fn bodiless_copy(request: &HyperRequest<BoxedBody>) -> HyperRequest<BoxedBody> {
 #[derive(Debug, PartialEq)]
 enum UnansweredRequest {
     /// The server did not act on the request: hyper never wrote it, or an HTTP/2 server
-    /// refused its stream or announced with GOAWAY that it would not process it.
+    /// refused its stream.
     NotProcessed,
     /// The connection closed or was reset before a response arrived, so the server may
     /// have acted on the request.
@@ -807,16 +808,21 @@ fn unanswered_request(error: &hyper::Error) -> Option<UnansweredRequest> {
     }
 
     let source = error.source()?;
+    // This matches only while hyper and this crate use the same h2; the HTTP/2 tests in
+    // connection_reuse.rs fail if they ever drift apart.
     if let Some(error) = source.downcast_ref::<h2::Error>() {
         if !error.is_remote() {
             return None;
         }
-        // h2 fails a stream above the GOAWAY's last stream id, or opened after it, with the
-        // GOAWAY itself; streams the server did process fail as a broken pipe once the
-        // connection closes after a GOAWAY without error.
-        let refused = error.is_reset() && error.reason() == Some(h2::Reason::REFUSED_STREAM);
-        let after_go_away = error.is_go_away() && error.reason() == Some(h2::Reason::NO_ERROR);
-        return (refused || after_go_away).then_some(UnansweredRequest::NotProcessed);
+        // RST_STREAM with REFUSED_STREAM is about this stream alone.
+        if error.is_reset() && error.reason() == Some(h2::Reason::REFUSED_STREAM) {
+            return Some(UnansweredRequest::NotProcessed);
+        }
+        // A GOAWAY without error fails streams above its last stream id, but h2 also hands
+        // it, as the connection's error, to a stream it had just opened below that id, which
+        // the server may process. The error does not say which.
+        let go_away = error.is_go_away() && error.reason() == Some(h2::Reason::NO_ERROR);
+        return go_away.then_some(UnansweredRequest::MaybeProcessed);
     }
 
     // I/O errors, including those of HTTP/2 connections, which hyper unwraps.

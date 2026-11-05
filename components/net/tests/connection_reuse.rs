@@ -40,7 +40,7 @@ enum LaterRequests {
     RefuseStream,
     /// Reset the HTTP/2 stream with `INTERNAL_ERROR`: the request failed on the server.
     ResetStream,
-    /// Send GOAWAY without error naming the first stream as the last one processed, then close.
+    /// Send a GOAWAY without error naming the first stream as the last one processed, then close.
     GoAway,
 }
 
@@ -259,8 +259,9 @@ fn fetch_twice(
     assert_eq!(body_text(&first), "ok");
 
     // An HTTP/1.1 connection goes back to the pool once hyper has seen the end of the response,
-    // which can be just after the fetch completes.
-    thread::sleep(Duration::from_millis(200));
+    // which can be just after the fetch completes; HTTP/2 connections stay pooled. Too short a
+    // wait fails a test (its log lacks the unanswered request), it cannot pass one.
+    thread::sleep(Duration::from_secs(1));
     fetch_with_context(request(url, method), &mut context)
 }
 
@@ -330,18 +331,27 @@ fn test_post_is_sent_again_after_an_http2_server_refuses_its_stream() {
 }
 
 #[test]
-fn test_post_is_sent_again_after_an_http2_goaway_before_its_stream() {
-    // A GOAWAY whose last stream id is below the request's stream guarantees that the server
-    // did not process the request (RFC 9113, 6.8).
+fn test_get_is_sent_again_after_an_http2_goaway_before_its_stream() {
     let log = ServerLog::default();
     let (url, certificates) = spawn_http2_server(LaterRequests::GoAway, log.clone());
 
-    let response = fetch_twice(&url, &certificates, Method::POST);
+    let response = fetch_twice(&url, &certificates, Method::GET);
     assert_sent_again(
         &response,
         &log,
         &["0 stream 1", "0 stream 3 unanswered", "1 stream 1"],
     );
+}
+
+#[test]
+fn test_post_is_not_sent_again_after_an_http2_goaway() {
+    // h2 also reports a GOAWAY without error to a stream it opened just before, below the
+    // GOAWAY's last stream id, which the server may process.
+    let log = ServerLog::default();
+    let (url, certificates) = spawn_http2_server(LaterRequests::GoAway, log.clone());
+
+    let response = fetch_twice(&url, &certificates, Method::POST);
+    assert_not_sent_again(&response, &log, &["0 stream 1", "0 stream 3 unanswered"]);
 }
 
 #[test]
