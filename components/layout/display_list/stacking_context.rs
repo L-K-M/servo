@@ -125,13 +125,13 @@ pub(crate) struct StackingContextTree {
 }
 
 /// How many times wider than the initial containing block, `viewport_details`'s size,
-/// the root scrollport must be for content reaching `content_width` CSS pixels to fit its
+/// the root scrollport must be for content reaching `content_right_edge` CSS pixels to fit its
 /// width, within `viewport_details.max_layout_viewport_expansion`. The scrollport keeps the
 /// initial containing block's aspect ratio, so a root that hides overflow in either axis
 /// (`overflow: hidden` or `clip`) does not grow: zooming out would reveal what it hides.
 fn layout_viewport_expansion(
     viewport_details: &ViewportDetails,
-    content_width: f32,
+    content_right_edge: f32,
     viewport_scroll_sensitivity: AxesScrollSensitivity,
 ) -> f32 {
     let initial_containing_block_width = viewport_details.size.width;
@@ -145,7 +145,7 @@ fn layout_viewport_expansion(
     if max_expansion <= 1.0 || initial_containing_block_width <= 0.0 || !user_scrollable {
         return 1.0;
     }
-    (content_width / initial_containing_block_width).clamp(1.0, max_expansion)
+    (content_right_edge / initial_containing_block_width).clamp(1.0, max_expansion)
 }
 
 impl StackingContextTree {
