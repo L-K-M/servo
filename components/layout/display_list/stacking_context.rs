@@ -142,8 +142,13 @@ fn layout_viewport_expansion(
         viewport_scroll_sensitivity
             .y
             .contains(ScrollType::InputEvents);
-    // Written to be false for NaN too, as for an initial containing block without width.
-    if !(max_expansion > 1.0) || !user_scrollable || !(content_width_ratio > 1.0) {
+    // A viewport without width (an empty `WebView`) gives an infinite or NaN ratio; written to
+    // return 1.0 for NaN limits too.
+    if !(max_expansion > 1.0) ||
+        !user_scrollable ||
+        !content_width_ratio.is_finite() ||
+        content_width_ratio <= 1.0
+    {
         return 1.0;
     }
     content_width_ratio.clamp(1.0, max_expansion)
@@ -1502,4 +1507,79 @@ pub(crate) fn au_rect_to_length_rect(rect: &Rect<Au, CSSPixel>) -> Rect<Length, 
         Point2D::new(rect.origin.x.into(), rect.origin.y.into()),
         Size2D::new(rect.size.width.into(), rect.size.height.into()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn viewport_details(max_layout_viewport_expansion: f32) -> ViewportDetails {
+        ViewportDetails {
+            size: Size2D::new(500., 500.),
+            max_layout_viewport_expansion,
+            ..Default::default()
+        }
+    }
+
+    fn scrollable_in(x: ScrollType, y: ScrollType) -> AxesScrollSensitivity {
+        AxesScrollSensitivity { x, y }
+    }
+
+    const USER: ScrollType = ScrollType::all();
+
+    #[test]
+    fn content_wider_than_the_viewport_expands_it_within_the_limit() {
+        let scrollable = scrollable_in(USER, USER);
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 2.5, scrollable),
+            2.5
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 10.0, scrollable),
+            4.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 1.0, scrollable),
+            1.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 0.5, scrollable),
+            1.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(1.0), 2.5, scrollable),
+            1.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(0.0), 2.5, scrollable),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_viewport_without_width_or_limit_does_not_expand() {
+        let scrollable = scrollable_in(USER, USER);
+        // Content against an initial containing block without width.
+        for ratio in [f32::INFINITY, f32::NAN] {
+            assert_eq!(
+                layout_viewport_expansion(&viewport_details(4.0), ratio, scrollable),
+                1.0
+            );
+        }
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(f32::NAN), 2.5, scrollable),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_viewport_that_hides_overflow_does_not_expand() {
+        for (x, y) in [(ScrollType::Script, USER), (USER, ScrollType::Script)] {
+            let sensitivity = scrollable_in(x, y);
+            assert_eq!(
+                layout_viewport_expansion(&viewport_details(4.0), 2.5, sensitivity),
+                1.0
+            );
+        }
+    }
 }
