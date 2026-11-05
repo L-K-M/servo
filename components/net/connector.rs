@@ -655,7 +655,17 @@ pub type ServoClient = Client<InstrumentedConnector<ProxyConnector>, BoxedBody>;
 /// Chromium's limit. hyper's read buffer already bounds HTTP/1.1 headers higher.
 const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 256 * 1024;
 
-pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
+/// Whether a [`ServoClient`] keeps connections open for later requests.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionReuse {
+    /// Keep idle connections in a pool and send later requests on them.
+    Pooled,
+    /// Open a new connection for every request and close it after the response, as Fetch
+    /// does when newConnection is "yes".
+    NewConnection,
+}
+
+pub fn create_http_client(tls_config: TlsConfig, reuse: ConnectionReuse) -> ServoClient {
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(tls_config)
         .https_or_http()
@@ -663,8 +673,13 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
         .enable_http2()
         .wrap_connector(ProxyConnector::new());
 
-    Client::builder(TokioExecutor {})
+    let mut builder = Client::builder(TokioExecutor {});
+    builder
         .http1_title_case_headers(true)
-        .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
-        .build(InstrumentedConnector::from(connector))
+        .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE);
+    if reuse == ConnectionReuse::NewConnection {
+        // hyper-util disables its pool when no idle connection may stay open.
+        builder.pool_max_idle_per_host(0);
+    }
+    builder.build(InstrumentedConnector::from(connector))
 }

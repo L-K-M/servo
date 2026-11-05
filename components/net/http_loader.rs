@@ -3,6 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashSet;
+use std::error::Error as _;
+use std::io;
 use std::iter::FromIterator;
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,9 +31,10 @@ use http::{HeaderMap, Method, Request as HyperRequest, StatusCode};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::Response as HyperResponse;
-use hyper::body::{Bytes, Frame};
+use hyper::body::{Bytes, Frame, Incoming};
 use hyper::ext::ReasonPhrase;
 use hyper::header::{HeaderName, TRANSFER_ENCODING};
+use hyper_util::client::legacy::Error as HyperUtilError;
 use ipc_channel::IpcError;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::ROUTER;
@@ -77,7 +80,7 @@ use tracing::Instrument;
 
 use crate::async_runtime::spawn_task;
 use crate::connector::{
-    CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_tls_config,
+    BoxedBody, CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_tls_config,
 };
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
@@ -116,6 +119,9 @@ pub struct HttpState {
     pub auth_cache: RwLock<AuthCache>,
     pub history_states: RwLock<FxHashMap<HistoryStateId, Vec<u8>>>,
     pub client: ServoClient,
+    /// Opens a new connection for every request; sends a request again after the pooled
+    /// connection it went out on failed (see [`send_request`]).
+    pub new_connection_client: ServoClient,
     pub override_manager: CertificateErrorOverrideManager,
     pub embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 }
@@ -534,6 +540,7 @@ async fn obtain_response(
     browsing_context_id: Option<BrowsingContextId>,
 ) -> Result<(HyperResponse<Decoder>, Option<ChromeToDevtoolsControlMsg>), NetworkError> {
     let mut headers = request_headers.clone();
+    let has_body = body_sender.is_some();
 
     let devtools_bytes = StdArc::new(Mutex::new(vec![]));
 
@@ -624,6 +631,10 @@ async fn obtain_response(
     };
     *request.headers_mut() = headers.clone();
 
+    // A request body streams from its source once, so only a request without one can go out
+    // again.
+    let resend = (!has_body).then(|| bodiless_copy(&request));
+
     let connect_end = CrossProcessInstant::now();
     context
         .timing
@@ -647,8 +658,8 @@ async fn obtain_response(
         .timing
         .set_attribute(ResourceAttribute::RequestStart);
 
-    let client_future = client
-        .request(request)
+    let new_connection_client = &context.state.new_connection_client;
+    let client_future = send_request(client, new_connection_client, request, resend)
         .and_then(move |res| {
             let send_end = CrossProcessInstant::now();
 
@@ -709,6 +720,122 @@ async fn obtain_response(
     {
         client_future.await
     }
+}
+
+/// Sends `request` on a pooled connection, and `resend`, a copy of it, once more on a new
+/// connection when the first connection failed before a response arrived in a way that
+/// [`may_send_again`] accepts.
+///
+/// hyper-util sends a request again only when it never reached a connection. A request
+/// written to an idle pooled connection that the server or the network had already closed
+/// fails instead, although nothing answered it: a server's idle timeout can race the
+/// request, and the socket of an idle connection can die unnoticed while the device sleeps
+/// or changes networks. Browsers send such a request again on a new connection; HTTP allows
+/// that for idempotent requests (RFC 9110, section 9.2.2) and for requests the server did
+/// not process (RFC 9113, section 8.7).
+async fn send_request(
+    client: &ServoClient,
+    new_connection_client: &ServoClient,
+    request: HyperRequest<BoxedBody>,
+    resend: Option<HyperRequest<BoxedBody>>,
+) -> Result<HyperResponse<Incoming>, HyperUtilError> {
+    let error = match client.request(request).await {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+    let Some(resend) = resend.filter(|resend| may_send_again(resend.method(), &error)) else {
+        return Err(error);
+    };
+
+    warn!("Sending a request again on a new connection after: {error:?}");
+    new_connection_client.request(resend).await
+}
+
+/// A copy of `request`, which has no body, to send again.
+fn bodiless_copy(request: &HyperRequest<BoxedBody>) -> HyperRequest<BoxedBody> {
+    let mut copy = HyperRequest::new(
+        http_body_util::Empty::new()
+            .map_err(|_| unreachable!())
+            .boxed(),
+    );
+    *copy.method_mut() = request.method().clone();
+    *copy.uri_mut() = request.uri().clone();
+    *copy.version_mut() = request.version();
+    *copy.headers_mut() = request.headers().clone();
+    *copy.extensions_mut() = request.extensions().clone();
+    copy
+}
+
+/// How far a request got when its connection failed before a response arrived.
+#[derive(Debug, PartialEq)]
+enum UnansweredRequest {
+    /// The server did not act on the request: hyper never wrote it, or an HTTP/2 server
+    /// refused its stream.
+    NotProcessed,
+    /// The connection closed or was reset before a response arrived, so the server may
+    /// have acted on the request.
+    MaybeProcessed,
+}
+
+/// Whether a request with `method` and no body that failed with `error` may go out again.
+fn may_send_again(method: &Method, error: &HyperUtilError) -> bool {
+    // A failure to connect has no hyper::Error source: no connection carried the request.
+    let Some(error) = error
+        .source()
+        .and_then(|source| source.downcast_ref::<hyper::Error>())
+    else {
+        return false;
+    };
+
+    match unanswered_request(error) {
+        Some(UnansweredRequest::NotProcessed) => true,
+        Some(UnansweredRequest::MaybeProcessed) => method.is_idempotent(),
+        None => false,
+    }
+}
+
+/// Classifies a request failure that the connection, not the response, caused. Any other
+/// failure, such as a malformed response or an HTTP/2 stream reset for another reason than
+/// a refusal, gets `None`: sending the request again would only repeat it.
+fn unanswered_request(error: &hyper::Error) -> Option<UnansweredRequest> {
+    // hyper hands a request back unwritten as canceled.
+    if error.is_canceled() {
+        return Some(UnansweredRequest::NotProcessed);
+    }
+    // An HTTP/1 connection closed after the request went out, before the response did.
+    if error.is_incomplete_message() {
+        return Some(UnansweredRequest::MaybeProcessed);
+    }
+
+    let source = error.source()?;
+    // This matches only while hyper and this crate use the same h2; the HTTP/2 tests in
+    // connection_reuse.rs fail if they ever drift apart.
+    if let Some(error) = source.downcast_ref::<h2::Error>() {
+        if !error.is_remote() {
+            return None;
+        }
+        // RST_STREAM with REFUSED_STREAM is about this stream alone.
+        if error.is_reset() && error.reason() == Some(h2::Reason::REFUSED_STREAM) {
+            return Some(UnansweredRequest::NotProcessed);
+        }
+        // A GOAWAY without error fails streams above its last stream id, but h2 also hands
+        // it, as the connection's error, to a stream it had just opened below that id, which
+        // the server may process. The error does not say which.
+        let go_away = error.is_go_away() && error.reason() == Some(h2::Reason::NO_ERROR);
+        return go_away.then_some(UnansweredRequest::MaybeProcessed);
+    }
+
+    // I/O errors, including those of HTTP/2 connections, which hyper unwraps.
+    let error = source.downcast_ref::<io::Error>()?;
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionReset |
+            io::ErrorKind::ConnectionAborted |
+            io::ErrorKind::BrokenPipe |
+            io::ErrorKind::NotConnected |
+            io::ErrorKind::UnexpectedEof
+    )
+    .then_some(UnansweredRequest::MaybeProcessed)
 }
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.

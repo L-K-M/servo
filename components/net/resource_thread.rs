@@ -52,7 +52,8 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::async_runtime::{init_async_runtime, spawn_task};
 use crate::connector::{
-    CACertificates, CertificateErrorOverrideManager, create_http_client, create_tls_config,
+    CACertificates, CertificateErrorOverrideManager, ConnectionReuse, create_http_client,
+    create_tls_config,
 };
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
@@ -215,33 +216,37 @@ fn create_http_states(
     }
 
     let override_manager = CertificateErrorOverrideManager::new();
+    let tls_config = create_tls_config(
+        ca_certificates.clone(),
+        ignore_certificate_errors,
+        override_manager.clone(),
+    );
     let http_state = HttpState {
         hsts_list: RwLock::new(hsts_list),
         cookie_jar: RwLock::new(cookie_jar),
         auth_cache: RwLock::new(auth_cache),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Public),
-        client: create_http_client(create_tls_config(
-            ca_certificates.clone(),
-            ignore_certificate_errors,
-            override_manager.clone(),
-        )),
+        client: create_http_client(tls_config.clone(), ConnectionReuse::Pooled),
+        new_connection_client: create_http_client(tls_config, ConnectionReuse::NewConnection),
         override_manager,
         embedder_proxy: embedder_proxy.clone(),
     };
 
     let override_manager = CertificateErrorOverrideManager::new();
+    let tls_config = create_tls_config(
+        ca_certificates,
+        ignore_certificate_errors,
+        override_manager.clone(),
+    );
     let private_http_state = HttpState {
         hsts_list: RwLock::new(HstsList::default()),
         cookie_jar: RwLock::new(CookieStorage::new(150)),
         auth_cache: RwLock::new(AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Private),
-        client: create_http_client(create_tls_config(
-            ca_certificates,
-            ignore_certificate_errors,
-            override_manager.clone(),
-        )),
+        client: create_http_client(tls_config.clone(), ConnectionReuse::Pooled),
+        new_connection_client: create_http_client(tls_config, ConnectionReuse::NewConnection),
         override_manager,
         embedder_proxy,
     };

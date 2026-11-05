@@ -9061,6 +9061,7 @@ dependencies = [
  "futures",
  "futures-core",
  "futures-util",
+ "h2",
  "headers",
  "http",
  "http-body-util",

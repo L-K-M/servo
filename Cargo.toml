@@ -117,6 +117,7 @@ gstreamer-sdp = "0.25"
 gstreamer-sys = "0.25"
 gstreamer-video = "0.25"
 gstreamer-webrtc = { version = "0.25", features = ["v1_18"] }
+h2 = "0.4"
 half = "2"
 harfbuzz-sys = { version = "0.8", default-features = false }
 headers = "0.4"
