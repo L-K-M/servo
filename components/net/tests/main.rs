@@ -5,6 +5,7 @@
 #![cfg(test)]
 #![expect(dead_code)]
 
+mod connection_reuse;
 mod cookie;
 mod cookie_http_state;
 mod data_loader;
@@ -29,7 +30,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::{AuthenticationResponse, EmbedderMsg, EmbedderProxy, GenericEmbedderProxy};
 use net::async_runtime::spawn_blocking_task;
-use net::connector::{CACertificates, create_http_client, create_tls_config};
+use net::connector::{CACertificates, ConnectionReuse, create_http_client, create_tls_config};
 use net::embedder::NetToEmbedderMsg;
 use net::fetch::cors_cache::CorsCache;
 use net::fetch::methods::{self, FetchContext};
@@ -110,17 +111,19 @@ fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> Http
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let override_manager = net::connector::CertificateErrorOverrideManager::new();
+    let tls_config = create_tls_config(
+        net::connector::CACertificates::Default,
+        false, /* ignore_certificate_errors */
+        override_manager.clone(),
+    );
     HttpState {
         hsts_list: RwLock::new(net::hsts::HstsList::default()),
         cookie_jar: RwLock::new(net::cookie_storage::CookieStorage::new(150)),
         auth_cache: RwLock::new(net::resource_thread::AuthCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: net::http_cache::HttpCache::new(net::http_cache::HttpCacheAssignment::Public),
-        client: create_http_client(create_tls_config(
-            net::connector::CACertificates::Default,
-            false, /* ignore_certificate_errors */
-            override_manager.clone(),
-        )),
+        client: create_http_client(tls_config.clone(), ConnectionReuse::Pooled),
+        new_connection_client: create_http_client(tls_config, ConnectionReuse::NewConnection),
         override_manager,
         embedder_proxy: fc.unwrap_or_else(|| create_generic_embedder_proxy()),
     }
