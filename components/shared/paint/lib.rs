@@ -180,7 +180,8 @@ pub enum PaintMessage {
     /// The report must be sent on the provided channel once it's complete.
     CollectMemoryReport(ReportsChan),
     /// A top-level frame has parsed a viewport metatag and is sending the new constraints.
-    Viewport(WebViewId, ViewportDescription),
+    /// `Paint` keeps them for the given pipeline, so that they apply to its document only.
+    Viewport(WebViewId, PipelineId, ViewportDescription),
     /// Let `Paint` know that the given WebView is ready to have a screenshot taken
     /// after the given pipeline's epochs have been rendered.
     ScreenshotReadinessReponse(WebViewId, FxHashMap<PipelineId, Epoch>),
@@ -499,8 +500,15 @@ impl CrossProcessPaintApi {
         receiver.recv().unwrap()
     }
 
-    pub fn viewport(&self, webview_id: WebViewId, description: ViewportDescription) {
-        let _ = self.0.send(PaintMessage::Viewport(webview_id, description));
+    pub fn viewport(
+        &self,
+        webview_id: WebViewId,
+        pipeline_id: PipelineId,
+        description: ViewportDescription,
+    ) {
+        let _ = self
+            .0
+            .send(PaintMessage::Viewport(webview_id, pipeline_id, description));
     }
 
     pub fn pipeline_exited(
@@ -802,7 +810,9 @@ bitflags! {
 /// pinch-zoom and resizing due to overlay UIs are not applicable there.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PinchZoomInfos {
-    /// The zoom factor (or pinch-zoom).
+    /// The page's scale with its pinch zoom, as `<meta viewport>` expresses scales: what
+    /// `visualViewport.scale` reports. Below 1.0 when the page is zoomed out to content
+    /// wider than its initial containing block.
     pub zoom_factor: Scale<f32, DevicePixel, DevicePixel>,
 
     /// The size relative to layout viewport.

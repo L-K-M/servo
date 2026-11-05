@@ -124,6 +124,36 @@ pub(crate) struct StackingContextTree {
     pub clip_store: StackingContextTreeClipStore,
 }
 
+/// How many times wider than the initial containing block, `viewport_details`'s size,
+/// the root scrollport must be for content whose right edge is `content_width_ratio` times
+/// the initial containing block's width to fit, within
+/// `viewport_details.max_layout_viewport_expansion`. The scrollport keeps the
+/// initial containing block's aspect ratio, so a root that hides overflow in either axis
+/// (`overflow: hidden` or `clip`) does not grow: zooming out would reveal what it hides.
+fn layout_viewport_expansion(
+    viewport_details: &ViewportDetails,
+    content_width_ratio: f32,
+    viewport_scroll_sensitivity: AxesScrollSensitivity,
+) -> f32 {
+    let max_expansion = viewport_details.max_layout_viewport_expansion;
+    let user_scrollable = viewport_scroll_sensitivity
+        .x
+        .contains(ScrollType::InputEvents) &&
+        viewport_scroll_sensitivity
+            .y
+            .contains(ScrollType::InputEvents);
+    // A viewport without width (an empty `WebView`) gives an infinite or NaN ratio; written to
+    // return 1.0 for NaN limits too.
+    if !(max_expansion > 1.0) ||
+        !user_scrollable ||
+        !content_width_ratio.is_finite() ||
+        content_width_ratio <= 1.0
+    {
+        return 1.0;
+    }
+    content_width_ratio.clamp(1.0, max_expansion)
+}
+
 impl StackingContextTree {
     /// Create a new [DisplayList] given the dimensions of the layout and the WebRender
     /// pipeline id.
@@ -136,13 +166,37 @@ impl StackingContextTree {
     ) -> Self {
         let scrollable_overflow = fragment_tree.scrollable_overflow();
         let scroll_area = scrollable_overflow.union(&fragment_tree.initial_containing_block);
+        // Overflow to the left of the viewport, as in right-to-left pages, cannot be
+        // scrolled to, so zooming out would only show empty space for it. Both edges are in
+        // app units, so content that fits gives exactly 1 even where the viewport's width in
+        // CSS pixels is fractional.
+        let content_width_ratio = scroll_area.max_x().to_f32_px() /
+            fragment_tree
+                .initial_containing_block
+                .size
+                .width
+                .to_f32_px();
         let scroll_area = LayoutSize::from_untyped(Size2D::new(
             scroll_area.size.width.to_f32_px(),
             scroll_area.size.height.to_f32_px(),
         ));
 
+        // The root scrollport (the layout viewport) may be larger than the initial
+        // containing block, so that `Paint` can zoom out to show content that is wider
+        // than the initial containing block. Only the scrollport grows: the page keeps
+        // its layout, and fixed-position boxes stay in the initial containing block.
+        let layout_viewport_expansion = layout_viewport_expansion(
+            &viewport_details,
+            content_width_ratio,
+            fragment_tree.viewport_scroll_sensitivity,
+        );
+        let viewport_details = ViewportDetails {
+            size: viewport_details.size * layout_viewport_expansion,
+            ..viewport_details
+        };
+
         let viewport_size = viewport_details.layout_size();
-        let paint_info = PaintDisplayListInfo::new(
+        let mut paint_info = PaintDisplayListInfo::new(
             viewport_details,
             scroll_area,
             pipeline_id,
@@ -151,6 +205,7 @@ impl StackingContextTree {
             fragment_tree.viewport_scroll_sensitivity,
             first_reflow,
         );
+        paint_info.layout_viewport_expansion = layout_viewport_expansion;
 
         let root_scroll_node_id = paint_info.root_scroll_node_id;
         let cb_for_non_fixed_descendants = ContainingBlock::new(
@@ -1452,4 +1507,79 @@ pub(crate) fn au_rect_to_length_rect(rect: &Rect<Au, CSSPixel>) -> Rect<Length, 
         Point2D::new(rect.origin.x.into(), rect.origin.y.into()),
         Size2D::new(rect.size.width.into(), rect.size.height.into()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn viewport_details(max_layout_viewport_expansion: f32) -> ViewportDetails {
+        ViewportDetails {
+            size: Size2D::new(500., 500.),
+            max_layout_viewport_expansion,
+            ..Default::default()
+        }
+    }
+
+    fn scrollable_in(x: ScrollType, y: ScrollType) -> AxesScrollSensitivity {
+        AxesScrollSensitivity { x, y }
+    }
+
+    const USER: ScrollType = ScrollType::all();
+
+    #[test]
+    fn content_wider_than_the_viewport_expands_it_within_the_limit() {
+        let scrollable = scrollable_in(USER, USER);
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 2.5, scrollable),
+            2.5
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 10.0, scrollable),
+            4.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 1.0, scrollable),
+            1.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(4.0), 0.5, scrollable),
+            1.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(1.0), 2.5, scrollable),
+            1.0
+        );
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(0.0), 2.5, scrollable),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_viewport_without_width_or_limit_does_not_expand() {
+        let scrollable = scrollable_in(USER, USER);
+        // Content against an initial containing block without width.
+        for ratio in [f32::INFINITY, f32::NAN] {
+            assert_eq!(
+                layout_viewport_expansion(&viewport_details(4.0), ratio, scrollable),
+                1.0
+            );
+        }
+        assert_eq!(
+            layout_viewport_expansion(&viewport_details(f32::NAN), 2.5, scrollable),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_viewport_that_hides_overflow_does_not_expand() {
+        for (x, y) in [(ScrollType::Script, USER), (USER, ScrollType::Script)] {
+            let sensitivity = scrollable_in(x, y);
+            assert_eq!(
+                layout_viewport_expansion(&viewport_details(4.0), 2.5, sensitivity),
+                1.0
+            );
+        }
+    }
 }

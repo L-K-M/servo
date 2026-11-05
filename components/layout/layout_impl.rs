@@ -163,6 +163,11 @@ pub struct LayoutThread {
     /// If it has, a restyle is pending.
     device_has_changed: bool,
 
+    /// The [`ViewportDetails::max_layout_viewport_expansion`] of the latest viewport details.
+    /// Unlike the rest of the viewport details, it does not change the [`Device`], only the
+    /// size of the root scrollport in the stacking context tree.
+    max_layout_viewport_expansion: f32,
+
     /// Is this the first reflow in this LayoutThread?
     have_ever_generated_display_list: Cell<bool>,
 
@@ -277,6 +282,15 @@ impl Layout for LayoutThread {
     }
 
     fn set_viewport_details(&mut self, viewport_details: ViewportDetails) -> bool {
+        let expansion_changed = std::mem::replace(
+            &mut self.max_layout_viewport_expansion,
+            viewport_details.max_layout_viewport_expansion,
+        ) != viewport_details.max_layout_viewport_expansion;
+        if expansion_changed {
+            self.need_new_stacking_context_tree.set(true);
+            self.need_new_display_list.set(true);
+        }
+
         let device = self.stylist.device_mut();
         let device_pixel_ratio = Scale::new(viewport_details.hidpi_scale_factor.get());
         let device_size = viewport_details.device_size.cast_unit();
@@ -284,7 +298,7 @@ impl Layout for LayoutThread {
             device.device_pixel_ratio() == device_pixel_ratio &&
             device.device_size() == device_size
         {
-            return false;
+            return expansion_changed;
         }
 
         device.set_viewport_size(viewport_details.size);
@@ -877,6 +891,7 @@ impl LayoutThread {
             have_ever_generated_display_list: Cell::new(false),
             last_display_list_was_empty: Cell::new(true),
             device_has_changed: false,
+            max_layout_viewport_expansion: config.viewport_details.max_layout_viewport_expansion,
             need_containing_block_calculation: Cell::new(false),
             need_new_display_list: Cell::new(false),
             need_new_stacking_context_tree: Cell::new(false),

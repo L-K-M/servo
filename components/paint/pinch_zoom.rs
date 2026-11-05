@@ -75,8 +75,33 @@ impl PinchZoom {
             .then_scale(scale, scale);
     }
 
+    /// The top left corner of the pinch zoom viewport in the unscaled viewport.
+    pub(crate) fn origin(&self) -> DevicePoint {
+        self.pinch_zoom_rect_relative_to_unscaled_viewport()
+            .origin
+            .cast_unit()
+    }
+
+    /// Set the zoom factor and the top left corner of the pinch zoom viewport in the
+    /// unscaled viewport, keeping the pinch zoom viewport inside the unscaled viewport.
+    pub(crate) fn set_zoom_and_origin(&mut self, new_factor: f32, new_origin: DevicePoint) {
+        // An empty viewport has nothing to magnify, and its zoom would divide by zero.
+        if !(new_factor > 1.0) || self.unscaled_viewport_size.is_empty() {
+            self.zoom_factor = 1.0;
+            self.transform = Transform2D::identity();
+            return;
+        }
+
+        self.zoom_factor = new_factor;
+        self.set_transform(
+            Transform2D::identity()
+                .then_translate(Vector2D::new(-new_origin.x, -new_origin.y))
+                .then_scale(new_factor, new_factor),
+        );
+    }
+
     pub(crate) fn set_zoom(&mut self, new_factor: f32, new_center: DevicePoint) {
-        if new_factor <= 1.0 {
+        if new_factor <= 1.0 || self.unscaled_viewport_size.is_empty() {
             self.zoom_factor = 1.0; // Update the zoom factor to 1.0 to avoid precision issues when zooming back in after zooming out fully.
             self.transform = Transform2D::identity();
             return;
@@ -164,14 +189,44 @@ impl PinchZoom {
             < 0.0
     }
 
-    /// Get the [`PinchZoomInfos`] from this [`PinchZoom`] state.
+    /// Get the [`PinchZoomInfos`] from this [`PinchZoom`] state. `viewport_scale` is the
+    /// scale of the unscaled viewport and `zoom_factor` the page's scale with this pinch zoom,
+    /// as `<meta viewport>` expresses scales.
     pub(crate) fn get_pinch_zoom_infos_for_script(
         &self,
         viewport_scale: Scale<f32, CSSPixel, DevicePixel>,
+        zoom_factor: f32,
     ) -> PinchZoomInfos {
         PinchZoomInfos {
-            zoom_factor: Scale::new(self.zoom_factor),
+            zoom_factor: Scale::new(zoom_factor),
             rect: self.pinch_zoom_rect_relative_to_unscaled_viewport() / viewport_scale,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_viewport_stays_unzoomed() {
+        let mut pinch_zoom = PinchZoom::new(DeviceRect::zero());
+        pinch_zoom.set_zoom_and_origin(4.0, DevicePoint::origin());
+        assert_eq!(pinch_zoom.transform(), Transform2D::identity());
+        pinch_zoom.set_zoom(2.0, DevicePoint::origin());
+        assert_eq!(pinch_zoom.transform(), Transform2D::identity());
+        assert_eq!(pinch_zoom.zoom_factor().0, 1.0);
+    }
+
+    #[test]
+    fn the_origin_is_kept_inside_the_unscaled_viewport() {
+        let mut pinch_zoom = PinchZoom::new(DeviceRect::from_size(DeviceSize::new(500., 500.)));
+        pinch_zoom.set_zoom_and_origin(2.0, DevicePoint::new(100., 50.));
+        assert_eq!(pinch_zoom.zoom_factor().0, 2.0);
+        assert_eq!(pinch_zoom.origin(), DevicePoint::new(100., 50.));
+        pinch_zoom.set_zoom_and_origin(2.0, DevicePoint::new(1000., 1000.));
+        assert_eq!(pinch_zoom.origin(), DevicePoint::new(250., 250.));
+        pinch_zoom.set_zoom_and_origin(f32::NAN, DevicePoint::new(100., 50.));
+        assert_eq!(pinch_zoom.transform(), Transform2D::identity());
     }
 }

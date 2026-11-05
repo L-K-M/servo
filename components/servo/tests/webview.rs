@@ -1338,6 +1338,456 @@ fn test_pinch_zoom_update_dom_visual_viewport() {
     assert_eq!(eval_visual_viewport("offsetTop"), Some(100.));
 }
 
+/// A [`ServoTest`] that processes `<meta viewport>` like a mobile browser, with the DOM
+/// visual viewport exposed so that tests can read the page scale.
+fn mobile_viewport_servo_test() -> ServoTest {
+    ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.viewport_meta_enabled = true;
+        preferences.dom_visual_viewport_enabled = true;
+        builder.preferences(preferences)
+    })
+}
+
+fn evaluate_number(servo_test: &ServoTest, webview: &WebView, script: &str) -> f64 {
+    match evaluate_javascript(servo_test, webview.clone(), script) {
+        Ok(JSValue::Number(number)) => number,
+        other => panic!("{script} should evaluate to a number, not {other:?}"),
+    }
+}
+
+#[track_caller]
+fn assert_close(actual: f64, expected: f64, what: &str) {
+    assert!(
+        (actual - expected).abs() < 0.01,
+        "{what} should be {expected}, not {actual}"
+    );
+}
+
+/// Load `url` and wait until the scene shows it.
+fn load_and_wait(servo_test: &ServoTest, webview: &WebView, url: &str) {
+    let url = Url::parse(url).unwrap();
+    webview.load(url.clone());
+    let load_webview = webview.clone();
+    servo_test.spin(move || {
+        load_webview.url() != Some(url.clone()) ||
+            load_webview.load_status() != LoadStatus::Complete
+    });
+    wait_for_webview_scene_to_be_up_to_date(servo_test, webview);
+}
+
+/// A page whose content, 1250px wide, is two and a half times as wide as the test's
+/// 500px viewport, with `head` (such as a `<meta viewport>`) in its head.
+fn wide_page(head: &str) -> Url {
+    Url::parse(&format!(
+        "data:text/html,<!DOCTYPE html>{head}\
+        <body style='margin:0'><div style='width:1250px;height:100px'></div>"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn test_viewport_without_initial_scale_fits_wide_content() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(""))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Without an `initial-scale`, the page opens zoomed out to its full width, as in
+    // mobile browsers.
+    assert_close(webview.pinch_zoom() as f64, 0.4, "pinch zoom");
+    assert_close(
+        webview.device_pixels_per_css_pixel().get() as f64,
+        0.4,
+        "device pixels per CSS pixel",
+    );
+    let scale = evaluate_number(&servo_test, &webview, "visualViewport.scale");
+    assert_close(scale, 0.4, "visualViewport.scale");
+    let width = evaluate_number(&servo_test, &webview, "visualViewport.width");
+    assert_close(width, 1250., "visualViewport.width");
+    let height = evaluate_number(&servo_test, &webview, "visualViewport.height");
+    assert_close(height, 1250., "visualViewport.height");
+
+    // The page keeps its layout: only the layout viewport grew.
+    let inner_width = evaluate_number(&servo_test, &webview, "innerWidth");
+    assert_close(inner_width, 500., "innerWidth");
+
+    // The page background, green after the helper above, covers the whole zoomed-out
+    // viewport, beyond the initial containing block (the top left 200x200 pixels).
+    let image = webview
+        .rendering_context()
+        .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+        .expect("Should be able to read image");
+    assert_eq!(image.get_pixel(450, 450), &image::Rgba([0, 128, 0, 255]));
+}
+
+#[test]
+fn test_viewport_zooms_out_from_initial_scale_to_content_width() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(
+            "<meta name=viewport content='width=device-width,initial-scale=1'>",
+        ))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // The page opens at its `initial-scale`, showing its initial containing block.
+    assert_close(webview.pinch_zoom() as f64, 1., "pinch zoom at load");
+    let width = evaluate_number(&servo_test, &webview, "visualViewport.width");
+    assert_close(width, 500., "visualViewport.width at load");
+
+    // Zooming out stops where the content's full width fits.
+    webview.adjust_pinch_zoom(0.1, DevicePoint::new(250., 250.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(webview.pinch_zoom() as f64, 0.4, "pinch zoom zoomed out");
+    let width = evaluate_number(&servo_test, &webview, "visualViewport.width");
+    assert_close(width, 1250., "visualViewport.width zoomed out");
+    let left = evaluate_number(&servo_test, &webview, "visualViewport.offsetLeft");
+    assert_close(left, 0., "visualViewport.offsetLeft zoomed out");
+
+    // Zooming in again works from there.
+    webview.adjust_pinch_zoom(2., DevicePoint::new(0., 0.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        0.8,
+        "pinch zoom zoomed in again",
+    );
+}
+
+#[test]
+fn test_viewport_minimum_scale_limits_zooming_out() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(
+            "<meta name=viewport content='initial-scale=1,minimum-scale=0.8'>",
+        ))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    webview.adjust_pinch_zoom(0.1, DevicePoint::new(250., 250.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(webview.pinch_zoom() as f64, 0.8, "pinch zoom");
+    let width = evaluate_number(&servo_test, &webview, "visualViewport.width");
+    assert_close(width, 625., "visualViewport.width");
+
+    // The page still scrolls sideways to the rest of its content.
+    let scroll_x = evaluate_number(
+        &servo_test,
+        &webview,
+        "window.scrollTo(10000, 0); window.scrollX",
+    );
+    assert_close(scroll_x, 625., "scrollX");
+}
+
+#[test]
+fn test_viewport_zooms_out_to_a_quarter_without_minimum_scale() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <body style='margin:0'><div style='width:5000px;height:100px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Content ten times as wide as the viewport opens at a quarter, not a tenth, and
+    // the page scrolls sideways to the rest.
+    assert_close(webview.pinch_zoom() as f64, 0.25, "pinch zoom");
+    let width = evaluate_number(&servo_test, &webview, "visualViewport.width");
+    assert_close(width, 2000., "visualViewport.width");
+    let scroll_x = evaluate_number(
+        &servo_test,
+        &webview,
+        "window.scrollTo(10000, 0); window.scrollX",
+    );
+    assert_close(scroll_x, 3000., "scrollX");
+}
+
+#[test]
+fn test_viewport_user_zoom_survives_a_new_viewport_meta() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(
+            "<meta name=viewport content='width=device-width,initial-scale=1'>",
+        ))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    webview.adjust_pinch_zoom(0.5, DevicePoint::new(0., 0.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        0.5,
+        "pinch zoom after zooming out",
+    );
+
+    // A `<meta viewport>` the page adds later changes the initial containing block and the
+    // layout viewport, but not the scale the user chose.
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "let meta = document.createElement('meta'); meta.name = 'viewport'; \
+         meta.content = 'width=device-width,initial-scale=2'; document.head.append(meta);",
+    );
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        0.5,
+        "pinch zoom after the new meta",
+    );
+    let inner_width = evaluate_number(&servo_test, &webview, "innerWidth");
+    assert_close(inner_width, 250., "innerWidth at initial-scale=2");
+}
+
+#[test]
+fn test_viewport_hidden_horizontal_overflow_does_not_zoom_out() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page("<style>body{overflow-x:hidden}</style>"))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    assert_close(webview.pinch_zoom() as f64, 1., "pinch zoom");
+    webview.adjust_pinch_zoom(0.1, DevicePoint::new(250., 250.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        1.,
+        "pinch zoom after zooming out",
+    );
+}
+
+#[test]
+fn test_viewport_hidden_vertical_overflow_does_not_zoom_out() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(
+            "<style>body{overflow-y:hidden}</style>\
+            <div style='position:absolute;top:600px;width:500px;height:600px;background:red'>\
+            </div>",
+        ))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Zoomed out, the larger layout viewport would show the red box below the initial
+    // containing block, which the page hides (at 0.4 it would cover y 240 to 480).
+    assert_close(webview.pinch_zoom() as f64, 1., "pinch zoom");
+    let image = webview
+        .rendering_context()
+        .read_to_image(DeviceIntRect::from_size(DeviceIntSize::new(500, 500)))
+        .expect("Should be able to read image");
+    assert_ne!(image.get_pixel(100, 400), &image::Rgba([255, 0, 0, 255]));
+}
+
+#[test]
+fn test_viewport_does_not_zoom_out_to_overflow_on_the_left() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html><html dir=rtl>\
+                <body style='margin:0'><div style='width:1250px;height:100px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Right-to-left content overflows to the left, where the page cannot scroll: zooming
+    // out would show only empty space to the right.
+    assert_close(webview.pinch_zoom() as f64, 1., "pinch zoom");
+}
+
+#[test]
+fn test_desktop_pinch_zoom_survives_navigation() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<!DOCTYPE html><body>first").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    // Without `<meta viewport>` processing, pinch zoom stays as before: a magnifier that
+    // the next document keeps.
+    webview.adjust_pinch_zoom(2., DevicePoint::new(0., 0.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    load_and_wait(
+        &servo_test,
+        &webview,
+        "data:text/html,<!DOCTYPE html><body>second",
+    );
+    assert_close(
+        webview.pinch_zoom() as f64,
+        2.,
+        "pinch zoom after navigating",
+    );
+}
+
+#[test]
+fn test_viewport_fitting_content_at_a_fractional_width_is_not_zoomed() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <meta name=viewport content='width=device-width,initial-scale=1'>\
+                <body style='margin:0'><div style='height:3000px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    // At 130%, the viewport is 384.6 CSS pixels wide, which app units round.
+    webview.set_page_zoom(1.3);
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // Content that fits the viewport leaves nothing to zoom out to, so a scroll moves the
+    // page, not a pinch zoom viewport magnified a hair above 1.
+    webview.notify_scroll_event(
+        Scroll::Delta(WebViewVector::Device(DeviceVector2D::new(0., 100.))),
+        WebViewPoint::Device(DevicePoint::new(250., 250.)),
+    );
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
+    assert_eq!(offset_top, 0., "visualViewport.offsetTop");
+    let scroll_y = evaluate_number(&servo_test, &webview, "scrollY");
+    assert!(scroll_y > 0., "scrollY should be positive, not {scroll_y}");
+}
+
+#[test]
+fn test_viewport_script_scroll_to_the_top_brings_the_visual_viewport_along() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html>\
+                <meta name=viewport content='width=device-width,initial-scale=1'>\
+                <body style='margin:0'><div style='width:1250px;height:5000px'></div>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+
+    // At its initial scale the page shows the top left of a layout viewport 2.5 times as
+    // large, so scrolling down first moves the visual viewport within it, then the page.
+    for _ in 0..4 {
+        webview.notify_scroll_event(
+            Scroll::Delta(WebViewVector::Device(DeviceVector2D::new(0., 500.))),
+            WebViewPoint::Device(DevicePoint::new(250., 250.)),
+        );
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    }
+    let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
+    assert_close(offset_top, 750., "visualViewport.offsetTop after scrolling");
+
+    // A script scroll to the top, like a scroll-to-top button, shows the page's top again,
+    // so nothing is left to scroll up to.
+    let _ = evaluate_javascript(&servo_test, webview.clone(), "window.scrollTo(0, 0)");
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
+    assert_close(offset_top, 0., "visualViewport.offsetTop after scrolling to the top");
+    assert_eq!(
+        webview.can_scroll_up_at_point(WebViewPoint::Device(DevicePoint::new(250., 250.))),
+        Some(false)
+    );
+}
+
+#[test]
+fn test_viewport_scale_and_description_reset_on_navigation() {
+    let servo_test = mobile_viewport_servo_test();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(wide_page(""))
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        0.4,
+        "pinch zoom of the wide page",
+    );
+
+    // A narrow page opens at 100%, whatever the previous page's scale was.
+    let narrow_page = "data:text/html,<!DOCTYPE html><body>narrow";
+    load_and_wait(&servo_test, &webview, narrow_page);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        1.,
+        "pinch zoom of the narrow page",
+    );
+
+    // A zoom the user chose does not carry over to the next document either.
+    webview.adjust_pinch_zoom(3., DevicePoint::new(0., 0.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+    assert_close(
+        webview.pinch_zoom() as f64,
+        3.,
+        "pinch zoom after zooming in",
+    );
+    load_and_wait(&servo_test, &webview, &format!("{narrow_page}&again"));
+    assert_close(
+        webview.pinch_zoom() as f64,
+        1.,
+        "pinch zoom after navigating",
+    );
+
+    // Nor does a previous document's `<meta viewport>`.
+    load_and_wait(
+        &servo_test,
+        &webview,
+        "data:text/html,<!DOCTYPE html><meta name=viewport content='initial-scale=2'>",
+    );
+    assert_close(
+        webview.pinch_zoom() as f64,
+        2.,
+        "pinch zoom with initial-scale=2",
+    );
+    load_and_wait(&servo_test, &webview, &format!("{narrow_page}&third"));
+    assert_close(
+        webview.pinch_zoom() as f64,
+        1.,
+        "pinch zoom without a viewport meta",
+    );
+    let inner_width = evaluate_number(&servo_test, &webview, "innerWidth");
+    assert_close(inner_width, 500., "innerWidth without a viewport meta");
+}
+
 #[test]
 fn test_webview_load_with_headers() {
     let servo_test = ServoTest::new();

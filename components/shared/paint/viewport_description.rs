@@ -21,6 +21,11 @@ pub const MAX_PAGE_ZOOM: Scale<f32, CSSPixel, DeviceIndependentPixel> = Scale::n
 /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#initial-scale>
 pub const DEFAULT_PAGE_ZOOM: Scale<f32, CSSPixel, DeviceIndependentPixel> = Scale::new(1.0);
 
+/// The smallest page scale to zoom out to, to show content wider than the viewport, when a
+/// page sets no `minimum-scale`: Chrome's default, so that a stray box far to the right does
+/// not shrink a page to a sliver.
+const DEFAULT_MINIMUM_SCALE_FOR_ZOOMING_OUT: f32 = 0.25;
+
 /// <https://drafts.csswg.org/css-viewport/#parsing-algorithm>
 const SEPARATORS: [char; 2] = [',', ';']; // Comma (0x2c) and Semicolon (0x3b)
 
@@ -39,9 +44,17 @@ pub struct ViewportDescription {
     /// the zoom level when the page is first loaded
     pub initial_scale: Scale<f32, CSSPixel, DeviceIndependentPixel>,
 
+    /// Whether the page set `initial-scale`. Without it, the initial scale is "auto": like
+    /// mobile browsers, a page whose content is wider than the viewport opens zoomed out
+    /// to show its full width.
+    pub initial_scale_specified: bool,
+
     /// The minimum page zoom that is allowed on this viewport's page.
     /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#minimum_scale>
     pub minimum_scale: Scale<f32, CSSPixel, DeviceIndependentPixel>,
+
+    /// Whether the page set `minimum-scale`.
+    pub minimum_scale_specified: bool,
 
     /// The maximum page zoom that is allowed on this viewport's page.
     /// <https://developer.mozilla.org/en-US/docs/Web/HTML/Viewport_meta_tag#maximum_scale>
@@ -90,7 +103,9 @@ impl Default for ViewportDescription {
     fn default() -> Self {
         ViewportDescription {
             initial_scale: DEFAULT_PAGE_ZOOM,
+            initial_scale_specified: false,
             minimum_scale: MIN_PAGE_ZOOM,
+            minimum_scale_specified: false,
             maximum_scale: MAX_PAGE_ZOOM,
             user_scalable: UserScalable::Yes,
         }
@@ -106,11 +121,13 @@ impl ViewportDescription {
                 "initial-scale" => {
                     if let Some(zoom) = Self::parse_viewport_value_as_zoom(value) {
                         description.initial_scale = zoom;
+                        description.initial_scale_specified = true;
                     }
                 },
                 "minimum-scale" => {
                     if let Some(zoom) = Self::parse_viewport_value_as_zoom(value) {
                         description.minimum_scale = zoom;
+                        description.minimum_scale_specified = true;
                     }
                 },
                 "maximum-scale" => {
@@ -131,20 +148,32 @@ impl ViewportDescription {
         description
     }
 
-    /// Parses a viewport zoom value.
+    /// Parses a viewport zoom value. A zoom of zero is no zoom: Servo divides by these
+    /// scales, so positive values below [`MIN_PAGE_ZOOM`] become it.
     fn parse_viewport_value_as_zoom(
         value: &str,
     ) -> Option<Scale<f32, CSSPixel, DeviceIndependentPixel>> {
         value
             .parse::<f32>()
             .ok()
-            .filter(|&n| (0.0..=10.0).contains(&n))
-            .map(Scale::new)
+            .filter(|&n| n > 0.0 && n <= MAX_PAGE_ZOOM.get())
+            .map(|n| Scale::new(n.max(MIN_PAGE_ZOOM.get())))
     }
 
     /// Constrains a zoom value within the allowed scale range
     pub fn clamp_zoom(&self, zoom: f32) -> f32 {
         zoom.clamp(self.minimum_scale.get(), self.maximum_scale.get())
+    }
+
+    /// How many times larger than the initial containing block the root scrollport (the
+    /// layout viewport) may grow, so that the user can zoom out from `initial-scale` to
+    /// `minimum-scale` and see content that overflows the initial containing block.
+    pub fn max_layout_viewport_expansion(&self) -> f32 {
+        let minimum_scale = match self.minimum_scale_specified {
+            true => self.minimum_scale.get(),
+            false => DEFAULT_MINIMUM_SCALE_FOR_ZOOMING_OUT.min(self.initial_scale.get()),
+        };
+        (self.initial_scale.get() / minimum_scale.max(MIN_PAGE_ZOOM.get())).max(1.0)
     }
 }
 
@@ -177,5 +206,44 @@ impl FromStr for ViewportDescription {
             .collect::<HashMap<String, String>>();
 
         Ok(Self::process_viewport_key_value_pairs(parsed_values))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_and_tiny_zoom_values_never_become_a_zero_scale() {
+        let description =
+            ViewportDescription::from_str("initial-scale=0, minimum-scale=0").unwrap();
+        assert!(!description.initial_scale_specified);
+        assert_eq!(description.initial_scale, DEFAULT_PAGE_ZOOM);
+        assert!(!description.minimum_scale_specified);
+
+        let description =
+            ViewportDescription::from_str("initial-scale=0.001, minimum-scale=0.001").unwrap();
+        assert_eq!(description.initial_scale, MIN_PAGE_ZOOM);
+        assert_eq!(description.minimum_scale, MIN_PAGE_ZOOM);
+        assert_eq!(description.max_layout_viewport_expansion(), 1.0);
+    }
+
+    #[test]
+    fn layout_viewport_expansion_follows_initial_and_minimum_scale() {
+        let expansion = |content: &str| {
+            ViewportDescription::from_str(content)
+                .unwrap()
+                .max_layout_viewport_expansion()
+        };
+        // Chrome's 25% without a minimum-scale.
+        assert_eq!(
+            ViewportDescription::default().max_layout_viewport_expansion(),
+            4.0
+        );
+        assert_eq!(expansion("width=device-width"), 4.0);
+        assert_eq!(expansion("initial-scale=1, minimum-scale=0.5"), 2.0);
+        assert_eq!(expansion("initial-scale=1, minimum-scale=1"), 1.0);
+        // An initial-scale below 25% is itself the floor.
+        assert_eq!(expansion("initial-scale=0.2"), 1.0);
     }
 }
