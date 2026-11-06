@@ -11247,6 +11247,10 @@
       "80be6ea7ed834788063a1e546e0d0ea26751b1b4",
       []
      ],
+     "reload-referrer-frame.html": [
+      "a18243d5c0e302a4ddde6c679f96d1e30d4b7863",
+      []
+     ],
      "remove-video-iframe-inner.html": [
       "bdd3d9349af8ade8bb4dcec1d7d46256ee2cffa1",
       []
@@ -14860,6 +14864,13 @@
     ],
     "localeCompare.html": [
      "c6042d8739edd005e2ce812cebc168a062753a65",
+     [
+      null,
+      {}
+     ]
+    ],
+    "location-reload-referrer.html": [
+     "f76bb7523ea7e5f50371a4e302434ae3ee197c5b",
      [
       null,
       {}
