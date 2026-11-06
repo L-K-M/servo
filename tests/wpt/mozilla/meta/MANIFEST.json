@@ -14286,6 +14286,15 @@
       {}
      ]
     ],
+    "editing": {
+     "delete-restores-overrides.html": [
+      "9ef03e91d9375163f19aee348cf30e599fc9b8fd",
+      [
+       null,
+       {}
+      ]
+     ]
+    },
     "element-attribute.html": [
      "3ec766e133fea343ac645619a500c46e0e4af64c",
      [
