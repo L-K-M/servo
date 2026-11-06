@@ -885,6 +885,102 @@ fn test_commit_without_composition() {
     );
 }
 
+/// A focused editing host asks for a multiline text input method, as a `<textarea>` does, and
+/// gives it up on blur, when it stops being editable and when it is removed.
+#[test]
+fn test_ime_for_editing_host() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <div id=\"editor\" contenteditable style=\"width: 200px; height: 200px\"> \
+                servo</div> \
+                <div id=\"other\" tabindex=\"0\">other</div> \
+                <script>window.__editor = document.getElementById('editor');</script>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let run = |script: &str| {
+        evaluate_javascript(&servo_test, webview.clone(), script).expect("script should evaluate");
+    };
+
+    click_at_point(&webview, Point2D::new(100., 100.), MouseButton::Primary);
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_shown.get() == 1
+        }),
+        "a clicked editing host asked for no input method"
+    );
+    {
+        let controls = delegate.controls_shown.borrow();
+        let EmbedderControl::InputMethod(ime) = &controls[0] else {
+            unreachable!("Expected embedder control to be an IME");
+        };
+        assert_eq!(ime.input_method_type(), InputMethodType::Text);
+        assert!(ime.multiline());
+    }
+
+    // Blur, and focus on an element that is not editable, which asks for nothing.
+    run("document.getElementById('other').focus()");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_hidden.get() == 1
+        }),
+        "the input method stayed after the editing host lost focus"
+    );
+
+    // An editing host that stops being editable while focused gets no blur event.
+    run("__editor.focus()");
+    let captured_delegate = delegate.clone();
+    assert!(spin_until(&servo_test, timeout, move || {
+        captured_delegate.number_of_controls_shown.get() == 2
+    }));
+    run("__editor.removeAttribute('contenteditable')");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_hidden.get() == 2
+        }),
+        "the input method stayed after the editing host stopped being editable"
+    );
+
+    // Nor does an editing host removed from the document while focused.
+    run("__editor.setAttribute('contenteditable', ''); __editor.focus()");
+    let captured_delegate = delegate.clone();
+    assert!(spin_until(&servo_test, timeout, move || {
+        captured_delegate.number_of_controls_shown.get() == 3
+    }));
+    run("__editor.remove()");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_hidden.get() == 3
+        }),
+        "the input method stayed after the focused editing host was removed"
+    );
+
+    // A focus event dispatched by script asks for nothing.
+    run("document.body.append(__editor); \
+        __editor.dispatchEvent(new FocusEvent('focus'))");
+    let captured_delegate = delegate.clone();
+    assert!(
+        !spin_until(
+            &servo_test,
+            std::time::Duration::from_millis(500),
+            move || captured_delegate.number_of_controls_shown.get() != 3
+        ),
+        "an untrusted focus event asked for an input method"
+    );
+}
+
 /// Typing into an editing host fires the input events of user input, carrying the inserted
 /// text, and edits the focused editing host only.
 #[test]

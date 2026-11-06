@@ -179,10 +179,29 @@ impl DocumentEmbedderControls {
     }
 
     pub(crate) fn hide_embedder_control(&self, element: &Element) {
+        self.hide_controls_where(|control_element| control_element.node() == element.upcast());
+    }
+
+    /// Hides the input method `element` asked for, leaving its other controls, such as a
+    /// context menu, open.
+    pub(crate) fn hide_input_method(&self, element: &HTMLElement) {
+        self.hide_controls_where(|control_element| {
+            matches!(control_element, ControlElement::Ime(ime) if **ime == *element)
+        });
+    }
+
+    /// Whether `element` has an input method open.
+    pub(crate) fn has_input_method(&self, element: &HTMLElement) -> bool {
+        self.visible_elements.borrow().values().any(|control_element| {
+            matches!(control_element, ControlElement::Ime(ime) if **ime == *element)
+        })
+    }
+
+    fn hide_controls_where(&self, should_hide: impl Fn(&ControlElement) -> bool) {
         self.visible_elements
             .borrow_mut()
             .retain(|index, control_element| {
-                if control_element.node() != element.upcast() {
+                if !should_hide(control_element) {
                     return true;
                 }
                 let id = EmbedderControlId {

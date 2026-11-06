@@ -72,6 +72,7 @@ use crate::dom::node::{
 };
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::text::Text;
+use crate::dom::types::FocusEvent;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement};
 use crate::event_loop::script_thread::ScriptThread;
 
@@ -1340,6 +1341,7 @@ impl VirtualMethods for HTMLElement {
                     },
                 }
             },
+            (&local_name!("contenteditable"), _) => self.editing_host_state_changed(),
             (&local_name!("nonce"), mutation) => match mutation {
                 AttributeMutation::Set(_) => {
                     let nonce = &**attr.value();
@@ -1350,6 +1352,15 @@ impl VirtualMethods for HTMLElement {
                 },
             },
             _ => {},
+        }
+    }
+
+    fn handle_event(&self, cx: &mut JSContext, event: &Event) {
+        if event.is::<FocusEvent>() {
+            self.handle_focus_event_for_editing_host(event);
+        }
+        if let Some(super_type) = self.super_type() {
+            super_type.handle_event(cx, event);
         }
     }
 
@@ -1404,6 +1415,8 @@ impl VirtualMethods for HTMLElement {
             document
                 .focus_handler()
                 .set_focused_area(FocusableArea::Viewport);
+            // Without a blur event, a focused editing host must hide its input method here.
+            document.embedder_controls().hide_input_method(self);
         }
 
         // 3. If removedNode is an element whose namespace is the HTML namespace, and this standard

@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use embedder_traits::{EmbedderControlRequest, InputMethodRequest, InputMethodType};
 use html5ever::local_name;
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::RangeBinding::RangeMethods;
@@ -10,17 +11,22 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::properties::{LonghandId, PropertyDeclarationId, ShorthandId};
 
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
+use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::SelectionBinding::SelectionMethods;
 use crate::dom::bindings::inheritance::{ElementTypeId, HTMLElementTypeId, NodeTypeId};
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::element::Element;
+use crate::dom::event::Event;
 use crate::dom::execcommand::basecommand::{CommandName, CssPropertyName};
 use crate::dom::execcommand::contenteditable::node::move_preserving_ranges;
+use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlfontelement::HTMLFontElement;
+use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::node::{Node, NodeTraits};
 use crate::dom::text::Text;
@@ -169,6 +175,77 @@ impl HTMLElement {
         // Step 11. Set the tag name of element to "span",
         // and return the one-node list consisting of the result.
         element.set_the_tag_name(cx, "span");
+    }
+
+    /// Asks the embedder for an input method while this editing host has focus, as text
+    /// controls do, so that a virtual keyboard can open for typing into it; hides it again
+    /// on blur.
+    pub(crate) fn handle_focus_event_for_editing_host(&self, event: &Event) {
+        // Script cannot open or close a keyboard by dispatching focus events of its own.
+        if !event.IsTrusted() || self.is_text_control() {
+            return;
+        }
+        let event_type = event.type_();
+        if *event_type == *"blur" {
+            self.owner_document()
+                .embedder_controls()
+                .hide_input_method(self);
+        } else if *event_type == *"focus" &&
+            self.is_editing_host() &&
+            !self
+                .owner_document()
+                .embedder_controls()
+                .has_input_method(self)
+        {
+            self.show_input_method_for_editing_host();
+        }
+    }
+
+    /// Keeps the input method of a focused element in step with whether it is an editing host
+    /// when its `contenteditable` attribute changes, which fires no focus or blur event.
+    pub(crate) fn editing_host_state_changed(&self) {
+        if self.is_text_control() {
+            return;
+        }
+        let document = self.owner_document();
+        if !self.is_editing_host() {
+            document.embedder_controls().hide_input_method(self);
+            return;
+        }
+        let is_focused = document
+            .focus_handler()
+            .focused_area()
+            .element()
+            .is_some_and(|element| element == self.upcast::<Element>());
+        if is_focused && !document.embedder_controls().has_input_method(self) {
+            self.show_input_method_for_editing_host();
+        }
+    }
+
+    /// Text controls ask for their own input method, with their value and caret.
+    fn is_text_control(&self) -> bool {
+        self.is::<HTMLInputElement>() || self.is::<HTMLTextAreaElement>()
+    }
+
+    fn show_input_method_for_editing_host(&self) {
+        self.owner_document()
+            .embedder_controls()
+            .show_embedder_control(
+                ControlElement::Ime(Dom::from_ref(self)),
+                EmbedderControlRequest::InputMethod(InputMethodRequest {
+                    input_method_type: InputMethodType::Text,
+                    // An editing host's content is not plain text with a single caret offset, so
+                    // none is reported: the embedder's input method starts without context.
+                    text: String::new(),
+                    insertion_point: None,
+                    // Enter inserts a paragraph in an editing host.
+                    multiline: true,
+                    // As for text controls: like Chromium, a virtual keyboard only once the user
+                    // has interacted with the page.
+                    allow_virtual_keyboard: self.owner_window().has_sticky_activation(),
+                }),
+                None,
+            );
     }
 
     /// There is no specification for this implementation. Instead, it is
