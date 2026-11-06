@@ -27,7 +27,7 @@ use servo::{
     CompositionEvent, CompositionState, CreateNewWebViewRequest, Cursor, EmbedderControl, ImeEvent,
     InputEvent, InputMethodType, JSValue, Key, KeyState, LoadStatus, MouseButton,
     MouseLeftViewportEvent,
-    MouseMoveEvent, PrefValue, RenderingContext, Scroll, SimpleDialog, Theme, WebView,
+    MouseMoveEvent, NamedKey, PrefValue, RenderingContext, Scroll, SimpleDialog, Theme, WebView,
     WebViewBuilder, WebViewDelegate, WebViewPoint, WebViewVector,
 };
 use servo_base::generic_channel::GenericCallback;
@@ -882,6 +882,111 @@ fn test_commit_without_composition() {
             std::time::Duration::from_secs(5)
         ),
         "committed text was not inserted, or its input events were wrong"
+    );
+}
+
+/// Typing into an editing host fires the input events of user input, carrying the inserted
+/// text, and edits the focused editing host only.
+#[test]
+fn test_typing_in_editing_host() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.network_http_proxy_uri = String::new();
+        preferences.network_https_proxy_uri = String::new();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <div id=\"editor\" contenteditable>ab</div> \
+                <div id=\"other\" tabindex=\"0\">other</div> \
+                <script> \
+                    window.__editor = document.getElementById('editor'); \
+                    window.__seen = []; \
+                    for (const type of ['beforeinput', 'input']) { \
+                        document.addEventListener(type, event => __seen.push([type, \
+                            event.inputType, event.data, event.isTrusted, event.composed, \
+                            event.cancelable].join())); \
+                    } \
+                    document.addEventListener('beforeinput', event => { \
+                        if (event.data === 'x') event.preventDefault(); \
+                    }); \
+                </script>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let run = |script: &str| {
+        evaluate_javascript(&servo_test, webview.clone(), script).expect("script should evaluate");
+    };
+    let press = |key: Key| {
+        for state in [KeyState::Down, KeyState::Up] {
+            webview.notify_input_event(InputEvent::Keyboard(
+                servo::KeyboardEvent::from_state_and_key(state, key.clone()),
+            ));
+        }
+    };
+
+    run("__editor.focus(); getSelection().collapse(__editor.firstChild, 2)");
+    press(Key::Character("c".into()));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("dé".to_owned())));
+    press(Key::Named(NamedKey::Backspace));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "__editor.textContent === 'abcd'",
+            timeout
+        ),
+        "typing, committing and deleting did not edit the editing host"
+    );
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__seen.join(' ')"),
+        Ok(JSValue::String(
+            "beforeinput,insertText,c,true,true,true input,insertText,c,true,true,false \
+            beforeinput,insertText,dé,true,true,true input,insertText,dé,true,true,false \
+            beforeinput,deleteContentBackward,,true,true,true \
+            input,deleteContentBackward,,true,true,false"
+                .into()
+        ))
+    );
+
+    // The arrow keys move the caret.
+    press(Key::Named(NamedKey::ArrowLeft));
+    press(Key::Character("X".into()));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "__editor.textContent === 'abcXd'",
+            timeout
+        ),
+        "the left arrow key did not move the caret"
+    );
+
+    // A canceled beforeinput event inserts nothing.
+    press(Key::Character("x".into()));
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__editor.textContent"),
+        Ok(JSValue::String("abcXd".into()))
+    );
+
+    // Keystrokes meant for another focused element leave a selection in the editing host alone.
+    run("document.getElementById('other').focus(); \
+        getSelection().collapse(__editor.firstChild, 1)");
+    press(Key::Character("z".into()));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("y".to_owned())));
+    press(Key::Named(NamedKey::Backspace));
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__editor.textContent"),
+        Ok(JSValue::String("abcXd".into())),
+        "input went to an editing host that does not have focus"
     );
 }
 

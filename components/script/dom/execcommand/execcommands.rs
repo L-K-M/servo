@@ -97,6 +97,35 @@ fn mapped_value_of_command(command: CommandName) -> DOMString {
     .into()
 }
 
+/// What asked for an editing command. It decides which input events the command fires.
+pub(crate) enum EditingCommandSource {
+    /// `document.execCommand()`: the events the execCommand specification defines.
+    Script,
+    /// The user editing the focused editing host, such as by typing or pressing Backspace: the
+    /// `beforeinput` and `input` events the Input Events specification defines for user input,
+    /// whose `data` is the text the user inserted.
+    User { data: Option<DOMString> },
+}
+
+impl Document {
+    /// Whether the user's input may edit `editing_host`. A selection left in an editing host
+    /// after focus moved to another element must not take keystrokes meant for that element.
+    /// Without a focused element, as when the document element is the editing host, the input
+    /// goes to the selection; a focused editing host also takes input for those nested in it.
+    pub(crate) fn focus_allows_user_editing_of(&self, editing_host: &Node) -> bool {
+        let focused_area = self.focus_handler().focused_area();
+        let Some(focused_element) = focused_area.element() else {
+            return true;
+        };
+        focused_element
+            .upcast::<Node>()
+            .editing_host_of()
+            .is_some_and(|focused_editing_host| {
+                focused_editing_host.is_inclusive_ancestor_of(editing_host)
+            })
+    }
+}
+
 impl Node {
     fn is_in_plaintext_only_state(&self) -> bool {
         self.downcast::<HTMLElement>()
@@ -196,6 +225,7 @@ pub(crate) trait DocumentExecCommandSupport {
         cx: &mut JSContext,
         command_id: DOMString,
         value: DOMString,
+        source: EditingCommandSource,
     ) -> bool;
 }
 
@@ -264,12 +294,22 @@ impl DocumentExecCommandSupport for Document {
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#execcommand()>
+    ///
+    /// Also runs the commands for user editing in an editing host, which differ only in the
+    /// input events they fire and in requiring the editing host to have focus (see
+    /// [`EditingCommandSource`]).
     fn exec_command_for_command_id(
         &self,
         cx: &mut JSContext,
         command_id: DOMString,
         value: DOMString,
+        source: EditingCommandSource,
     ) -> bool {
+        let is_user_input = matches!(source, EditingCommandSource::User { .. });
+        let user_data = match source {
+            EditingCommandSource::Script => None,
+            EditingCommandSource::User { data } => data,
+        };
         let window = self.window();
         // Step 3. If command is not supported or not enabled, return false.
         let Some((command, mut selection)) = self.check_support_and_enabled(cx, &command_id) else {
@@ -289,8 +329,16 @@ impl DocumentExecCommandSupport for Document {
                 return false;
             };
 
+            if is_user_input && !self.focus_allows_user_editing_of(&affected_editing_host) {
+                return false;
+            }
+
             // Step 4.2. Fire an event named "beforeinput" at affected editing host using InputEvent,
             // with its bubbles and cancelable attributes initialized to true, and its data attribute initialized to null
+            //
+            // User input instead fires the beforeinput event of the Input Events specification:
+            // composed, with the inputType of the command and the text the user inserted.
+            // <https://w3c.github.io/input-events/#event-type-beforeinput>
             let event = InputEvent::new(
                 cx,
                 window,
@@ -300,14 +348,21 @@ impl DocumentExecCommandSupport for Document {
                 true,
                 Some(window),
                 0,
-                None,
+                user_data.clone(),
                 false,
-                DOMString::new(),
+                if is_user_input {
+                    mapped_value_of_command(command)
+                } else {
+                    DOMString::new()
+                },
             );
             let event = event.upcast::<Event>();
+            event.set_composed(is_user_input);
             // Step 4.3. If the value returned by the previous step is false, return false.
+            //
+            // A page that cancels the beforeinput event of user input has handled that input.
             if !event.fire(cx, affected_editing_host.upcast()) {
-                return false;
+                return is_user_input;
             }
 
             // Step 4.4. If command is not enabled, return false.
@@ -353,12 +408,13 @@ impl DocumentExecCommandSupport for Document {
                 false,
                 Some(window),
                 0,
-                None,
+                user_data,
                 false,
                 mapped_value_of_command(command),
             );
             let event = event.upcast::<Event>();
             event.set_trusted(true);
+            event.set_composed(is_user_input);
             event.fire(cx, affected_editing_host.upcast());
         }
 

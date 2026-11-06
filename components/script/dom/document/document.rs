@@ -165,7 +165,7 @@ use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::execcommand::basecommand::{CommandName, DefaultSingleLineContainerName};
-use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
+use crate::dom::execcommand::execcommands::{DocumentExecCommandSupport, EditingCommandSource};
 use crate::dom::focusevent::FocusEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::hashchangeevent::HashChangeEvent;
@@ -7098,7 +7098,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             }
         };
 
-        Ok(self.exec_command_for_command_id(cx, command_id, value))
+        Ok(self.exec_command_for_command_id(cx, command_id, value, EditingCommandSource::Script))
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#querycommandenabled()>
