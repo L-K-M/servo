@@ -19,6 +19,8 @@ readonly attribute Node? anchorNode;
   undefined removeAllRanges();
   undefined empty();
   sequence<StaticRange> getComposedRanges(optional GetComposedRangesOptions options = {});
+  undefined modify(optional DOMString alter = "", optional DOMString direction = "",
+                   optional DOMString granularity = "");
   [Throws] undefined collapse(Node? node, optional unsigned long offset = 0);
   [Throws] undefined setPosition(Node? node, optional unsigned long offset = 0);
   [Throws] undefined collapseToStart();

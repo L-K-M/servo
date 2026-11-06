@@ -42,6 +42,8 @@ use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
 use crate::dom::types::ShadowRoot;
 use crate::dom::{CharacterData, FlatTreeParent, NodeDamage, NodeFlags, StartOrEnd};
 
+pub(crate) mod modify;
+
 /// Used value of [`user-select`](https://drafts.csswg.org/css-ui-4/#propdef-user-select):
 /// like the computed value but excludes `auto`.
 #[derive(Copy, Clone, PartialEq)]
@@ -491,6 +493,16 @@ impl Selection {
         Some(match self.direction.get() {
             Direction::Forwards => (range.start.container.as_rooted(), range.start.offset),
             _ => (range.end.container.as_rooted(), range.end.offset),
+        })
+    }
+
+    /// The focus of this selection, which may be inside a shadow tree.
+    pub(crate) fn composed_focus_position(&self) -> Option<(DomRoot<Node>, u32)> {
+        let range = self.range.borrow();
+        let range = range.as_ref()?;
+        Some(match self.direction.get() {
+            Direction::Forwards => (range.end.container.as_rooted(), range.end.offset),
+            _ => (range.start.container.as_rooted(), range.start.offset),
         })
     }
 
@@ -1016,6 +1028,17 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
             &end_node,
             end_offset,
         ))]
+    }
+
+    /// <https://w3c.github.io/selection-api/#dom-selection-modify>
+    fn Modify(
+        &self,
+        cx: &mut JSContext,
+        alter: DOMString,
+        direction: DOMString,
+        granularity: DOMString,
+    ) {
+        modify::modify(cx, self, &alter.str(), &direction.str(), &granularity.str());
     }
 
     /// <https://w3c.github.io/selection-api/#dom-selection-collapse>
