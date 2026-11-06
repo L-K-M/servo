@@ -32,6 +32,7 @@ use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeTraits};
+use crate::dom::svg::svganimatedstring::SVGAnimatedString;
 use crate::dom::svg::svgcircleelement::SVGCircleElement;
 use crate::dom::svg::svgellipseelement::SVGEllipseElement;
 use crate::dom::svg::svgimageelement::SVGImageElement;
@@ -44,6 +45,7 @@ use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement};
 pub(crate) struct SVGElement {
     element: Element,
     style_decl: MutNullableDom<CSSStyleDeclaration>,
+    class_name: MutNullableDom<SVGAnimatedString>,
 }
 
 /// The SVG 2 presentation attributes that map to CSS properties of the same
@@ -96,6 +98,7 @@ impl SVGElement {
         SVGElement {
             element: Element::new_inherited_with_state(state, tag_name, ns!(svg), prefix, document),
             style_decl: Default::default(),
+            class_name: Default::default(),
         }
     }
 
@@ -175,6 +178,12 @@ impl SVGElementMethods<crate::DomTypeHolder> for SVGElement {
                 CSSModificationAccess::ReadWrite,
             )
         })
+    }
+
+    /// <https://svgwg.org/svg2-draft/types.html#__svg__SVGElement__className>
+    fn ClassName(&self, cx: &mut JSContext) -> DomRoot<SVGAnimatedString> {
+        self.class_name
+            .or_init(|| SVGAnimatedString::new(cx, self.as_element(), local_name!("class")))
     }
 
     // https://html.spec.whatwg.org/multipage/#globaleventhandlers

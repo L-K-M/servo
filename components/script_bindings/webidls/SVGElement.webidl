@@ -6,7 +6,7 @@
 [Exposed=Window]
 interface SVGElement : Element {
 
-  //[SameObject] readonly attribute SVGAnimatedString className;
+  [SameObject] readonly attribute SVGAnimatedString className;
 
   //[SameObject] readonly attribute DOMStringMap dataset;
 

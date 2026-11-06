@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SVGElement.className is an SVGAnimatedString reflecting the class attribute</title>
+<link rel="help" href="https://svgwg.org/svg2-draft/types.html#__svg__SVGElement__className">
+<link rel="help" href="https://svgwg.org/svg2-draft/types.html#InterfaceSVGAnimatedString">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<svg width="10" height="10"><rect id="rect" class="a b" width="10" height="10"/><g id="plain"/></svg>
+<script>
+test(() => {
+  assert_equals(typeof SVGAnimatedString, "function");
+  const className = document.getElementById("rect").className;
+  assert_true(className instanceof SVGAnimatedString);
+  assert_equals(className, document.getElementById("rect").className, "[SameObject]");
+}, "className of an SVG element is the same SVGAnimatedString object each time");
+
+test(() => {
+  const rect = document.getElementById("rect");
+  assert_equals(rect.className.baseVal, "a b");
+  assert_equals(rect.className.animVal, "a b");
+  assert_equals(document.getElementById("plain").className.baseVal, "");
+}, "baseVal and animVal reflect the class attribute");
+
+test(() => {
+  const rect = document.getElementById("rect");
+  rect.className.baseVal = "c d";
+  assert_equals(rect.getAttribute("class"), "c d");
+  assert_equals(rect.className.animVal, "c d");
+  assert_true(rect.classList.contains("d"));
+  assert_equals(document.querySelector("svg .c"), rect, "class selectors see the new value");
+  rect.setAttribute("class", "e");
+  assert_equals(rect.className.baseVal, "e");
+}, "setting baseVal sets the class attribute");
+
+test(() => {
+  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  g.setAttributeNS("urn:test", "p:class", "other");
+  assert_equals(g.className.baseVal, "");
+  g.className.baseVal = "own";
+  assert_equals(g.getAttribute("class"), "own");
+  assert_equals(g.getAttributeNS("urn:test", "class"), "other");
+}, "baseVal reflects the class attribute in no namespace only");
+
+test(() => {
+  const div = document.createElement("div");
+  div.className = "x";
+  assert_equals(div.className, "x");
+}, "className of an HTML element stays a string");
+</script>
