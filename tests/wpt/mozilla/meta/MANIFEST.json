@@ -11231,6 +11231,10 @@
       "c7f68081044c6686812921752d5e8b1f8b342ee6",
       []
      ],
+     "module-cors-only-with-origin.py": [
+      "0defc6ef8e6e9139a9a4cbe384a9db0a7164b30c",
+      []
+     ],
      "no-mime-type.py": [
       "980eeee18f993f20a9df033f337a52ec93155ec4",
       []
@@ -15218,6 +15222,13 @@
     ],
     "preferences.html": [
      "8a65161198c3a692aa007b98643ae3e95b0ae310",
+     [
+      null,
+      {}
+     ]
+    ],
+    "prefetch-module-script-cors.sub.html": [
+     "f4dc29e2e1ae5e52d443fa28c208d212680c547b",
      [
       null,
       {}
