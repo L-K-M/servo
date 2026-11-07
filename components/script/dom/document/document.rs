@@ -47,7 +47,7 @@ use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::pub_domains::is_pub_domain;
 use net_traits::request::{
-    InsecureRequestsPolicy, PreloadId, PreloadKey, PreloadedResources, RequestBuilder,
+    InsecureRequestsPolicy, PreloadId, PreloadKey, PreloadedResources, Referrer, RequestBuilder,
 };
 use net_traits::{ReferrerPolicy, ResourceFetchTiming};
 use paint_api::display_list::PaintTimingInfo;
@@ -165,7 +165,7 @@ use crate::dom::element::{CustomElementCreationMode, Element, ElementCreator};
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::execcommand::basecommand::{CommandName, DefaultSingleLineContainerName};
-use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
+use crate::dom::execcommand::execcommands::{DocumentExecCommandSupport, EditingCommandSource};
 use crate::dom::focusevent::FocusEvent;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::hashchangeevent::HashChangeEvent;
@@ -510,6 +510,11 @@ pub(crate) struct Document {
     origin: DomRefCell<MutableOrigin>,
     /// <https://html.spec.whatwg.org/multipage/#dom-document-referrer>
     referrer: Option<String>,
+    /// The referrer policy of the request that fetched this document, which
+    /// a reload requests with again: the document state's
+    /// <https://html.spec.whatwg.org/multipage/#document-state-request-referrer-policy>.
+    #[no_trace]
+    request_referrer_policy: Cell<ReferrerPolicy>,
     /// <https://html.spec.whatwg.org/multipage/#target-element>
     target_element: MutNullableDom<Element>,
     /// <https://html.spec.whatwg.org/multipage/#concept-document-policy-container>
@@ -4157,6 +4162,7 @@ impl Document {
             needs_restyle: Cell::new(RestyleReason::DOMChanged),
             origin: DomRefCell::new(origin),
             referrer,
+            request_referrer_policy: Cell::new(ReferrerPolicy::EmptyString),
             target_element: MutNullableDom::new(None),
             policy_container: DomRefCell::new(PolicyContainer::default()),
             preloaded_resources: Default::default(),
@@ -4761,6 +4767,26 @@ impl Document {
 
     pub(crate) fn get_referrer_policy(&self) -> ReferrerPolicy {
         self.policy_container.borrow().get_referrer_policy()
+    }
+
+    pub(crate) fn set_request_referrer_policy(&self, policy: ReferrerPolicy) {
+        self.request_referrer_policy.set(policy);
+    }
+
+    /// The referrer and referrer policy a reload of this document requests
+    /// with: those of the request that fetched it, the document state's
+    /// request referrer and request referrer policy
+    /// (<https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching>),
+    /// not this document, which made a reload send its own URL. The kept
+    /// referrer is the one that request sent, which its policy leaves as it
+    /// is for the same URL.
+    pub(crate) fn reload_referrer(&self) -> (Referrer, ReferrerPolicy) {
+        let referrer = self
+            .referrer
+            .as_deref()
+            .and_then(|referrer| ServoUrl::parse(referrer).ok())
+            .map_or(Referrer::NoReferrer, Referrer::ReferrerUrl);
+        (referrer, self.request_referrer_policy.get())
     }
 
     pub(crate) fn set_target_element(&self, node: Option<&Element>) {
@@ -7098,7 +7124,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             }
         };
 
-        Ok(self.exec_command_for_command_id(cx, command_id, value))
+        Ok(self.exec_command_for_command_id(cx, command_id, value, EditingCommandSource::Script))
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#querycommandenabled()>

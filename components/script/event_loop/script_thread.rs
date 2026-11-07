@@ -3666,6 +3666,10 @@ impl ScriptThread {
             .and_then(|h| h.typed_get::<ReferrerPolicyHeader>())
             .into();
         document.set_referrer_policy(referrer_policy);
+        // The policy of the request that fetched the document, which a reload
+        // requests with again; the response's `Referrer-Policy` above only sets
+        // the policy of the document's own requests.
+        document.set_request_referrer_policy(metadata.referrer_policy);
 
         self.documents
             .borrow_mut()

@@ -11247,6 +11247,18 @@
       "80be6ea7ed834788063a1e546e0d0ea26751b1b4",
       []
      ],
+     "reload-referrer-frame-policy-header.html": [
+      "a18243d5c0e302a4ddde6c679f96d1e30d4b7863",
+      []
+     ],
+     "reload-referrer-frame-policy-header.html.headers": [
+      "5b29739bbdde3ae5ad83bdaed1f69ea966cf8353",
+      []
+     ],
+     "reload-referrer-frame.html": [
+      "a18243d5c0e302a4ddde6c679f96d1e30d4b7863",
+      []
+     ],
      "remove-video-iframe-inner.html": [
       "bdd3d9349af8ade8bb4dcec1d7d46256ee2cffa1",
       []
@@ -14286,6 +14298,22 @@
       {}
      ]
     ],
+    "editing": {
+     "delete-restores-overrides.html": [
+      "2d805e15a966d978b6a8132c800928556f65e696",
+      [
+       null,
+       {}
+      ]
+     ],
+     "selection-modify-atomic-units.html": [
+      "6395097722ff65ca746f990d78bcc24a00e4ab53",
+      [
+       null,
+       {}
+      ]
+     ]
+    },
     "element-attribute.html": [
      "3ec766e133fea343ac645619a500c46e0e4af64c",
      [
@@ -14865,6 +14893,13 @@
       {}
      ]
     ],
+    "location-reload-referrer.html": [
+     "439cc3bda71728fc485dc6cf38136840b09f5825",
+     [
+      null,
+      {}
+     ]
+    ],
     "media-query-list-gc.html": [
      "c24500e1674b802883e4a33bdfa7823a218c81b9",
      [
@@ -15383,6 +15418,13 @@
     ],
     "svg-element-classname-animated-string.html": [
      "12165cf2e1b9961569fd353cd0213d69784631b1",
+     [
+      null,
+      {}
+     ]
+    ],
+    "svg-geometry-bbox-and-fill.html": [
+     "dea3ff87ccf61e855542df0fba9bdc61f76fd11f",
      [
       null,
       {}

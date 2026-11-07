@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A reload requests with the referrer and referrer policy that fetched the document</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#create-navigation-params-by-fetching">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#document-state-request-referrer">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<script>
+let frameCount = 0;
+
+// Loads the frame with the given iframe attributes and resolves with the
+// referrer of its first load and of the reload it performs.
+function reloadReferrers(t, attributes, frame = "resources/reload-referrer-frame.html") {
+  const token = `?${++frameCount}-${Date.now()}`;
+  return new Promise(resolve => {
+    const results = {};
+    const listener = t.step_func(event => {
+      if (!event.data || event.data.key !== token) {
+        return;
+      }
+      results[event.data.phase] = event.data.referrer;
+      if ("reloaded" in results) {
+        window.removeEventListener("message", listener);
+        resolve(results);
+      }
+    });
+    window.addEventListener("message", listener);
+    const iframe = document.createElement("iframe");
+    for (const [name, value] of Object.entries(attributes)) {
+      iframe.setAttribute(name, value);
+    }
+    iframe.src = frame + token;
+    t.add_cleanup(() => iframe.remove());
+    document.body.appendChild(iframe);
+  });
+}
+
+promise_test(async t => {
+  const referrers = await reloadReferrers(t, {});
+  assert_equals(referrers.first, location.href, "the first load");
+  assert_equals(referrers.reloaded, location.href, "the reload");
+}, "location.reload() sends the referrer of the document's request, not the document's URL");
+
+promise_test(async t => {
+  const referrers = await reloadReferrers(t, { referrerpolicy: "no-referrer" });
+  assert_equals(referrers.first, "", "the first load");
+  assert_equals(referrers.reloaded, "", "the reload");
+}, "location.reload() sends no referrer for a document fetched without one");
+
+promise_test(async t => {
+  const referrers = await reloadReferrers(t, { referrerpolicy: "origin" });
+  assert_equals(referrers.first, location.origin + "/", "the first load");
+  assert_equals(referrers.reloaded, location.origin + "/", "the reload");
+}, "location.reload() keeps the referrer policy of the document's request");
+
+promise_test(async t => {
+  // The response's Referrer-Policy: origin sets the policy of the frame's
+  // own requests, not the policy of the request that fetched it.
+  const referrers = await reloadReferrers(
+    t, {}, "resources/reload-referrer-frame-policy-header.html");
+  assert_equals(referrers.first, location.href, "the first load");
+  assert_equals(referrers.reloaded, location.href, "the reload");
+}, "location.reload() ignores the referrer policy of the document's response");
+</script>

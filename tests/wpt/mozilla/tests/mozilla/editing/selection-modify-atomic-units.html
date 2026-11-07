@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Selection.modify() moves over images and non-editable content in one step</title>
+<link rel="help" href="https://w3c.github.io/selection-api/#dom-selection-modify">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="block" contenteditable>foo<div contenteditable="false">x</div>bar</div>
+<div id="trailing" contenteditable>foo<img width="10" height="10"></div>
+<div id="between" contenteditable>a<img width="10" height="10">b</div>
+<div id="inline" contenteditable>a<span contenteditable="false">xyz</span>b</div>
+<script>
+const selection = getSelection();
+
+function describe(node, offset) {
+  return `${node.nodeType == Node.TEXT_NODE ? `"${node.data}"` : node.id} ${offset}`;
+}
+
+function move(host, node, offset, direction) {
+  host.focus();
+  selection.collapse(node, offset);
+  selection.modify("move", direction, "character");
+  return describe(selection.focusNode, selection.focusOffset);
+}
+
+test(() => {
+  const host = document.getElementById("block");
+  assert_equals(move(host, host.firstChild, 3, "forward"), `"bar" 0`);
+  assert_equals(move(host, host.lastChild, 0, "backward"), `"foo" 3`);
+}, "A non-editable block is passed in one step");
+
+test(() => {
+  const host = document.getElementById("trailing");
+  assert_equals(move(host, host.firstChild, 3, "forward"), "trailing 2");
+}, "The position after a trailing image is reachable");
+
+test(() => {
+  const host = document.getElementById("between");
+  assert_in_array(move(host, host.firstChild, 1, "forward"), ["between 2", `"b" 0`]);
+  assert_equals(move(host, host.lastChild, 0, "backward"), `"a" 1`);
+}, "An image between text is one step");
+
+test(() => {
+  const host = document.getElementById("inline");
+  assert_equals(move(host, host.lastChild, 0, "backward"), `"a" 1`);
+}, "Non-editable inline content is one step");
+</script>

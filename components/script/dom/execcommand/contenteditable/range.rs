@@ -14,7 +14,7 @@ use crate::dom::document::Document;
 use crate::dom::execcommand::basecommand::{
     BoolOrOptionalString, CommandName, RecordedStateOfCommand,
 };
-use crate::dom::execcommand::commands::fontsize::legacy_font_size_for;
+use crate::dom::execcommand::commands::fontsize::maybe_normalize_pixels;
 use crate::dom::html::htmllielement::HTMLLIElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::Node;
@@ -315,14 +315,24 @@ impl Range {
                             // or there is no value override for "createLink" and node's effective command value
                             // for "createLink" is not equal to override: take the action for "createLink", with value equal to override.
                             CommandName::CreateLink => {
-                                let value_override =
-                                    context_object.value_override(&CommandName::CreateLink);
-                                if value_override != optional_string {
+                                let Some(override_value) = optional_string else {
+                                    continue;
+                                };
+                                let differs =
+                                    match context_object.value_override(&CommandName::CreateLink) {
+                                        Some(value_override) => value_override != override_value,
+                                        None => {
+                                            node.effective_command_value(&CommandName::CreateLink)
+                                                .as_ref() !=
+                                                Some(&override_value)
+                                        },
+                                    };
+                                if differs {
                                     CommandName::CreateLink.execute(
                                         cx,
                                         context_object,
                                         selection,
-                                        optional_string.unwrap_or_default(),
+                                        override_value,
                                     );
                                 }
                             },
@@ -331,30 +341,36 @@ impl Range {
                             // or there is no value override for "fontSize" and node's effective command value for "fontSize"
                             // is not loosely equivalent to override:
                             CommandName::FontSize => {
-                                let value_override =
-                                    context_object.value_override(&CommandName::FontSize);
-                                if value_override != optional_string ||
-                                    (value_override.is_none() &&
-                                        !CommandName::FontSize.are_loosely_equivalent_values(
-                                            node.effective_command_value(&CommandName::FontSize)
-                                                .as_ref(),
-                                            optional_string.as_ref(),
-                                        ))
+                                let Some(override_value) = optional_string else {
+                                    continue;
+                                };
+                                let differs = match context_object
+                                    .value_override(&CommandName::FontSize)
                                 {
-                                    // Step 2.5. Convert override to an integer number of pixels,
-                                    // and set override to the legacy font size for the result.
-                                    let pixels = optional_string
-                                        .and_then(|value| value.parse::<i32>().ok())
-                                        .map(|value| {
-                                            legacy_font_size_for(value as f32, context_object)
-                                        })
-                                        .unwrap_or(DOMString::from_static("7"));
-                                    // Step 2.6. Take the action for "fontSize", with value equal to override.
+                                    Some(value_override) => value_override != override_value,
+                                    None => !CommandName::FontSize.are_loosely_equivalent_values(
+                                        node.effective_command_value(&CommandName::FontSize)
+                                            .as_ref(),
+                                        Some(&override_value),
+                                    ),
+                                };
+                                // Step 2.4.1. Convert override to an integer number of pixels,
+                                // and set override to the legacy font size for the result.
+                                //
+                                // The recorded value is a font element's size ("5"), a declared
+                                // size ("x-large") or a resolved one ("20px"); each converts to
+                                // its legacy size. Other declared sizes ("2em") are passed on,
+                                // and the fontSize action rejects them.
+                                let legacy_size =
+                                    maybe_normalize_pixels(&override_value, context_object);
+                                if let (true, Some(legacy_size)) = (differs, legacy_size) {
+                                    // Step 2.4.2. Take the action for "fontSize", with value
+                                    // equal to override.
                                     CommandName::FontSize.execute(
                                         cx,
                                         context_object,
                                         selection,
-                                        pixels,
+                                        legacy_size,
                                     );
                                 }
                             },

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Deleting text and typing again keeps the formatting of the text before the caret</title>
+<link rel="help" href="https://w3c.github.io/editing/docs/execCommand/#restore-states-and-values">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="editor" contenteditable style="font-size: 20px"></div>
+<script>
+const editor = document.getElementById("editor");
+
+// Puts the caret in the last text node of the editor, before its last
+// `fromEnd` characters, deletes the character before the caret and types "p"
+// in its place.
+function deleteThenType(html, fromEnd = 0) {
+  editor.innerHTML = html;
+  editor.focus();
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  let text = null;
+  while (walker.nextNode()) {
+    text = walker.currentNode;
+  }
+  getSelection().collapse(text, text.length - fromEnd);
+  assert_true(document.execCommand("delete"), `delete in ${html}`);
+  assert_true(document.execCommand("insertText", false, "p"), `insertText in ${html}`);
+  return editor.innerHTML;
+}
+
+test(() => {
+  assert_equals(deleteThenType("hello"), "hellp");
+}, "An inherited font size adds no font element");
+
+test(() => {
+  assert_equals(deleteThenType('<font size="5">hello</font>'), '<font size="5">hellp</font>');
+}, "A legacy font size stays on the text it applied to");
+
+test(() => {
+  assert_equals(deleteThenType('<span style="font-size: 30px">hello</span>'),
+                '<span style="font-size: 30px">hellp</span>');
+}, "A font size from a style attribute adds no font element");
+
+test(() => {
+  // Inside the link, not at its end: browsers differ in where typing at the
+  // end of a link goes.
+  assert_equals(deleteThenType('<a href="https://example.com/">hello</a>', 2),
+                '<a href="https://example.com/">heplo</a>');
+}, "Text typed after deleting inside a link stays in that link");
+
+// Deletes all of the text of the element in "p<element>abc</element>q" and types "x".
+function deleteRunThenType(html) {
+  editor.innerHTML = `p${html}q`;
+  editor.focus();
+  const text = editor.firstChild.nextSibling.firstChild;
+  const range = document.createRange();
+  range.setStart(text, 0);
+  range.setEnd(text, text.length);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  assert_true(document.execCommand("delete"), `delete in ${html}`);
+  assert_true(document.execCommand("insertText", false, "x"), `insertText in ${html}`);
+  return editor.innerHTML;
+}
+
+test(() => {
+  assert_equals(deleteRunThenType('<font size="5">abc</font>'), 'p<font size="5">x</font>q');
+}, "Text typed after deleting all of a font element keeps its size");
+
+test(() => {
+  assert_equals(deleteRunThenType('<span style="font-size: x-large">abc</span>'),
+                'p<font size="5">x</font>q');
+}, "Text typed after deleting all of a run with a keyword size keeps that size");
+</script>
