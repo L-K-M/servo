@@ -11247,6 +11247,14 @@
       "80be6ea7ed834788063a1e546e0d0ea26751b1b4",
       []
      ],
+     "reload-referrer-frame-policy-header.html": [
+      "a18243d5c0e302a4ddde6c679f96d1e30d4b7863",
+      []
+     ],
+     "reload-referrer-frame-policy-header.html.headers": [
+      "5b29739bbdde3ae5ad83bdaed1f69ea966cf8353",
+      []
+     ],
      "reload-referrer-frame.html": [
       "a18243d5c0e302a4ddde6c679f96d1e30d4b7863",
       []
@@ -14870,7 +14878,7 @@
      ]
     ],
     "location-reload-referrer.html": [
-     "f76bb7523ea7e5f50371a4e302434ae3ee197c5b",
+     "439cc3bda71728fc485dc6cf38136840b09f5825",
      [
       null,
       {}

@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>
+// Reports document.referrer to the parent, reloads once, and reports it again.
+const key = "reload-referrer" + location.search;
+const phase = sessionStorage.getItem(key) ? "reloaded" : "first";
+sessionStorage.setItem(key, "1");
+parent.postMessage({ key: location.search, phase, referrer: document.referrer }, "*");
+if (phase === "first") {
+  setTimeout(() => location.reload(), 0);
+}
+</script>
