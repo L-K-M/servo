@@ -60,6 +60,12 @@ def parse_pref_value(value):
         return True
     if value == "false":
         return False
+    # Integer preferences (for example the caret blink interval) must not reach Servo as
+    # JSON floats. Its preference schema deliberately distinguishes the numeric types.
+    try:
+        return int(value)
+    except ValueError:
+        pass
     try:
         return float(value)
     except ValueError:
