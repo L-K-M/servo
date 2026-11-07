@@ -12,6 +12,7 @@ use fonts::font_feature_values::ResolvedFontVariantAlternates;
 use fonts::{FontContext, FontRef, ShapedText, ShapedTextSlice, ShapingFlags, ShapingOptions};
 use icu_locale_core::subtags::Language;
 use icu_properties::props::{EnumeratedProperty, LineBreak};
+use icu_segmenter::GraphemeClusterSegmenter;
 use log::warn;
 use malloc_size_of_derive::MallocSizeOf;
 use servo_arc::Arc as ServoArc;
@@ -26,6 +27,7 @@ use style::font_face::FontLanguageOverride;
 use style::properties::ComputedValues;
 use style::values::computed::{
     FontFeatureSettings, FontVariantEastAsian, FontVariantLigatures, FontVariantNumeric,
+    OverflowWrap,
 };
 use unicode_bidi::Level;
 use unicode_script::Script;
@@ -203,6 +205,41 @@ pub(crate) struct TextRunSegment {
     pub shaped_text: Option<Arc<ShapedText>>,
 }
 
+/// Converts character offsets in the text of a [`TextRunSegment`] into byte offsets. Walking
+/// forward from the previous offset keeps a pass over a segment's words linear.
+pub(super) struct SegmentTextCursor {
+    segment_start: Utf32CodeUnits,
+    character: Utf32CodeUnits,
+    byte: usize,
+}
+
+impl SegmentTextCursor {
+    pub(super) fn new(segment: &TextRunSegment) -> Self {
+        Self {
+            segment_start: segment.character_range.start,
+            character: segment.character_range.start,
+            byte: 0,
+        }
+    }
+
+    /// Return the byte offset in `segment_text` of the given character offset in the
+    /// inline formatting context's text.
+    fn byte_offset(&mut self, segment_text: &str, character: Utf32CodeUnits) -> usize {
+        if character < self.character {
+            self.character = self.segment_start;
+            self.byte = 0;
+        }
+        for next_character in segment_text[self.byte..].chars() {
+            if self.character >= character {
+                break;
+            }
+            self.byte += next_character.len_utf8();
+            self.character += Utf32CodeUnits(1);
+        }
+        self.byte
+    }
+}
+
 impl TextRunSegment {
     fn new(
         info: FontAndScriptInfo,
@@ -271,26 +308,151 @@ impl TextRunSegment {
             soft_wrap_policy = SegmentStartSoftWrapPolicy::Force;
         }
 
+        let can_break_within_words = matches!(
+            text_run
+                .inline_styles()
+                .style
+                .borrow()
+                .get_inherited_text()
+                .overflow_wrap,
+            OverflowWrap::Anywhere | OverflowWrap::BreakWord
+        );
+
+        let mut text_cursor = SegmentTextCursor::new(self);
         let mut character_range_start = self.character_range.start;
         for (run_index, run) in self.runs.iter().enumerate() {
             let new_character_range_end = character_range_start + run.character_count();
 
             // Break before each unbreakable run in this TextRun, except the first unless the
             // linebreaker was set to break before the first run.
-            if run_index != 0 || soft_wrap_policy == SegmentStartSoftWrapPolicy::Force {
+            let soft_wrap_opportunity_before =
+                run_index != 0 || soft_wrap_policy == SegmentStartSoftWrapPolicy::Force;
+            if soft_wrap_opportunity_before {
                 ifc.process_soft_wrap_opportunity();
+                ifc.in_emergency_broken_sequence = false;
+            }
+
+            // The unbreakable sequence includes any content before this run that has no
+            // soft wrap opportunity before it, such as text in a preceding inline box.
+            // Once a sequence has been broken, its continuation keeps breaking so that it
+            // fills the line it was broken onto.
+            let split = if can_break_within_words &&
+                !run.is_whitespace() &&
+                ((!soft_wrap_opportunity_before && ifc.in_emergency_broken_sequence) ||
+                    ifc.content_overflows_empty_line(
+                        ifc.current_line_segment.inline_size + run.total_advance(),
+                    )) {
+                self.split_at_grapheme_clusters(
+                    run,
+                    text_run,
+                    character_range_start..new_character_range_end,
+                    &mut text_cursor,
+                )
+            } else {
+                None
+            };
+            let break_within_word = split.is_some();
+            let (pieces, break_before_first_piece) =
+                split.unwrap_or_else(|| (vec![run.clone()], false));
+
+            // `overflow-wrap: anywhere | break-word` allow breaking an otherwise unbreakable
+            // sequence only if there are no otherwise acceptable break points in the line,
+            // so a word that cannot fit on any line starts a new line before it is broken.
+            // See <https://drafts.csswg.org/css-text-3/#overflow-wrap-property>.
+            if break_within_word {
+                // Unless it was itself broken out of this sequence, content on the current
+                // line ends at an ordinary soft wrap opportunity, so the whole unbreakable
+                // sequence, including any part of it from earlier runs, moves to a new line.
+                if ifc.current_line.has_content && !ifc.in_emergency_broken_sequence {
+                    ifc.process_line_break(
+                        false, /* forced_line_break */
+                        false, /* for_block_level */
+                    );
+                }
+                // A run that continues an unbreakable sequence may also break before its
+                // first grapheme cluster, if the run does not start inside a cluster.
+                if !soft_wrap_opportunity_before && break_before_first_piece {
+                    ifc.process_soft_wrap_opportunity();
+                }
+                ifc.in_emergency_broken_sequence = true;
             }
 
             let run_start = text_run.run_data.character_range_in_ifc_text.start;
-            ifc.push_glyph_store_to_unbreakable_segment(
-                run.clone(),
-                text_run,
-                &self.info,
-                character_range_start - run_start..new_character_range_end - run_start,
-            );
+            let mut piece_start = character_range_start;
+            for (piece_index, piece) in pieces.into_iter().enumerate() {
+                if piece_index != 0 {
+                    ifc.process_soft_wrap_opportunity();
+                }
+                let piece_end = piece_start + piece.character_count();
+                ifc.push_glyph_store_to_unbreakable_segment(
+                    piece,
+                    text_run,
+                    &self.info,
+                    piece_start - run_start..piece_end - run_start,
+                );
+                piece_start = piece_end;
+            }
 
             character_range_start = new_character_range_end;
         }
+    }
+
+    /// Split a shaped word of this segment at its grapheme cluster boundaries, which are
+    /// the break opportunities that `overflow-wrap: anywhere | break-word` introduce. Also
+    /// returns whether the start of the word is a grapheme cluster boundary, which matters
+    /// when the word continues text from a preceding run.
+    /// `character_range` is the range of the word in the inline formatting context's text,
+    /// and `text_cursor` must have been created for this segment. Returns `None` for a run
+    /// of space characters other than no-break spaces, such as U+3000 IDEOGRAPHIC SPACE,
+    /// which end a line by hanging or at an ordinary break opportunity.
+    pub(super) fn split_at_grapheme_clusters(
+        &self,
+        run: &Arc<ShapedTextSlice>,
+        text_run: &TextRun,
+        character_range: Range<Utf32CodeUnits>,
+        text_cursor: &mut SegmentTextCursor,
+    ) -> Option<(Vec<Arc<ShapedTextSlice>>, bool)> {
+        let text_content = text_run.run_data.text_content.get()?;
+        let segment_text = &text_content[Utf8CodeUnits::to_usize_range(&self.byte_range)];
+        let word_start = text_cursor.byte_offset(segment_text, character_range.start);
+        let word_end = text_cursor.byte_offset(segment_text, character_range.end);
+        let word = &segment_text[word_start..word_end];
+        let is_breakable_space = |character: char| {
+            character.is_whitespace() && !matches!(character, '\u{00A0}' | '\u{2007}' | '\u{202F}')
+        };
+        if word.chars().all(is_breakable_space) {
+            return None;
+        }
+
+        // Segment the word together with some preceding text of the inline formatting
+        // context, as a grapheme cluster can span runs, text nodes and inline boxes.
+        const CONTEXT_CHARACTERS: usize = 16;
+        let word_start = usize::from(self.byte_range.start) + word_start;
+        let word_end = usize::from(self.byte_range.start) + word_end;
+        let context_start = text_content[..word_start]
+            .char_indices()
+            .rev()
+            .take(CONTEXT_CHARACTERS)
+            .last()
+            .map_or(word_start, |(index, _)| index);
+        let context = &text_content[context_start..word_end];
+        let word_offset = word_start - context_start;
+
+        let mut break_before = word_offset == 0;
+        let mut previous_boundary = word_offset;
+        let mut character_offset = Utf32CodeUnits(0);
+        let mut boundaries = Vec::new();
+        for boundary in GraphemeClusterSegmenter::new().segment_str(context) {
+            if boundary == word_offset {
+                break_before = true;
+            } else if boundary > word_offset && boundary < context.len() {
+                character_offset +=
+                    Utf32CodeUnits(context[previous_boundary..boundary].chars().count() as u32);
+                previous_boundary = boundary;
+                boundaries.push(character_offset);
+            }
+        }
+        Some((run.split_at_character_offsets(boundaries), break_before))
     }
 
     pub(crate) fn is_compatible_with_old_shaping_result(&self, old_segment: &Self) -> bool {

@@ -111,7 +111,7 @@ use style::computed_values::word_break::T as WordBreak;
 use style::context::{QuirksMode, SharedStyleContext};
 use style::properties::ComputedValues;
 use style::properties::style_structs::InheritedText;
-use style::values::computed::BaselineShift;
+use style::values::computed::{BaselineShift, OverflowWrap};
 use style::values::generics::box_::BaselineShiftKeyword;
 use style::values::generics::font::LineHeight;
 use style::values::specified::box_::BaselineSource;
@@ -129,7 +129,7 @@ use crate::dom_traversal::NodeAndStyleInfo;
 use crate::flow::float::{FloatBox, SequentialLayoutState};
 use crate::flow::inline::shaping_queue::ShapingQueue;
 use crate::flow::inline::text_run::{
-    CaretPlaceholder, FontAndScriptInfo, TextRunItem, TextRunSegment,
+    CaretPlaceholder, FontAndScriptInfo, SegmentTextCursor, TextRunItem, TextRunSegment,
 };
 use crate::flow::{
     BlockLevelBox, CollapsibleWithParentStartMargin, FloatSide, PlacementState,
@@ -912,6 +912,11 @@ struct InlineFormattingContextLayout<'layout_data> {
     /// by the boundary between two characters, the text-wrap-mode property of their nearest
     /// common ancestor is used.
     text_wrap_mode: TextWrapMode,
+
+    /// Whether the content laid out last is part of an unbreakable sequence that was broken
+    /// by `overflow-wrap: anywhere | break-word`, with no ordinary soft wrap opportunity
+    /// after it yet.
+    in_emergency_broken_sequence: bool,
 
     /// Whether block-level boxes inside this inline formatting context should ignore their
     /// margins for the purpose of stretching in the block axis.
@@ -1797,6 +1802,13 @@ impl InlineFormattingContextLayout<'_> {
         )
     }
 
+    /// Whether content of the given inline size would overflow a line even if it were the
+    /// only content on that line.
+    fn content_overflows_empty_line(&self, inline_size: Au) -> bool {
+        self.text_wrap_mode == TextWrapMode::Wrap &&
+            inline_size > self.containing_block().size.inline
+    }
+
     /// Process a soft wrap opportunity. This will either commit the current unbreakable
     /// segment to the current line, if it fits within the containing block and float
     /// placement boundaries, or do a line break and then commit the segment.
@@ -2123,6 +2135,7 @@ impl InlineFormattingContext {
             depends_on_block_constraints: false,
             white_space_collapse: style_text.white_space_collapse,
             text_wrap_mode: style_text.text_wrap_mode,
+            in_emergency_broken_sequence: false,
             ignore_block_margins_for_stretch,
         };
 
@@ -2940,7 +2953,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                             self.process_preserved_tab(&parent_style, inline_formatting_context)
                         },
                         TextRunItem::TextSegment(segment) => {
-                            self.process_text_segment(&parent_style, segment)
+                            self.process_text_segment(&parent_style, text_run, segment)
                         },
                     }
                 }
@@ -3002,16 +3015,27 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
     fn process_text_segment(
         &mut self,
         parent_style: &AtomicRef<'_, ServoArc<ComputedValues>>,
+        text_run: &TextRun,
         segment: &TextRunSegment,
     ) {
         let style_text = parent_style.get_inherited_text();
         let can_wrap = style_text.text_wrap_mode == TextWrapMode::Wrap;
+        // Unlike `break-word`, the soft wrap opportunities introduced by `overflow-wrap: anywhere`
+        // are considered when calculating min-content intrinsic sizes.
+        // See <https://drafts.csswg.org/css-text-3/#overflow-wrap-property>.
+        let can_break_within_words_for_min_content =
+            can_wrap && style_text.overflow_wrap == OverflowWrap::Anywhere;
 
         // TODO: This should take account whether or not the first and last character prevent
         // linebreaks after atomics as in layout.
         let break_at_start = segment.break_at_start && self.had_content_yet_for_min_content;
 
+        let mut text_cursor = SegmentTextCursor::new(segment);
+        let mut run_end = segment.character_range.start;
         for (run_index, run) in segment.runs.iter().enumerate() {
+            let run_start = run_end;
+            run_end += run.character_count();
+
             // Break before each unbreakable run in this TextRun, except the first unless the
             // linebreaker was set to break before the first run.
             if can_wrap && (run_index != 0 || break_at_start) {
@@ -3045,7 +3069,28 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
             }
 
             self.commit_pending_whitespace();
-            self.add_inline_size(advance);
+            let pieces = if can_break_within_words_for_min_content {
+                segment.split_at_grapheme_clusters(
+                    run,
+                    text_run,
+                    run_start..run_end,
+                    &mut text_cursor,
+                )
+            } else {
+                None
+            };
+            if let Some((pieces, break_before_first_piece)) = pieces {
+                // There is a soft wrap opportunity before every grapheme cluster, including
+                // the first one of a run that continues text from a preceding inline box.
+                for (piece_index, piece) in pieces.into_iter().enumerate() {
+                    if piece_index != 0 || break_before_first_piece {
+                        self.line_break_opportunity();
+                    }
+                    self.add_inline_size(piece.total_advance());
+                }
+            } else {
+                self.add_inline_size(advance);
+            }
 
             // Typically whitespace glyphs are placed in a separate store,
             // but for `white-space: break-spaces` we place the first whitespace
