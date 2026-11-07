@@ -91,6 +91,8 @@
   </foreignObject>
   <rect id="customDisplayProperty" style="--display: none" x="1" y="2" width="3" height="4"/>
   <text x="10" y="20">Text <tspan id="tspan">in a span</tspan></text>
+  <a><tspan id="tspanOutsideText">x</tspan></a>
+  <tspan><tspan id="nestedTspanOutsideText">y</tspan></tspan>
 </svg>
 <script>
 const byId = id => document.getElementById(id);
@@ -236,6 +238,11 @@ test(() => {
   assert_greater_than(bbox.width, 0, "width");
   assert_greater_than(bbox.height, 0, "height");
 }, "getBBox() of a tspan");
+
+test(() => {
+  assert_bbox(byId("tspanOutsideText"), 0, 0, 0, 0);
+  assert_bbox(byId("nestedTspanOutsideText"), 0, 0, 0, 0);
+}, "getBBox() of a tspan outside a text element is empty");
 
 test(t => {
   const host = document.createElement("div");

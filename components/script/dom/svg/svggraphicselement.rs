@@ -227,24 +227,28 @@ fn renders_children(element: &Element) -> bool {
 }
 
 /// Text content inside a `text` element: its box needs the text layout,
-/// so `getBBox()` throws for it as for the `text` element.
+/// so `getBBox()` throws for it as for the `text` element. Text content
+/// renders only within a `text` element, through any number of `a`,
+/// `textPath` and `tspan` elements.
 fn is_text_content_child(element: &Element) -> bool {
-    matches!(
+    if !matches!(
         *element.local_name(),
         local_name!("textPath") | local_name!("tspan")
-    ) && element
+    ) {
+        return false;
+    }
+    for ancestor in element
         .upcast::<Node>()
-        .GetParentNode()
-        .and_then(DomRoot::downcast::<Element>)
-        .is_some_and(|parent| {
-            matches!(
-                *parent.local_name(),
-                local_name!("a") |
-                    local_name!("text") |
-                    local_name!("textPath") |
-                    local_name!("tspan")
-            )
-        })
+        .ancestors()
+        .filter_map(DomRoot::downcast::<Element>)
+    {
+        match *ancestor.local_name() {
+            local_name!("text") => return true,
+            local_name!("a") | local_name!("textPath") | local_name!("tspan") => {},
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// The child a `switch` renders: the first graphics or container element,
