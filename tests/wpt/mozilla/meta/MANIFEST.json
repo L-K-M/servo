@@ -14298,6 +14298,22 @@
       {}
      ]
     ],
+    "editing": {
+     "delete-restores-overrides.html": [
+      "2d805e15a966d978b6a8132c800928556f65e696",
+      [
+       null,
+       {}
+      ]
+     ],
+     "selection-modify-atomic-units.html": [
+      "6395097722ff65ca746f990d78bcc24a00e4ab53",
+      [
+       null,
+       {}
+      ]
+     ]
+    },
     "element-attribute.html": [
      "3ec766e133fea343ac645619a500c46e0e4af64c",
      [

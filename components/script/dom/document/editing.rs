@@ -25,7 +25,8 @@ use servo_base::generic_channel::GenericCallback;
 
 use crate::dom::clipboardevent::ClipboardEventType;
 use crate::dom::event::{EventBubbles, EventCancelable};
-use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
+use crate::dom::execcommand::execcommands::{DocumentExecCommandSupport, EditingCommandSource};
+use crate::dom::selection::modify::{Alter, Direction, Granularity};
 use crate::dom::text_control::TextControlElement;
 use crate::dom::text_input::{InputEventType, IsComposing};
 use crate::dom::types::{
@@ -360,7 +361,14 @@ impl Document {
         // This function does not do any checks for whether or not we are actually inside an
         // editing host, since those checks are performed by exec_command_for_command_id either way.
         let (command, argument) = match editing_action {
-            EditingAction::MoveCursor(..) => return false,
+            EditingAction::MoveCursor(direction, motion, modify_selection) => {
+                return self.move_caret_in_focused_editing_host(
+                    cx,
+                    *direction,
+                    *motion,
+                    *modify_selection,
+                );
+            },
             EditingAction::SelectAll | EditingAction::Clipboard(_) => {
                 unreachable!("Should have been handled before this point.")
             },
@@ -403,7 +411,52 @@ impl Document {
             ),
         };
 
-        self.exec_command_for_command_id(cx, command, argument)
+        // The text the user inserted is the `data` of the input events the command fires.
+        let data = match editing_action {
+            EditingAction::InsertText(text) => Some(DOMString::from(text.as_str())),
+            _ => None,
+        };
+        self.exec_command_for_command_id(cx, command, argument, EditingCommandSource::User { data })
+    }
+
+    /// Moves the caret by a character or a word in the focused editing host, as the arrow keys
+    /// do. Returns false, leaving the keys to scroll the page, for other motions and when the
+    /// selection is not in the focused editing host. Extending the selection (Shift with an
+    /// arrow key) is left alone too: starting a selection must fire `selectstart` first, which
+    /// is not implemented.
+    fn move_caret_in_focused_editing_host(
+        &self,
+        cx: &mut JSContext,
+        direction: EditingDirection,
+        motion: EditingMotion,
+        modify_selection: ModifySelection,
+    ) -> bool {
+        if modify_selection == ModifySelection::Yes {
+            return false;
+        }
+        let granularity = match motion {
+            EditingMotion::Character | EditingMotion::Grapheme => Granularity::Character,
+            EditingMotion::Word => Granularity::Word,
+            _ => return false,
+        };
+        let Some(selection) = self.GetSelection(cx) else {
+            return false;
+        };
+        let Some(editing_host) = selection
+            .composed_focus_position()
+            .and_then(|(node, _)| node.editing_host_of())
+        else {
+            return false;
+        };
+        if !self.focus_allows_user_editing_of(&editing_host) {
+            return false;
+        }
+        let direction = match direction {
+            EditingDirection::Backward => Direction::Backward,
+            EditingDirection::Forward => Direction::Forward,
+        };
+        selection.modify_focus(cx, Alter::Move, direction, granularity);
+        true
     }
 }
 

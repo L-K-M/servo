@@ -27,7 +27,7 @@ use servo::{
     CompositionEvent, CompositionState, CreateNewWebViewRequest, Cursor, EmbedderControl, ImeEvent,
     InputEvent, InputMethodType, JSValue, Key, KeyState, LoadStatus, MouseButton,
     MouseLeftViewportEvent,
-    MouseMoveEvent, PrefValue, RenderingContext, Scroll, SimpleDialog, Theme, WebView,
+    MouseMoveEvent, NamedKey, PrefValue, RenderingContext, Scroll, SimpleDialog, Theme, WebView,
     WebViewBuilder, WebViewDelegate, WebViewPoint, WebViewVector,
 };
 use servo_base::generic_channel::GenericCallback;
@@ -838,6 +838,266 @@ fn test_show_and_hide_ime() {
     // The form control should be hidden when the field no longer has focus.
     let captured_delegate = delegate.clone();
     servo_test.spin(move || captured_delegate.number_of_controls_hidden.get() != 1);
+}
+
+/// Text an input method commits without a composition is inserted at the
+/// caret (upstream's `test_commit_without_composition`, ported to this file's
+/// helpers).
+#[test]
+fn test_commit_without_composition() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <input id=\"field\"> \
+                <script> \
+                    window.__seen = []; \
+                    document.getElementById('field').addEventListener('input', event => \
+                        __seen.push(event.inputType + ':' + event.data)); \
+                </script>",
+            )
+            .unwrap(),
+        )
+        .build();
+
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "document.getElementById('field').focus()",
+    )
+    .expect("focus() should evaluate");
+
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("hello".to_owned())));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("世界".to_owned())));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "document.getElementById('field').value === 'hello世界' && \
+                window.__seen.join() === 'insertText:hello,insertText:世界'",
+            std::time::Duration::from_secs(5)
+        ),
+        "committed text was not inserted, or its input events were wrong"
+    );
+}
+
+/// A focused editing host asks for a multiline text input method, as a `<textarea>` does, and
+/// gives it up on blur, when it stops being editable and when it is removed.
+#[test]
+fn test_ime_for_editing_host() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <div id=\"editor\" contenteditable style=\"width: 200px; height: 200px\"> \
+                servo</div> \
+                <div id=\"other\" tabindex=\"0\">other</div> \
+                <script>window.__editor = document.getElementById('editor');</script>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let run = |script: &str| {
+        evaluate_javascript(&servo_test, webview.clone(), script).expect("script should evaluate");
+    };
+
+    click_at_point(&webview, Point2D::new(100., 100.), MouseButton::Primary);
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_shown.get() == 1
+        }),
+        "a clicked editing host asked for no input method"
+    );
+    {
+        let controls = delegate.controls_shown.borrow();
+        let EmbedderControl::InputMethod(ime) = &controls[0] else {
+            unreachable!("Expected embedder control to be an IME");
+        };
+        assert_eq!(ime.input_method_type(), InputMethodType::Text);
+        assert!(ime.multiline());
+    }
+
+    // Blur, and focus on an element that is not editable, which asks for nothing.
+    run("document.getElementById('other').focus()");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_hidden.get() == 1
+        }),
+        "the input method stayed after the editing host lost focus"
+    );
+
+    // An editing host that stops being editable while focused gets no blur event.
+    run("__editor.focus()");
+    let captured_delegate = delegate.clone();
+    assert!(spin_until(&servo_test, timeout, move || {
+        captured_delegate.number_of_controls_shown.get() == 2
+    }));
+    run("__editor.removeAttribute('contenteditable')");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_hidden.get() == 2
+        }),
+        "the input method stayed after the editing host stopped being editable"
+    );
+
+    // Nor does an editing host removed from the document while focused.
+    run("__editor.setAttribute('contenteditable', ''); __editor.focus()");
+    let captured_delegate = delegate.clone();
+    assert!(spin_until(&servo_test, timeout, move || {
+        captured_delegate.number_of_controls_shown.get() == 3
+    }));
+    run("__editor.remove()");
+    let captured_delegate = delegate.clone();
+    assert!(
+        spin_until(&servo_test, timeout, move || {
+            captured_delegate.number_of_controls_hidden.get() == 3
+        }),
+        "the input method stayed after the focused editing host was removed"
+    );
+
+    // A focus event dispatched by script asks for nothing.
+    run("document.body.append(__editor); \
+        __editor.dispatchEvent(new FocusEvent('focus'))");
+    let captured_delegate = delegate.clone();
+    assert!(
+        !spin_until(
+            &servo_test,
+            std::time::Duration::from_millis(500),
+            move || captured_delegate.number_of_controls_shown.get() != 3
+        ),
+        "an untrusted focus event asked for an input method"
+    );
+
+    // Nor does an editing host whose focus listener moves focus on: no blur would hide it.
+    run("__editor.addEventListener('focus', \
+            () => document.getElementById('other').focus(), {once: true}); \
+        __editor.focus()");
+    let captured_delegate = delegate.clone();
+    assert!(
+        !spin_until(
+            &servo_test,
+            std::time::Duration::from_millis(500),
+            move || captured_delegate.number_of_controls_shown.get() != 3
+        ),
+        "an editing host that lost focus to its focus listener asked for an input method"
+    );
+}
+
+/// Typing into an editing host fires the input events of user input, carrying the inserted
+/// text, and edits the focused editing host only.
+#[test]
+fn test_typing_in_editing_host() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.network_http_proxy_uri = String::new();
+        preferences.network_https_proxy_uri = String::new();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html> \
+                <div id=\"editor\" contenteditable>ab</div> \
+                <div id=\"other\" tabindex=\"0\">other</div> \
+                <script> \
+                    window.__editor = document.getElementById('editor'); \
+                    window.__seen = []; \
+                    for (const type of ['beforeinput', 'input']) { \
+                        document.addEventListener(type, event => __seen.push([type, \
+                            event.inputType, event.data, event.isTrusted, event.composed, \
+                            event.cancelable].join())); \
+                    } \
+                    document.addEventListener('beforeinput', event => { \
+                        if (event.data === 'x') event.preventDefault(); \
+                    }); \
+                </script>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let run = |script: &str| {
+        evaluate_javascript(&servo_test, webview.clone(), script).expect("script should evaluate");
+    };
+    let press = |key: Key| {
+        for state in [KeyState::Down, KeyState::Up] {
+            webview.notify_input_event(InputEvent::Keyboard(
+                servo::KeyboardEvent::from_state_and_key(state, key.clone()),
+            ));
+        }
+    };
+
+    run("__editor.focus(); getSelection().collapse(__editor.firstChild, 2)");
+    press(Key::Character("c".into()));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("dé".to_owned())));
+    press(Key::Named(NamedKey::Backspace));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "__editor.textContent === 'abcd'",
+            timeout
+        ),
+        "typing, committing and deleting did not edit the editing host"
+    );
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__seen.join(' ')"),
+        Ok(JSValue::String(
+            "beforeinput,insertText,c,true,true,true input,insertText,c,true,true,false \
+            beforeinput,insertText,dé,true,true,true input,insertText,dé,true,true,false \
+            beforeinput,deleteContentBackward,,true,true,true \
+            input,deleteContentBackward,,true,true,false"
+                .into()
+        ))
+    );
+
+    // The arrow keys move the caret.
+    press(Key::Named(NamedKey::ArrowLeft));
+    press(Key::Character("X".into()));
+    assert!(
+        evaluate_until(
+            &servo_test,
+            &webview,
+            "__editor.textContent === 'abcXd'",
+            timeout
+        ),
+        "the left arrow key did not move the caret"
+    );
+
+    // A canceled beforeinput event inserts nothing.
+    press(Key::Character("x".into()));
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__editor.textContent"),
+        Ok(JSValue::String("abcXd".into()))
+    );
+
+    // Keystrokes meant for another focused element leave a selection in the editing host alone.
+    run("document.getElementById('other').focus(); \
+        getSelection().collapse(__editor.firstChild, 1)");
+    press(Key::Character("z".into()));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("y".to_owned())));
+    press(Key::Named(NamedKey::Backspace));
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__editor.textContent"),
+        Ok(JSValue::String("abcXd".into())),
+        "input went to an editing host that does not have focus"
+    );
 }
 
 /// Spin the event loop until `condition` holds or `timeout` elapses, returning
