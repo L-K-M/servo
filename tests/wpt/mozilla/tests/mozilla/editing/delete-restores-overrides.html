@@ -20,8 +20,8 @@ function deleteThenType(html, fromEnd = 0) {
     text = walker.currentNode;
   }
   getSelection().collapse(text, text.length - fromEnd);
-  assert_true(document.execCommand("delete"), "delete");
-  assert_true(document.execCommand("insertText", false, "p"), "insertText");
+  assert_true(document.execCommand("delete"), `delete in ${html}`);
+  assert_true(document.execCommand("insertText", false, "p"), `insertText in ${html}`);
   return editor.innerHTML;
 }
 

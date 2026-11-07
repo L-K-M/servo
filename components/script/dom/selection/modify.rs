@@ -16,6 +16,7 @@ use cssparser::match_ignore_ascii_case;
 use js::context::{JSContext, NoGC};
 use servo_base::text::Utf16CodeUnits;
 use servo_base::{Rope, RopeIndex, RopeMovement};
+use style::values::specified::box_::DisplayOutside;
 
 use crate::dom::CharacterData;
 use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
@@ -23,6 +24,7 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::{GetRootNodeOptions, N
 use crate::dom::bindings::codegen::Bindings::SelectionBinding::SelectionMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
+use crate::dom::element::Element;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::iterators::ShadowIncluding;
@@ -329,13 +331,26 @@ fn breaks_a_line(br: &Node, no_gc: &NoGC) -> bool {
     let Some(block) = br.block_node_of() else {
         return true;
     };
+    // Not `is_visible()` for a `<br>`: it takes every `<br>` in an inline formatting context for
+    // an extraneous line break.
+    let is_displayed = |node: &DomRoot<Node>| {
+        !node
+            .inclusive_ancestors(ShadowIncluding::No)
+            .any(|ancestor| {
+                ancestor.downcast::<Element>().is_some_and(|element| {
+                    element.resolved_display_value() == Some(DisplayOutside::None)
+                })
+            })
+    };
     let is_content_of_block = |node: &DomRoot<Node>| {
         node.block_node_of().as_ref() == Some(&block) &&
-            (node.is::<HTMLBRElement>() ||
-                node.is::<HTMLImageElement>() ||
-                node.downcast::<Text>().is_some_and(|text| {
-                    text.upcast::<CharacterData>().Length() > 0 && node.is_visible(no_gc)
-                }))
+            match node.downcast::<Text>() {
+                Some(text) => text.upcast::<CharacterData>().Length() > 0 && node.is_visible(no_gc),
+                None => {
+                    (node.is::<HTMLBRElement>() || node.is::<HTMLImageElement>()) &&
+                        is_displayed(node)
+                },
+            }
     };
     br.following_nodes(&block, ShadowIncluding::No)
         .any(|node| is_content_of_block(&node)) ||
