@@ -69,8 +69,9 @@ const PRECISE_ARC_TOLERANCE: ArcTolerance = ArcTolerance {
 /// user units), a point may lie from the outline and still count as on it.
 const OUTLINE_TOLERANCE: f64 = 1e-9;
 
-/// Accuracy of the distance from a point to a curve.
-const NEAREST_ACCURACY: f64 = 1e-12;
+/// Accuracy of the distance from a point to a curve, finer than the
+/// tolerance it is compared with.
+const NEAREST_ACCURACY: f64 = OUTLINE_TOLERANCE / 10.;
 
 #[dom_struct]
 pub(crate) struct SVGGeometryElement {
@@ -487,7 +488,8 @@ fn path_bounds(path: &BezPath) -> Option<Rect> {
 fn is_on_outline(closed: &BezPath, point: Point) -> bool {
     let tolerance = OUTLINE_TOLERANCE * point.x.abs().max(point.y.abs()).max(1.);
     subpaths(closed).iter().any(|subpath| {
-        if subpath.area() == 0. {
+        let bounds = subpath.bounding_box().inflate(tolerance, tolerance);
+        if !bounds.contains(point) || subpath.area() == 0. {
             return false;
         }
         let mut current = Point::ZERO;

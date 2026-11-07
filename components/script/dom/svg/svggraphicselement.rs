@@ -216,6 +216,7 @@ fn renders_children(element: &Element) -> bool {
     matches!(
         *element.local_name(),
         local_name!("a") |
+            local_name!("foreignObject") |
             local_name!("g") |
             local_name!("svg") |
             local_name!("switch") |
@@ -223,6 +224,27 @@ fn renders_children(element: &Element) -> bool {
             local_name!("textPath") |
             local_name!("tspan")
     )
+}
+
+/// Text content inside a `text` element: its box needs the text layout,
+/// so `getBBox()` throws for it as for the `text` element.
+fn is_text_content_child(element: &Element) -> bool {
+    matches!(
+        *element.local_name(),
+        local_name!("textPath") | local_name!("tspan")
+    ) && element
+        .upcast::<Node>()
+        .GetParentNode()
+        .and_then(DomRoot::downcast::<Element>)
+        .is_some_and(|parent| {
+            matches!(
+                *parent.local_name(),
+                local_name!("a") |
+                    local_name!("text") |
+                    local_name!("textPath") |
+                    local_name!("tspan")
+            )
+        })
 }
 
 /// The child a `switch` renders: the first graphics or container element,
@@ -242,7 +264,10 @@ fn switch_child(switch: &Element) -> Option<DomRoot<Element>> {
 /// way chose it, and CSS lays out its outermost `svg` element.
 fn is_rendered(element: &Element) -> bool {
     let node = element.upcast::<Node>();
-    if !node.is_connected() || !is_rendering_element(element) || is_display_none(element) {
+    if !node.is_connected() ||
+        !(is_rendering_element(element) || is_text_content_child(element)) ||
+        is_display_none(element)
+    {
         return false;
     }
     let mut outermost_svg =

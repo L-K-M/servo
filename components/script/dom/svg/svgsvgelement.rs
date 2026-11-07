@@ -445,7 +445,10 @@ pub(crate) fn sets_own_display(element: &Element) -> bool {
     element.has_attribute(&local_name!("display")) ||
         element
             .get_string_attribute(&local_name!("style"))
-            .contains("display")
+            .str()
+            .split(';')
+            .filter_map(|declaration| declaration.split_once(':'))
+            .any(|(name, _)| name.trim().eq_ignore_ascii_case("display"))
 }
 
 impl SVGSVGElementMethods<crate::DomTypeHolder> for SVGSVGElement {

@@ -85,6 +85,12 @@
     <symbol id="cycleEnd"><rect x="100" width="10" height="10"/><use href="#cycleStart"/></symbol>
   </defs>
   <use id="cyclicUse" href="#cycleStart"/>
+
+  <foreignObject width="50" height="50">
+    <svg><rect id="inForeignObject" x="1" y="2" width="3" height="4"/></svg>
+  </foreignObject>
+  <rect id="customDisplayProperty" style="--display: none" x="1" y="2" width="3" height="4"/>
+  <text x="10" y="20">Text <tspan id="tspan">in a span</tspan></text>
 </svg>
 <script>
 const byId = id => document.getElementById(id);
@@ -210,6 +216,26 @@ test(() => {
   // renders nothing; the rects around it remain.
   assert_bbox(byId("cyclicUse"), 0, 0, 110, 10);
 }, "getBBox() of ellipses with a negative radius and of circular use references");
+
+test(() => {
+  assert_bbox(byId("inForeignObject"), 1, 2, 3, 4);
+  // A custom property is not the display property.
+  assert_bbox(byId("customDisplayProperty"), 1, 2, 3, 4);
+}, "getBBox() of SVG inside foreignObject and of a custom property named --display");
+
+test(() => {
+  // The box of rendered text is never silently empty: an engine without
+  // text geometry throws NotSupportedError instead.
+  let bbox;
+  try {
+    bbox = byId("tspan").getBBox();
+  } catch (error) {
+    assert_equals(error.name, "NotSupportedError");
+    return;
+  }
+  assert_greater_than(bbox.width, 0, "width");
+  assert_greater_than(bbox.height, 0, "height");
+}, "getBBox() of a tspan");
 
 test(t => {
   const host = document.createElement("div");
