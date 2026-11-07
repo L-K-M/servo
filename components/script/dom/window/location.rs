@@ -165,8 +165,17 @@ impl Location {
         };
         let source_document = source_window.Document();
 
-        let referrer = Referrer::ReferrerUrl(source_document.url());
-        let referrer_policy = source_document.get_referrer_policy();
+        let (referrer, referrer_policy) = match navigation_type {
+            // A reload requests with the referrer and referrer policy of the
+            // request that fetched the document.
+            NavigationType::ReloadByScript | NavigationType::ReloadByConstellation => {
+                source_document.reload_referrer()
+            },
+            NavigationType::Normal => (
+                Referrer::ReferrerUrl(source_document.url()),
+                source_document.get_referrer_policy(),
+            ),
+        };
 
         // <https://html.spec.whatwg.org/multipage/#navigate>
         // > Let `incumbentNavigationOrigin` be the origin of the incumbent
