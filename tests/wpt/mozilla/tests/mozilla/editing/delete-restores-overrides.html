@@ -44,4 +44,28 @@ test(() => {
   assert_equals(deleteThenType('<a href="https://example.com/">hello</a>', 2),
                 '<a href="https://example.com/">heplo</a>');
 }, "Text typed after deleting inside a link stays in that link");
+
+// Deletes all of the text of the element in "p<element>abc</element>q" and types "x".
+function deleteRunThenType(html) {
+  editor.innerHTML = `p${html}q`;
+  editor.focus();
+  const text = editor.firstChild.nextSibling.firstChild;
+  const range = document.createRange();
+  range.setStart(text, 0);
+  range.setEnd(text, text.length);
+  getSelection().removeAllRanges();
+  getSelection().addRange(range);
+  assert_true(document.execCommand("delete"), `delete in ${html}`);
+  assert_true(document.execCommand("insertText", false, "x"), `insertText in ${html}`);
+  return editor.innerHTML;
+}
+
+test(() => {
+  assert_equals(deleteRunThenType('<font size="5">abc</font>'), 'p<font size="5">x</font>q');
+}, "Text typed after deleting all of a font element keeps its size");
+
+test(() => {
+  assert_equals(deleteRunThenType('<span style="font-size: x-large">abc</span>'),
+                'p<font size="5">x</font>q');
+}, "Text typed after deleting all of a run with a keyword size keeps that size");
 </script>

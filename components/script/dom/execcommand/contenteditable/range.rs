@@ -14,7 +14,7 @@ use crate::dom::document::Document;
 use crate::dom::execcommand::basecommand::{
     BoolOrOptionalString, CommandName, RecordedStateOfCommand,
 };
-use crate::dom::execcommand::commands::fontsize::legacy_font_size_for;
+use crate::dom::execcommand::commands::fontsize::maybe_normalize_pixels;
 use crate::dom::html::htmllielement::HTMLLIElement;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::Node;
@@ -357,15 +357,12 @@ impl Range {
                                 // Step 2.4.1. Convert override to an integer number of pixels,
                                 // and set override to the legacy font size for the result.
                                 //
-                                // The recorded value is a resolved font size such as "20px". A
-                                // value that is not a pixel length has no legacy size to restore.
-                                let legacy_size = override_value
-                                    .str()
-                                    .strip_suffix("px")
-                                    .and_then(|pixels| pixels.parse::<f32>().ok())
-                                    .map(|pixels| {
-                                        legacy_font_size_for(pixels.round(), context_object)
-                                    });
+                                // The recorded value is a font element's size ("5"), a declared
+                                // size ("x-large") or a resolved one ("20px"); each converts to
+                                // its legacy size. Other declared sizes ("2em") are passed on,
+                                // and the fontSize action rejects them.
+                                let legacy_size =
+                                    maybe_normalize_pixels(&override_value, context_object);
                                 if let (true, Some(legacy_size)) = (differs, legacy_size) {
                                     // Step 2.4.2. Take the action for "fontSize", with value
                                     // equal to override.
