@@ -29,6 +29,11 @@ use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::Node;
 use crate::dom::selection::Selection;
 use crate::dom::text::Text;
+use crate::dom::types::{
+    HTMLButtonElement, HTMLCanvasElement, HTMLEmbedElement, HTMLHRElement, HTMLIFrameElement,
+    HTMLInputElement, HTMLMediaElement, HTMLObjectElement, HTMLSelectElement, HTMLTextAreaElement,
+    SVGSVGElement,
+};
 
 /// Whether a modification moves the whole selection or only its focus.
 pub(crate) enum Alter {
@@ -171,29 +176,43 @@ fn moved_position(
         if candidate == scope {
             break;
         }
-        // Inside an editing host, content that is not editable counts as one character: the
-        // focus stops beside it, never inside.
-        if in_editing_host &&
-            (candidate.is::<HTMLBRElement>() || candidate.is::<Text>()) &&
-            !candidate.is_editable()
-        {
-            let island = non_editable_island(&candidate, &scope);
+        // An image, a form control or, inside an editing host, content that is not editable
+        // counts as one character: the focus stops beside it, never inside.
+        if let Some(unit) = atomic_unit(&candidate, &scope, in_editing_host) {
+            if !unit.is_visible(no_gc) {
+                continue;
+            }
+            // The line a unit sits on: a block unit, such as a non-editable `<div>`, sits on
+            // a line of its parent's block.
+            let unit_block = if unit.is_block_node() {
+                unit.GetParentNode()
+                    .and_then(|parent| parent.block_node_of())
+            } else {
+                unit.block_node_of()
+            };
             let crossed_line = match &beside_line_break {
                 Some((line_break_block, position)) => {
-                    if island.block_node_of() != *line_break_block {
+                    if unit_block != *line_break_block {
                         return Some(position.clone());
                     }
                     true
                 },
-                None => island.block_node_of() != origin_block,
+                None => unit_block != origin_block,
             };
-            // Past a line break, the move ends on the near side of the island; otherwise it
-            // moves past the island.
-            let side = match (direction, crossed_line) {
-                (Direction::Forward, true) | (Direction::Backward, false) => Direction::Backward,
-                (Direction::Forward, false) | (Direction::Backward, true) => Direction::Forward,
+            // Past a line break, the move ends on the near side of the unit; otherwise it
+            // moves past the unit.
+            let near_side = match direction {
+                Direction::Forward => Direction::Backward,
+                Direction::Backward => Direction::Forward,
             };
-            return position_beside(&island, side);
+            if crossed_line {
+                let position = position_beside(&unit, near_side)?;
+                // Right beside the start, the near side is no move at all.
+                if *position.0 != *node || position.1 != offset {
+                    return Some(position);
+                }
+            }
+            return position_beside(&unit, direction);
         }
         if candidate.is::<HTMLBRElement>() {
             if !breaks_a_line(&candidate, no_gc) {
@@ -247,17 +266,38 @@ fn moved_position(
     beside_line_break.map(|(_, position)| position)
 }
 
-/// The outermost node that is not editable around `node`, which is not editable, inside the
-/// editing host `scope`.
-fn non_editable_island(node: &Node, scope: &Node) -> DomRoot<Node> {
-    let mut island = DomRoot::from_ref(node);
-    while let Some(parent) = island.GetParentNode() {
-        if &*parent == scope || parent.is_editable() {
+/// The outermost unit that `node` is, or is part of, inside `scope` and that the focus moves
+/// over in one step: a replaced element or form control, or, inside an editing host, content
+/// that is not editable.
+fn atomic_unit(node: &Node, scope: &Node, in_editing_host: bool) -> Option<DomRoot<Node>> {
+    let mut unit = None;
+    for ancestor in node.inclusive_ancestors(ShadowIncluding::No) {
+        if &*ancestor == scope {
             break;
         }
-        island = parent;
+        if is_replaced_or_control(&ancestor) ||
+            (in_editing_host && !ancestor.is_editable_or_editing_host())
+        {
+            unit = Some(ancestor);
+        }
     }
-    island
+    unit
+}
+
+/// Elements that render as one box with no caret positions inside.
+fn is_replaced_or_control(node: &Node) -> bool {
+    node.is::<HTMLImageElement>() ||
+        node.is::<HTMLInputElement>() ||
+        node.is::<HTMLTextAreaElement>() ||
+        node.is::<HTMLSelectElement>() ||
+        node.is::<HTMLButtonElement>() ||
+        node.is::<HTMLMediaElement>() ||
+        node.is::<HTMLIFrameElement>() ||
+        node.is::<HTMLCanvasElement>() ||
+        node.is::<HTMLObjectElement>() ||
+        node.is::<HTMLEmbedElement>() ||
+        node.is::<HTMLHRElement>() ||
+        node.is::<SVGSVGElement>()
 }
 
 /// The position just before (`side` backward) or just after (`side` forward) `node`, in the
