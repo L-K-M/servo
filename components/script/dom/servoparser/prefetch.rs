@@ -15,7 +15,8 @@ use js::jsapi::JSTracer;
 use markup5ever::TokenizerResult;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{
-    CorsSettings, CredentialsMode, Destination, ParserMetadata, Referrer, RequestClient,
+    CorsSettings, CredentialsMode, Destination, ParserMetadata, Referrer, RequestBuilder,
+    RequestClient, RequestMode,
 };
 use net_traits::{CoreResourceMsg, FetchChannels, ReferrerPolicy, ResourceThreads};
 use servo_base::generic_channel::GenericSend;
@@ -25,7 +26,9 @@ use servo_url::ServoUrl;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::trace::{CustomTraceable, JSTraceable};
 use crate::dom::document::Document;
-use crate::dom::html::htmlscriptelement::script_fetch_request;
+use crate::dom::html::htmlscriptelement::{
+    ScriptType, script_fetch_request, script_type_for_attributes,
+};
 use crate::dom::processingoptions::determine_cors_settings_for_token;
 use crate::fetch::fetch::create_a_potential_cors_request;
 use crate::modules::script_module::ScriptFetchOptions;
@@ -121,9 +124,16 @@ impl TokenSink for PrefetchSink {
         };
         match (tag.kind, &tag.name) {
             (TagKind::StartTag, &local_name!("script")) if self.prefetching.get() => {
-                if let Some(url) = self.get_url(tag, local_name!("src")) {
+                let script_type = script_type_for_attributes(
+                    self.get_attr(tag, local_name!("type"))
+                        .map(|attr| &*attr.value),
+                    self.get_attr(tag, local_name!("language"))
+                        .map(|attr| &*attr.value),
+                );
+                if let Some(script_type @ (ScriptType::Classic | ScriptType::Module)) = script_type &&
+                    let Some(url) = self.get_url(tag, local_name!("src"))
+                {
                     debug!("Prefetch script {}", url);
-                    let cors_setting = self.get_cors_settings(tag, local_name!("crossorigin"));
                     let integrity_metadata = self
                         .get_attr(tag, local_name!("integrity"))
                         .map(|attr| String::from(&attr.value))
@@ -132,20 +142,44 @@ impl TokenSink for PrefetchSink {
                         .get_attr(tag, local_name!("nonce"))
                         .map(|attr| String::from(&attr.value))
                         .unwrap_or_default();
-                    let request = script_fetch_request(
-                        self.webview_id,
-                        UrlWithBlobClaim::from_url_without_having_claimed_blob(url),
-                        cors_setting,
-                        ScriptFetchOptions {
-                            referrer_policy: self.referrer_policy,
-                            integrity_metadata,
-                            cryptographic_nonce,
-                            credentials_mode: CredentialsMode::CredentialsSameOrigin,
-                            parser_metadata: ParserMetadata::ParserInserted,
-                            render_blocking: false,
-                        },
-                        self.referrer.clone(),
-                    )
+                    let url = UrlWithBlobClaim::from_url_without_having_claimed_blob(url);
+                    let referrer_policy =
+                        self.get_referrer_policy(tag, local_name!("referrerpolicy"));
+                    let request = if script_type == ScriptType::Module {
+                        // Make the same request as fetching a single module script would, so
+                        // that the response can be reused. In particular, it is a CORS request.
+                        // <https://html.spec.whatwg.org/multipage/#fetch-a-single-module-script>
+                        let credentials_mode = match self.get_attr(tag, local_name!("crossorigin"))
+                        {
+                            Some(attr) if attr.value.eq_ignore_ascii_case("use-credentials") => {
+                                CredentialsMode::Include
+                            },
+                            _ => CredentialsMode::CredentialsSameOrigin,
+                        };
+                        RequestBuilder::new(Some(self.webview_id), url, self.referrer.clone())
+                            .destination(Destination::Script)
+                            .parser_metadata(ParserMetadata::ParserInserted)
+                            .integrity_metadata(integrity_metadata)
+                            .credentials_mode(credentials_mode)
+                            .referrer_policy(referrer_policy)
+                            .mode(RequestMode::CorsMode)
+                            .cryptographic_nonce_metadata(cryptographic_nonce)
+                    } else {
+                        script_fetch_request(
+                            self.webview_id,
+                            url,
+                            self.get_cors_settings(tag, local_name!("crossorigin")),
+                            ScriptFetchOptions {
+                                referrer_policy,
+                                integrity_metadata,
+                                cryptographic_nonce,
+                                credentials_mode: CredentialsMode::CredentialsSameOrigin,
+                                parser_metadata: ParserMetadata::ParserInserted,
+                                render_blocking: false,
+                            },
+                            self.referrer.clone(),
+                        )
+                    }
                     .client(self.request_client.clone())
                     .pipeline_id(Some(self.pipeline_id));
                     let _ = self

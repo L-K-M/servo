@@ -232,6 +232,68 @@ pub(crate) enum ScriptType {
     ImportMap,
 }
 
+/// The script type of a script element with the given `type` and `language` attribute
+/// values, or `None` if the element's script is not run.
+/// <https://html.spec.whatwg.org/multipage/#prepare-a-script> Step 7.
+pub(crate) fn script_type_for_attributes(
+    type_attr: Option<&str>,
+    language_attr: Option<&str>,
+) -> Option<ScriptType> {
+    match (type_attr, language_attr) {
+        (Some(ty), _) if ty.is_empty() => {
+            debug!("script type empty, inferring js");
+            Some(ScriptType::Classic)
+        },
+        (None, Some(lang)) if lang.is_empty() => {
+            debug!("script type empty, inferring js");
+            Some(ScriptType::Classic)
+        },
+        (None, None) => {
+            debug!("script type empty, inferring js");
+            Some(ScriptType::Classic)
+        },
+        (None, Some(lang)) => {
+            debug!("script language={}", lang);
+            let language = format!("text/{}", lang);
+
+            if SCRIPT_JS_MIMES
+                .iter()
+                .any(|mime| language.eq_ignore_ascii_case(mime))
+            {
+                Some(ScriptType::Classic)
+            } else {
+                None
+            }
+        },
+        (Some(ty), _) => {
+            debug!("script type={}", ty);
+
+            if ty
+                .trim_matches(HTML_SPACE_CHARACTERS)
+                .eq_ignore_ascii_case("module")
+            {
+                return Some(ScriptType::Module);
+            }
+
+            if ty
+                .trim_matches(HTML_SPACE_CHARACTERS)
+                .eq_ignore_ascii_case("importmap")
+            {
+                return Some(ScriptType::ImportMap);
+            }
+
+            if SCRIPT_JS_MIMES.iter().any(|mime| {
+                ty.trim_matches(HTML_SPACE_CHARACTERS)
+                    .eq_ignore_ascii_case(mime)
+            }) {
+                Some(ScriptType::Classic)
+            } else {
+                None
+            }
+        },
+    }
+}
+
 /// <https://html.spec.whatwg.org/multipage/#steps-to-run-when-the-result-is-ready>
 fn finish_fetching_a_script(
     elem: &HTMLScriptElement,
@@ -1074,60 +1136,7 @@ impl HTMLScriptElement {
 
         let type_attr = element.get_attribute_string_value(&local_name!("type"));
         let language_attr = element.get_attribute_string_value(&local_name!("language"));
-
-        match (type_attr, language_attr) {
-            (Some(ty), _) if ty.is_empty() => {
-                debug!("script type empty, inferring js");
-                Some(ScriptType::Classic)
-            },
-            (None, Some(lang)) if lang.is_empty() => {
-                debug!("script type empty, inferring js");
-                Some(ScriptType::Classic)
-            },
-            (None, None) => {
-                debug!("script type empty, inferring js");
-                Some(ScriptType::Classic)
-            },
-            (None, Some(lang)) => {
-                debug!("script language={}", lang);
-                let language = format!("text/{}", lang);
-
-                if SCRIPT_JS_MIMES
-                    .iter()
-                    .any(|mime| language.eq_ignore_ascii_case(mime))
-                {
-                    Some(ScriptType::Classic)
-                } else {
-                    None
-                }
-            },
-            (Some(ty), _) => {
-                debug!("script type={}", ty);
-
-                if ty
-                    .trim_matches(HTML_SPACE_CHARACTERS)
-                    .eq_ignore_ascii_case("module")
-                {
-                    return Some(ScriptType::Module);
-                }
-
-                if ty
-                    .trim_matches(HTML_SPACE_CHARACTERS)
-                    .eq_ignore_ascii_case("importmap")
-                {
-                    return Some(ScriptType::ImportMap);
-                }
-
-                if SCRIPT_JS_MIMES.iter().any(|mime| {
-                    ty.trim_matches(HTML_SPACE_CHARACTERS)
-                        .eq_ignore_ascii_case(mime)
-                }) {
-                    Some(ScriptType::Classic)
-                } else {
-                    None
-                }
-            },
-        }
+        script_type_for_attributes(type_attr.as_deref(), language_attr.as_deref())
     }
 
     pub(crate) fn set_parser_inserted(&self, parser_inserted: bool) {
