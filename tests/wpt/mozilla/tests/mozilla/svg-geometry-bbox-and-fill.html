@@ -1,0 +1,306 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SVG getBBox(), isPointInFill() and the SVGSVGElement factory methods</title>
+<link rel="help" href="https://www.w3.org/TR/SVG2/types.html#InterfaceSVGGraphicsElement">
+<link rel="help" href="https://www.w3.org/TR/SVG2/types.html#InterfaceSVGGeometryElement">
+<link rel="help" href="https://www.w3.org/TR/SVG2/struct.html#InterfaceSVGSVGElement">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #cssEvenOdd { fill-rule: evenodd; }
+</style>
+<svg id="root" width="400" height="400">
+  <rect id="rect" x="10" y="20" width="30" height="40"/>
+  <rect id="roundRect" x="10" y="20" width="30" height="40" rx="5"/>
+  <circle id="circle" cx="50" cy="60" r="10"/>
+  <ellipse id="ellipse" cx="50" cy="60" rx="20" ry="10"/>
+  <line id="line" x1="40" y1="30" x2="10" y2="20"/>
+  <polyline id="polyline" points="10,20 40,0 30,50"/>
+  <polygon id="polygon" points="10,20 40,0 30,50"/>
+  <path id="cubic" d="M0 0 C0 50 100 50 100 0"/>
+  <path id="arc" d="M0 0 a10 10 0 0 0 20 0"/>
+  <path id="quad" d="M0 0 Q50 100 100 0"/>
+  <path id="moves" d="M10 20 M30 40"/>
+  <path id="trailingMove" d="M0 0 L10 10 M50 60"/>
+  <path id="emptyPath" d="M3"/>
+  <rect id="zeroWidth" x="10" y="20" width="0" height="40"/>
+  <rect id="hiddenRect" x="1" y="2" width="3" height="4" visibility="hidden"/>
+  <rect id="noneRect" x="1" y="2" width="3" height="4" display="none"/>
+
+  <g id="group">
+    <rect x="10" y="20" width="30" height="40"/>
+    <rect x="100" y="0" width="10" height="10" transform="translate(5, 6) scale(2)"/>
+    <rect x="0" y="0" width="50" height="50" style="display: none"/>
+    <rect x="-100" y="-100" width="0" height="10"/>
+    <path d="M3"/>
+    <g transform="rotate(90 0 0)">
+      <rect x="0" y="0" width="10" height="20"/>
+    </g>
+  </g>
+  <g id="emptyGroup"></g>
+  <g id="groupOfNothing"><rect width="0" height="0"/><polygon points=""/></g>
+  <g id="matrixGroup"><rect width="10" height="10" transform="matrix(2 0 0 3 5 7)"/></g>
+  <g id="skewGroup"><rect width="10" height="10" transform="skewX(45)"/></g>
+  <g id="compactList"><rect width="10" height="10" transform="translate(1e1 .5)scale(2,3)"/></g>
+  <g id="invalidList"><rect width="10" height="10" transform="translate(10"/></g>
+  <g id="trailingComma"><rect width="10" height="10" transform="translate(10, 10),"/></g>
+  <svg id="nested" x="100" y="200"><rect x="1" y="2" width="3" height="4"/></svg>
+  <g id="groupWithNested"><svg x="100" y="200"><rect x="1" y="2" width="3" height="4"/></svg></g>
+
+  <defs>
+    <rect id="defsRect" x="10" y="20" width="30" height="40"/>
+    <rect id="useTarget" x="10" y="20" width="30" height="40" transform="translate(1, 2)"/>
+  </defs>
+  <symbol id="symbol"><rect id="symbolRect" x="10" y="20" width="30" height="40"/></symbol>
+  <clipPath><rect id="clipRect" x="10" y="20" width="30" height="40"/></clipPath>
+  <use id="use" href="#useTarget" x="100" y="200"/>
+  <use id="useSymbol" href="#symbol" x="100" y="200"/>
+  <use id="useMissing" href="#doesNotExist" x="100" y="200"/>
+
+  <path id="ring" d="M0 0 h100 v100 h-100 z M20 20 h60 v60 h-60 z"/>
+  <path id="ringEvenOdd" d="M0 0 h100 v100 h-100 z M20 20 h60 v60 h-60 z" fill-rule="evenodd"/>
+  <path id="cssEvenOdd" d="M0 0 h100 v100 h-100 z M20 20 h60 v60 h-60 z"/>
+  <path id="openTriangle" d="M0 0 L10 0 L10 10"/>
+  <circle id="originCircle" r="10"/>
+  <path id="loneMove" d="M10 20"/>
+  <path id="closedMove" d="M10 20 Z"/>
+  <path id="straightLine" d="M0 0 L10 0"/>
+  <path id="zeroSegment" d="M10 20 L10 20"/>
+  <path id="closedTriangle" d="M0 0 L10 0 L10 10 Z"/>
+
+  <rect id="hiddenTarget" x="1" y="2" width="3" height="4" display="none"/>
+  <use id="useHiddenTarget" href="#hiddenTarget"/>
+  <unknown-element><rect id="inUnknown" width="10" height="10"/></unknown-element>
+  <use id="useWithChild" href="#doesNotExist"><rect id="childOfUse" width="10" height="10"/></use>
+  <g id="switchGroup">
+    <switch><rect width="5" height="5" display="none"/><rect y="100" width="10" height="10"/></switch>
+  </g>
+  <defs><symbol id="placedSymbol" x="5" y="6" transform="scale(2)"><rect width="10" height="10"/></symbol></defs>
+  <use id="usePlacedSymbol" href="#placedSymbol" x="100" y="200"/>
+
+  <ellipse id="negativeRx" cx="1" cy="12" rx="-5" ry="10"/>
+  <ellipse id="negativeRy" cx="6" cy="2" rx="5" ry="-10"/>
+  <defs>
+    <symbol id="cycleStart"><rect width="10" height="10"/><use href="#cycleEnd"/></symbol>
+    <symbol id="cycleEnd"><rect x="100" width="10" height="10"/><use href="#cycleStart"/></symbol>
+  </defs>
+  <use id="cyclicUse" href="#cycleStart"/>
+
+  <foreignObject width="50" height="50">
+    <svg><rect id="inForeignObject" x="1" y="2" width="3" height="4"/></svg>
+  </foreignObject>
+  <rect id="customDisplayProperty" style="--display: none" x="1" y="2" width="3" height="4"/>
+  <text x="10" y="20">Text <tspan id="tspan">in a span</tspan></text>
+  <a><tspan id="tspanOutsideText">x</tspan></a>
+  <tspan><tspan id="nestedTspanOutsideText">y</tspan></tspan>
+</svg>
+<script>
+const byId = id => document.getElementById(id);
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function assert_bbox(element, x, y, width, height, epsilon = 1e-4) {
+  const bbox = element.getBBox();
+  assert_approx_equals(bbox.x, x, epsilon, "x");
+  assert_approx_equals(bbox.y, y, epsilon, "y");
+  assert_approx_equals(bbox.width, width, epsilon, "width");
+  assert_approx_equals(bbox.height, height, epsilon, "height");
+}
+
+test(() => {
+  const root = byId("root");
+  const point = root.createSVGPoint();
+  assert_array_equals([point.x, point.y], [0, 0]);
+  assert_not_equals(root.createSVGPoint(), point, "a new point each time");
+  point.x = 5;
+  assert_equals(point.x, 5, "the point is writable");
+
+  const matrix = root.createSVGMatrix();
+  assert_array_equals([matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f],
+                      [1, 0, 0, 1, 0, 0], "the identity");
+  assert_not_equals(root.createSVGMatrix(), matrix, "a new matrix each time");
+
+  const rect = root.createSVGRect();
+  assert_array_equals([rect.x, rect.y, rect.width, rect.height], [0, 0, 0, 0]);
+  assert_not_equals(root.createSVGRect(), rect, "a new rect each time");
+}, "createSVGPoint(), createSVGMatrix() and createSVGRect()");
+
+test(() => {
+  assert_bbox(byId("rect"), 10, 20, 30, 40);
+  assert_bbox(byId("roundRect"), 10, 20, 30, 40);
+  assert_bbox(byId("circle"), 40, 50, 20, 20);
+  assert_bbox(byId("ellipse"), 30, 50, 40, 20);
+  assert_bbox(byId("line"), 10, 20, 30, 10);
+  assert_bbox(byId("polyline"), 10, 0, 30, 50);
+  assert_bbox(byId("polygon"), 10, 0, 30, 50);
+}, "getBBox() of basic shapes");
+
+test(() => {
+  assert_bbox(byId("cubic"), 0, 0, 100, 37.5);
+  assert_bbox(byId("arc"), 0, 0, 20, 10);
+  assert_bbox(byId("quad"), 0, 0, 100, 50);
+}, "getBBox() of curves is tight");
+
+test(() => {
+  assert_bbox(byId("moves"), 30, 40, 0, 0);
+  assert_bbox(byId("trailingMove"), 0, 0, 10, 10);
+  assert_bbox(byId("emptyPath"), 0, 0, 0, 0);
+  assert_bbox(byId("zeroWidth"), 0, 0, 0, 0);
+}, "getBBox() of paths of moves and of shapes without geometry");
+
+test(() => {
+  assert_bbox(byId("hiddenRect"), 1, 2, 3, 4);
+  assert_bbox(byId("noneRect"), 0, 0, 0, 0);
+  assert_bbox(byId("defsRect"), 0, 0, 0, 0);
+  assert_bbox(byId("symbolRect"), 0, 0, 0, 0);
+  assert_bbox(byId("clipRect"), 0, 0, 0, 0);
+  assert_bbox(document.createElementNS(SVG_NS, "rect"), 0, 0, 0, 0);
+}, "getBBox() of elements that are not rendered is empty");
+
+test(() => {
+  // The rects (10, 20)-(40, 60), (205, 6)-(225, 26) and, rotated by 90
+  // degrees, (-20, 0)-(0, 10). The hidden, empty and display: none children
+  // add nothing.
+  assert_bbox(byId("group"), -20, 0, 245, 60);
+  assert_bbox(byId("emptyGroup"), 0, 0, 0, 0);
+  assert_bbox(byId("groupOfNothing"), 0, 0, 0, 0);
+}, "getBBox() of a group is the union of its children's boxes");
+
+test(() => {
+  assert_bbox(byId("matrixGroup"), 5, 7, 20, 30);
+  assert_bbox(byId("skewGroup"), 0, 0, 20, 10);
+  assert_bbox(byId("compactList"), 10, 0.5, 20, 30);
+  assert_bbox(byId("invalidList"), 0, 0, 10, 10);
+  assert_bbox(byId("trailingComma"), 0, 0, 10, 10);
+}, "getBBox() of a group applies its children's transform attributes");
+
+test(() => {
+  assert_bbox(byId("nested"), 1, 2, 3, 4);
+  assert_bbox(byId("groupWithNested"), 101, 202, 3, 4);
+}, "getBBox() of nested svg elements");
+
+test(() => {
+  assert_bbox(byId("use"), 111, 222, 30, 40);
+  assert_bbox(byId("useSymbol"), 110, 220, 30, 40);
+  assert_bbox(byId("useMissing"), 0, 0, 0, 0);
+}, "getBBox() of use elements");
+
+test(() => {
+  const group = byId("group");
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("x", "300");
+  rect.setAttribute("y", "300");
+  rect.setAttribute("width", "1");
+  rect.setAttribute("height", "1");
+  group.appendChild(rect);
+  try {
+    assert_bbox(group, -20, 0, 321, 301);
+  } finally {
+    rect.remove();
+  }
+  assert_bbox(group, -20, 0, 245, 60);
+}, "getBBox() follows changes to the tree");
+
+test(() => {
+  assert_bbox(byId("useHiddenTarget"), 0, 0, 0, 0);
+  assert_bbox(byId("inUnknown"), 0, 0, 0, 0);
+  assert_bbox(byId("childOfUse"), 0, 0, 0, 0);
+  // The switch renders its first child, which is display: none.
+  assert_bbox(byId("switchGroup"), 0, 0, 0, 0);
+  // The symbol's offset, then its transform, then the use element's offset.
+  assert_bbox(byId("usePlacedSymbol"), 110, 212, 20, 20);
+}, "getBBox() of what a use, switch or unknown element renders");
+
+test(() => {
+  // A negative radius is an error, so the other radius applies.
+  assert_bbox(byId("negativeRx"), -9, 2, 20, 20);
+  assert_bbox(byId("negativeRy"), 1, -3, 10, 10);
+  // The innermost use, which would reference a symbol being expanded,
+  // renders nothing; the rects around it remain.
+  assert_bbox(byId("cyclicUse"), 0, 0, 110, 10);
+}, "getBBox() of ellipses with a negative radius and of circular use references");
+
+test(() => {
+  assert_bbox(byId("inForeignObject"), 1, 2, 3, 4);
+  // A custom property is not the display property.
+  assert_bbox(byId("customDisplayProperty"), 1, 2, 3, 4);
+}, "getBBox() of SVG inside foreignObject and of a custom property named --display");
+
+test(() => {
+  // The box of rendered text is never silently empty: an engine without
+  // text geometry throws NotSupportedError instead.
+  let bbox;
+  try {
+    bbox = byId("tspan").getBBox();
+  } catch (error) {
+    assert_equals(error.name, "NotSupportedError");
+    return;
+  }
+  assert_greater_than(bbox.width, 0, "width");
+  assert_greater_than(bbox.height, 0, "height");
+}, "getBBox() of a tspan");
+
+test(() => {
+  assert_bbox(byId("tspanOutsideText"), 0, 0, 0, 0);
+  assert_bbox(byId("nestedTspanOutsideText"), 0, 0, 0, 0);
+}, "getBBox() of a tspan outside a text element is empty");
+
+test(t => {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  t.add_cleanup(() => host.remove());
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = `<svg width="100" height="100">
+    <rect id="shadowTarget" x="1" y="2" width="3" height="4"/>
+    <use id="shadowUse" href="#shadowTarget" x="10" y="20"/>
+    <use id="shadowUseOfDocument" href="#rect"/>
+  </svg>`;
+  assert_bbox(root.getElementById("shadowUse"), 11, 22, 3, 4);
+  assert_bbox(root.getElementById("shadowUseOfDocument"), 0, 0, 0, 0);
+}, "getBBox() of a use element resolves its reference in its own tree");
+
+test(() => {
+  const ring = byId("ring");
+  assert_true(ring.isPointInFill({ x: 10, y: 10 }), "in the outer square");
+  assert_true(ring.isPointInFill({ x: 50, y: 50 }), "nonzero fills the hole");
+  assert_false(ring.isPointInFill({ x: 150, y: 50 }), "outside");
+  assert_false(byId("ringEvenOdd").isPointInFill({ x: 50, y: 50 }),
+               "evenodd from the attribute leaves the hole");
+  assert_true(byId("ringEvenOdd").isPointInFill({ x: 10, y: 10 }), "evenodd ring");
+  assert_false(byId("cssEvenOdd").isPointInFill({ x: 50, y: 50 }),
+               "evenodd from a style sheet leaves the hole");
+}, "isPointInFill() follows fill-rule");
+
+test(() => {
+  const rect = byId("rect");
+  assert_true(rect.isPointInFill({ x: 10, y: 30 }), "left edge");
+  assert_true(rect.isPointInFill({ x: 40, y: 60 }), "bottom right corner");
+  assert_false(rect.isPointInFill({ x: 40.01, y: 30 }), "just outside");
+  const circle = byId("originCircle");
+  assert_true(circle.isPointInFill({ x: 0, y: 10 }), "bottom of the circle");
+  assert_true(circle.isPointInFill({ x: -10, y: 0 }), "left of the circle");
+}, "isPointInFill() counts the outline as inside");
+
+test(() => {
+  const triangle = byId("openTriangle");
+  assert_true(triangle.isPointInFill({ x: 8, y: 2 }), "inside the implied closing edge");
+  assert_false(triangle.isPointInFill({ x: 2, y: 8 }), "beyond it");
+}, "isPointInFill() closes open subpaths");
+
+test(() => {
+  const circle = byId("originCircle");
+  assert_true(circle.isPointInFill(), "no argument is the origin");
+  assert_true(circle.isPointInFill({}), "an empty point is the origin");
+  assert_false(circle.isPointInFill({ x: NaN, y: 0 }), "NaN");
+  assert_false(circle.isPointInFill({ x: 0, y: Infinity }), "Infinity");
+  assert_false(byId("emptyPath").isPointInFill({ x: 3, y: 0 }), "a path without geometry");
+}, "isPointInFill() with default and non-finite points");
+
+test(() => {
+  assert_false(byId("loneMove").isPointInFill({ x: 10, y: 20 }), "a lone move");
+  assert_false(byId("closedMove").isPointInFill({ x: 10, y: 20 }), "a closed lone move");
+  assert_false(byId("straightLine").isPointInFill({ x: 5, y: 0 }), "the middle of a straight line");
+  assert_false(byId("zeroSegment").isPointInFill({ x: 10, y: 20 }), "a zero-length segment");
+  assert_true(byId("closedTriangle").isPointInFill({ x: 0, y: 0 }), "a corner of a triangle");
+  assert_true(byId("openTriangle").isPointInFill({ x: 5, y: 5 }), "the implied closing edge");
+}, "isPointInFill() counts only outlines that enclose an area");
+</script>

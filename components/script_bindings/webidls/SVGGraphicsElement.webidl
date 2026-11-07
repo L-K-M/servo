@@ -14,7 +14,9 @@
 interface SVGGraphicsElement : SVGElement {
   //[SameObject] readonly attribute SVGAnimatedTransformList transform;
 
-  //DOMRect getBBox(optional SVGBoundingBoxOptions options);
+  // SVGBoundingBoxOptions are not supported: the box is always the fill
+  // bounding box.
+  [Throws] DOMRect getBBox();
   //DOMMatrix? getCTM();
   //DOMMatrix? getScreenCTM();
 };

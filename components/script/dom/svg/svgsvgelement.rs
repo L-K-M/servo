@@ -6,6 +6,7 @@ use atomic_refcell::AtomicRefCell;
 use base64::Engine as _;
 use cssparser::Parser;
 use dom_struct::dom_struct;
+use euclid::default::Transform3D;
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
@@ -24,13 +25,18 @@ use xml5ever::serialize::TraversalScope;
 use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+use crate::dom::bindings::codegen::Bindings::SVGSVGElementBinding::SVGSVGElementMethods;
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, LayoutDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::characterdata::CharacterData;
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
+use crate::dom::geometry::dommatrix::DOMMatrix;
+use crate::dom::geometry::dompoint::DOMPoint;
+use crate::dom::geometry::domrect::DOMRect;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
@@ -277,15 +283,8 @@ impl SVGSVGElement {
         // The user agent hides SVG children from CSS layout (`svg > *` in
         // servo.css), which is not their rendered state: the rasterizer draws
         // them. A computed `display: none` on a direct child of an `<svg>`
-        // comes from that rule unless the element carries its own `display`:
-        // a presentation attribute keeps working in the rasterizer, and a
-        // `display` in the element's own style attribute is author intent,
-        // so both keep the computed value.
-        let author_hides = original_element.has_attribute(&local_name!("display")) ||
-            original_element
-                .get_string_attribute(&local_name!("style"))
-                .contains("display");
-        if author_hides {
+        // comes from that rule unless the element carries its own `display`.
+        if sets_own_display(original_element) {
             return style.declarations.clone();
         }
 
@@ -435,6 +434,37 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
             view_box,
             svg_id,
         }
+    }
+}
+
+/// Whether an element sets its own `display`: a presentation attribute
+/// keeps working in the rasterizer, and a `display` in the element's own
+/// style attribute is author intent. On a direct child of an `<svg>`, only
+/// then is a computed `display: none` not the user agent's `svg > *` rule.
+pub(crate) fn sets_own_display(element: &Element) -> bool {
+    element.has_attribute(&local_name!("display")) ||
+        element
+            .get_string_attribute(&local_name!("style"))
+            .str()
+            .split(';')
+            .filter_map(|declaration| declaration.split_once(':'))
+            .any(|(name, _)| name.trim().eq_ignore_ascii_case("display"))
+}
+
+impl SVGSVGElementMethods<crate::DomTypeHolder> for SVGSVGElement {
+    /// <https://svgwg.org/svg2-draft/struct.html#__svg__SVGSVGElement__createSVGPoint>
+    fn CreateSVGPoint(&self, cx: &mut JSContext) -> DomRoot<DOMPoint> {
+        DOMPoint::new(cx, &self.global(), 0., 0., 0., 1.)
+    }
+
+    /// <https://svgwg.org/svg2-draft/struct.html#__svg__SVGSVGElement__createSVGMatrix>
+    fn CreateSVGMatrix(&self, cx: &mut JSContext) -> DomRoot<DOMMatrix> {
+        DOMMatrix::new(cx, &self.global(), true, Transform3D::identity())
+    }
+
+    /// <https://svgwg.org/svg2-draft/struct.html#__svg__SVGSVGElement__createSVGRect>
+    fn CreateSVGRect(&self, cx: &mut JSContext) -> DomRoot<DOMRect> {
+        DOMRect::new(cx, &self.global(), 0., 0., 0., 0.)
     }
 }
 
