@@ -8235,6 +8235,19 @@
        {}
       ]
      ],
+     "caret-normal-line-height.html": [
+      "30647f3efe8cb95bdc45c75c68c51c9fdeb494c8",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-paragraph-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
      "caret-on-readonly-text.html": [
       "4d919248a0d5e31ac35dd811de52c3d7dcd9550d",
       [

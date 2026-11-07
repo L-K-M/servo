@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use app_units::Au;
 use euclid::{Point2D, Rect, Vector2D};
+use fonts::FontContext;
 use layout_api::{CaretMovement, CaretPosition, ElementCaret, LayoutNode};
 use script::layout_dom::ServoLayoutNode;
 use servo_base::text::{RangeAny, Utf32CodeUnits};
@@ -101,12 +102,21 @@ fn neighbor_rect(
     found
 }
 
-fn boundary_rect(fragment: &BoxFragment, caret: &ElementCaret) -> Rect<Au, CSSPixel> {
+fn boundary_rect(
+    fragment: &BoxFragment,
+    caret: &ElementCaret,
+    font_context: &FontContext,
+) -> Option<Rect<Au, CSSPixel>> {
     let style = fragment.style();
     let font = style.get_font();
-    let height: Au = font.font_size.computed_size().into();
+    let line_gap = font_context
+        .font_group(style.clone_font())
+        .first(font_context)?
+        .metrics()
+        .line_gap;
+    let height: Au = line_gap;
     let line_height: Au = match font.line_height {
-        LineHeight::Normal => height.scale_by(1.2),
+        LineHeight::Normal => line_gap,
         LineHeight::Number(number) => (font.font_size.computed_size() * number.0).into(),
         LineHeight::Length(length) => length.0.into(),
     };
@@ -117,10 +127,7 @@ fn boundary_rect(fragment: &BoxFragment, caret: &ElementCaret) -> Rect<Au, CSSPi
     };
     let empty = || {
         Rect::new(
-            Point2D::new(
-                start_x,
-                (line_height - height).scale_by(0.5).max(Au::zero()),
-            ),
+            Point2D::new(start_x, (line_height - height).scale_by(0.5)),
             euclid::Size2D::new(Au::zero(), height),
         )
     };
@@ -133,7 +140,7 @@ fn boundary_rect(fragment: &BoxFragment, caret: &ElementCaret) -> Rect<Au, CSSPi
             rect.origin.x = start_x;
         }
         rect.origin.y += line_height * caret.breaks_before as i32;
-        return rect;
+        return Some(rect);
     }
     if let Some(after) = caret
         .after
@@ -144,11 +151,11 @@ fn boundary_rect(fragment: &BoxFragment, caret: &ElementCaret) -> Rect<Au, CSSPi
             rect.origin.x = start_x;
         }
         rect.origin.y -= line_height * caret.breaks_after as i32;
-        return rect;
+        return Some(rect);
     }
     let mut rect = empty();
     rect.origin.y += line_height * caret.breaks_before as i32;
-    rect
+    Some(rect)
 }
 
 #[expect(unsafe_code)]
@@ -159,9 +166,12 @@ pub(crate) fn prefers_upstream(node: OpaqueNode) -> bool {
 
 /// The current element caret relative to the box's content origin. It is painted separately
 /// from text, so empty editors do not need synthetic DOM text or layout-affecting glyphs.
-pub(crate) fn element_caret_rect(fragment: &BoxFragment) -> Option<Rect<Au, CSSPixel>> {
+pub(crate) fn element_caret_rect(
+    fragment: &BoxFragment,
+    font_context: &FontContext,
+) -> Option<Rect<Au, CSSPixel>> {
     let caret = tagged_node(fragment)?.element_caret()?;
-    Some(boundary_rect(fragment, &caret))
+    boundary_rect(fragment, &caret, font_context)
 }
 
 enum PositionKind {
@@ -227,6 +237,7 @@ fn collect_positions(
     fragment: &Fragment,
     origin: Point2D<Au, CSSPixel>,
     out: &mut Vec<VisualPosition>,
+    font_context: &FontContext,
 ) {
     if let Fragment::Text(text) = fragment {
         if let Some(tag) = text
@@ -261,11 +272,13 @@ fn collect_positions(
                     breaks_before: 0,
                     breaks_after: 0,
                 });
-                out.push(VisualPosition {
-                    node: node.opaque(),
-                    kind: PositionKind::Element(Utf32CodeUnits(caret.offset)),
-                    rect: boundary_rect(box_fragment, &caret).translate(origin.to_vector()),
-                });
+                if let Some(rect) = boundary_rect(box_fragment, &caret, font_context) {
+                    out.push(VisualPosition {
+                        node: node.opaque(),
+                        kind: PositionKind::Element(Utf32CodeUnits(caret.offset)),
+                        rect: rect.translate(origin.to_vector()),
+                    });
+                }
             }
         }
     }
@@ -275,7 +288,7 @@ fn collect_positions(
                 .base()
                 .map(|base| base.rect().origin.to_vector())
                 .unwrap_or_else(Vector2D::zero);
-            collect_positions(child, origin + offset, out);
+            collect_positions(child, origin + offset, out, font_context);
         }
     }
 }
@@ -286,6 +299,7 @@ pub(crate) fn move_caret(
     offset: Utf32CodeUnits,
     movement: CaretMovement,
     preferred_x: Option<Au>,
+    font_context: &FontContext,
 ) -> Option<CaretPosition> {
     let mut positions = Vec::new();
     for fragment in scope.fragments_for_pseudo(None) {
@@ -299,7 +313,7 @@ pub(crate) fn move_caret(
                     .origin
             })
             .unwrap_or_else(Point2D::origin);
-        collect_positions(&fragment, origin, &mut positions);
+        collect_positions(&fragment, origin, &mut positions, font_context);
     }
     let mut matching = positions
         .iter()

@@ -10,7 +10,7 @@ use app_units::{AU_PER_PX, Au};
 use clip::Clip;
 pub(crate) use clip::ClipId;
 use euclid::{Box2D, Point2D, Rect, Scale, SideOffsets2D, Size2D, UnknownUnit, Vector2D};
-use fonts::ShapedTextSlice;
+use fonts::{FontContext, ShapedTextSlice};
 use gradient::WebRenderGradient;
 use layout_api::ReflowStatistics;
 use paint_api::display_list::{PaintDisplayListInfo, SpatialTreeNodeInfo};
@@ -96,6 +96,9 @@ static UNFOCUSED_SELECTION_COLOR: LazyLock<AbsoluteColor> =
 pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
     fragment_tree: &'a FragmentTree,
+
+    /// The [`FontContext`] used during layout, needed for font metrics such as caret geometry.
+    font_context: &'a FontContext,
 
     /// The current [`ScrollTreeNodeId`] for this [`DisplayListBuilder`]. This is
     /// necessary because some pieces of fragments as backgrounds with
@@ -197,6 +200,7 @@ impl DisplayListBuilder<'_> {
     pub(crate) fn build(
         stacking_context_tree: &mut StackingContextTree,
         fragment_tree: &FragmentTree,
+        font_context: &FontContext,
         image_resolver: Arc<ImageResolver>,
         device_pixel_ratio: Scale<f32, StyloCSSPixel, StyloDevicePixel>,
         highlighted_dom_node: Option<OpaqueNode>,
@@ -235,6 +239,7 @@ impl DisplayListBuilder<'_> {
         let _span = profile_traits::trace_span!("DisplayListBuilder::build").entered();
         let mut builder = DisplayListBuilder {
             fragment_tree,
+            font_context,
             current_reference_frame_scroll_node_id: paint_info.root_reference_frame_id,
             webrender_display_list_builder: &mut webrender_display_list_builder,
             paint_info,
@@ -1680,7 +1685,9 @@ impl<'a> BuilderForBoxFragment<'a> {
             self.build_border(builder, state);
         }
 
-        if let Some(mut rect) = crate::caret::element_caret_rect(self.fragment) {
+        if let Some(mut rect) =
+            crate::caret::element_caret_rect(self.fragment, builder.font_context)
+        {
             rect.size.width = INSERTION_POINT_LOGICAL_WIDTH;
             let origin = self.fragment.content_rect().origin.to_vector()
                 + self.containing_block_origin.to_vector();
