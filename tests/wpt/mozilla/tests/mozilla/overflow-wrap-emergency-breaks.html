@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>overflow-wrap: break-word and anywhere break words that cannot fit on a line</title>
+<link rel="help" href="https://drafts.csswg.org/css-text-3/#overflow-wrap-property">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  body { margin: 0; font: 10px/1 Ahem; }
+  .box { width: 50px; }
+  .break-word { overflow-wrap: break-word; }
+  .anywhere { overflow-wrap: anywhere; }
+  .min-content { width: min-content; }
+</style>
+<div id="break-word" class="box break-word">XXXXXXXXXXXX</div>
+<div id="anywhere" class="box anywhere">XXXXXXXXXXXX</div>
+<div id="normal" class="box">XXXXXXXXXXXX</div>
+<div id="nowrap" class="box break-word" style="white-space: nowrap">XXXXXXXXXXXX</div>
+<div id="new-line" class="box break-word">XX XXXXXXXXXXXX</div>
+<div id="fits" class="box break-word">XXX <span id="fits-word">XXXX</span></div>
+<div id="inline" class="box break-word">X <span>XXXXXXXXXX</span></div>
+<div id="across-boxes" class="box break-word">XXX<span>XXXXXX</span></div>
+<div id="before-box" class="box break-word">XXXXX<span>XX</span></div>
+<div id="moves-across-boxes" class="box break-word">X XXX<span>XXX</span></div>
+<div id="two-broken-runs" class="box break-word">XXXXXXX<span>XXXXXX</span></div>
+<div id="short-continuation" class="box break-word">XXXXXXX<span>XXXX</span></div>
+<div id="min-content-anywhere" class="anywhere min-content">XXXXX</div>
+<div id="min-content-boxes" class="anywhere min-content"><span>X</span><span>X</span></div>
+<div id="min-content-break-word" class="break-word min-content">XXXXX</div>
+<script>
+  const height = id => document.getElementById(id).getBoundingClientRect().height;
+  const width = id => document.getElementById(id).getBoundingClientRect().width;
+  const scrollWidth = id => document.getElementById(id).scrollWidth;
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("break-word"), 30, "height");
+    assert_equals(scrollWidth("break-word"), 50, "scrollWidth");
+  }, "break-word breaks a word that is wider than the line");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("anywhere"), 30, "height");
+    assert_equals(scrollWidth("anywhere"), 50, "scrollWidth");
+  }, "anywhere breaks a word that is wider than the line");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("normal"), 10, "height");
+    assert_equals(scrollWidth("normal"), 120, "scrollWidth");
+  }, "normal does not break a word that is wider than the line");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("nowrap"), 10, "height");
+  }, "break-word does not break words when wrapping is disabled");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    // "XX" / "XXXXX" / "XXXXX" / "XX": the long word starts on a new line instead of
+    // filling the rest of the first one, which has an ordinary break opportunity.
+    assert_equals(height("new-line"), 40);
+  }, "A word that cannot fit on any line starts a new line before it is broken");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("fits"), 20, "height");
+    assert_equals(width("fits-word"), 40, "the word is not broken");
+  }, "break-word does not break a word that fits on the next line");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("inline"), 30);
+  }, "break-word breaks a word in an inline box");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("across-boxes"), 20, "height");
+    assert_equals(scrollWidth("across-boxes"), 50, "scrollWidth");
+  }, "break-word breaks a word that continues in an inline box");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(height("before-box"), 20, "height");
+    assert_equals(scrollWidth("before-box"), 50, "scrollWidth");
+  }, "break-word breaks a word before the start of an inline box");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    // "X" / "XXXXX" / "X": the whole word moves past the space before it is broken.
+    assert_equals(height("moves-across-boxes"), 30);
+  }, "A word that continues in an inline box starts a new line before it is broken");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    // "XXXXX" / "XXXXX" / "XXX": a broken word continues on the line where it was broken.
+    assert_equals(height("two-broken-runs"), 30);
+  }, "A word broken across two inline boxes fills its lines");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    // "XXXXX" / "XXXXX" / "X": the short continuation of a broken word still breaks.
+    assert_equals(height("short-continuation"), 30);
+  }, "The continuation of a broken word fills the line it was broken onto");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("min-content-anywhere"), 10, "anywhere");
+    assert_equals(width("min-content-break-word"), 50, "break-word");
+    assert_equals(width("min-content-boxes"), 10, "anywhere across inline boxes");
+  }, "Only the break opportunities of anywhere count for min-content sizes");
+</script>
