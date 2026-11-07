@@ -1,0 +1,19 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>An empty editor in a closed shadow root paints a caret</title>
+<link rel="match" href="caret-empty-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; }</style>
+<div id="host"></div>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  const root = document.getElementById('host').attachShadow({mode: 'closed'});
+  root.innerHTML = '<div contenteditable style="width:100px;height:40px;caret-color:red;outline:none"></div>';
+  const editor = root.firstChild;
+  editor.focus();
+  getSelection().collapse(editor, 0);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+})();
+</script>

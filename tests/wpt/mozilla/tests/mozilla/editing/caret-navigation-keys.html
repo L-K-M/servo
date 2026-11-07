@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Caret movement keys in editing hosts</title>
+<link rel="help" href="https://w3c.github.io/selection-api/#selectstart-event">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-actions.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+<style>
+  .editor {
+    height: 4em;
+  }
+</style>
+<div id="lines" class="editor" contenteditable>abc<br>def</div>
+<div id="blocks" class="editor" contenteditable><div>abc</div><div>def</div></div>
+<div id="empty-lines" class="editor" contenteditable>abc<br><br>def</div>
+<div>Prefix: <span id="inline" contenteditable>abc<br>def</span>: Suffix</div>
+<script>
+"use strict";
+
+const selection = getSelection();
+
+const SHIFT = "\uE008";
+const CONTROL = "\uE009";
+const HOME = "\uE011";
+const END = "\uE010";
+const ARROW_LEFT = "\uE012";
+const ARROW_RIGHT = "\uE014";
+
+function focusAndCollapse(editor, node, offset) {
+  editor.focus();
+  selection.collapse(node, offset);
+}
+
+function press(key) {
+  return new test_driver.Actions().keyDown(key).keyUp(key).send();
+}
+
+function pressWith(modifier, key) {
+  return new test_driver.Actions()
+    .keyDown(modifier)
+    .keyDown(key)
+    .keyUp(key)
+    .keyUp(modifier)
+    .send();
+}
+
+function pressWithTwo(modifier1, modifier2, key) {
+  return new test_driver.Actions()
+    .keyDown(modifier1)
+    .keyDown(modifier2)
+    .keyDown(key)
+    .keyUp(key)
+    .keyUp(modifier2)
+    .keyUp(modifier1)
+    .send();
+}
+
+function assertCaret(node, offset, message) {
+  assert_equals(selection.anchorNode, node, `${message}: anchor node`);
+  assert_equals(selection.anchorOffset, offset, `${message}: anchor offset`);
+  assert_true(selection.isCollapsed, `${message}: collapsed`);
+}
+
+function assertRange(anchorNode, anchorOffset, focusNode, focusOffset, message) {
+  assert_equals(selection.anchorNode, anchorNode, `${message}: anchor node`);
+  assert_equals(selection.anchorOffset, anchorOffset, `${message}: anchor offset`);
+  assert_equals(selection.focusNode, focusNode, `${message}: focus node`);
+  assert_equals(selection.focusOffset, focusOffset, `${message}: focus offset`);
+}
+
+promise_test(async () => {
+  const editor = document.getElementById("lines");
+  const first = editor.firstChild;
+  const second = editor.lastChild;
+
+  focusAndCollapse(editor, second, 1);
+  await press(HOME);
+  assertCaret(second, 0, "Home from the middle of the second line");
+
+  await press(END);
+  assertCaret(second, 3, "End from the start of the second line");
+
+  focusAndCollapse(editor, first, 1);
+  await press(END);
+  assertCaret(first, 3, "End from the middle of the first line");
+
+  await press(HOME);
+  assertCaret(first, 0, "Home from the end of the first line");
+}, "Home and End move to the boundaries of a hard line");
+
+promise_test(async () => {
+  const editor = document.getElementById("blocks");
+  const firstText = editor.firstChild.firstChild;
+  const secondText = editor.lastChild.firstChild;
+
+  focusAndCollapse(editor, secondText, 1);
+  await press(HOME);
+  assertCaret(secondText, 0, "Home from the middle of the second block");
+
+  await press(END);
+  assertCaret(secondText, 3, "End from the start of the second block");
+
+  focusAndCollapse(editor, firstText, 1);
+  await press(END);
+  assertCaret(firstText, 3, "End from the middle of the first block");
+}, "Home and End stay within the current block");
+
+promise_test(async () => {
+  const editor = document.getElementById("empty-lines");
+  const first = editor.firstChild;
+  const second = editor.lastChild;
+
+  // The empty line is the position between the two <br> elements.
+  focusAndCollapse(editor, editor, 2);
+  await press(HOME);
+  assertCaret(editor, 2, "Home on the empty line");
+
+  await press(END);
+  assertCaret(editor, 2, "End on the empty line");
+
+  focusAndCollapse(editor, second, 1);
+  await press(HOME);
+  assertCaret(second, 0, "Home from the third line");
+
+  focusAndCollapse(editor, first, 1);
+  await press(END);
+  assertCaret(first, 3, "End from the first line");
+}, "Home and End treat an empty line as a line");
+
+promise_test(async () => {
+  const editor = document.getElementById("inline");
+  const first = editor.firstChild;
+  const second = editor.lastChild;
+
+  focusAndCollapse(editor, second, 1);
+  await press(HOME);
+  assertCaret(second, 0, "Home in an inline editing host");
+
+  await press(END);
+  assertCaret(second, 3, "End in an inline editing host");
+
+  focusAndCollapse(editor, first, 1);
+  await press(END);
+  assertCaret(first, 3, "End in an inline editing host stays in the host");
+}, "Home and End stay within an inline editing host");
+
+promise_test(async () => {
+  const editor = document.getElementById("lines");
+  const first = editor.firstChild;
+  let selectstartCount = 0;
+  const listener = () => {
+    selectstartCount++;
+  };
+  document.addEventListener("selectstart", listener);
+  try {
+    focusAndCollapse(editor, first, 1);
+    await pressWith(SHIFT, ARROW_RIGHT);
+    assert_equals(selectstartCount, 1, "selectstart fired once");
+    assertRange(first, 1, first, 2, "Shift+ArrowRight");
+  } finally {
+    document.removeEventListener("selectstart", listener);
+  }
+}, "Shift+ArrowRight extends the selection and fires selectstart");
+
+promise_test(async () => {
+  const editor = document.getElementById("lines");
+  const first = editor.firstChild;
+  let selectstartCount = 0;
+  const listener = () => {
+    selectstartCount++;
+  };
+  document.addEventListener("selectstart", listener);
+  try {
+    focusAndCollapse(editor, first, 1);
+    await pressWith(SHIFT, ARROW_LEFT);
+    assert_equals(selectstartCount, 1, "selectstart fired once");
+    assertRange(first, 1, first, 0, "Shift+ArrowLeft");
+  } finally {
+    document.removeEventListener("selectstart", listener);
+  }
+}, "Shift+ArrowLeft extends the selection and fires selectstart");
+
+promise_test(async () => {
+  const editor = document.getElementById("lines");
+  const first = editor.firstChild;
+  let selectstartCount = 0;
+  const listener = () => {
+    selectstartCount++;
+  };
+  document.addEventListener("selectstart", listener);
+  try {
+    focusAndCollapse(editor, first, 0);
+    await pressWith(SHIFT, ARROW_LEFT);
+    assert_equals(selectstartCount, 0, "selectstart not fired");
+    assertCaret(first, 0, "the selection cannot extend past the start");
+  } finally {
+    document.removeEventListener("selectstart", listener);
+  }
+}, "selectstart does not fire when the selection cannot extend");
+
+promise_test(async () => {
+  const editor = document.getElementById("lines");
+  const first = editor.firstChild;
+  const listener = (event) => {
+    event.preventDefault();
+  };
+  document.addEventListener("selectstart", listener);
+  try {
+    focusAndCollapse(editor, first, 1);
+    await pressWith(SHIFT, ARROW_RIGHT);
+    assertCaret(first, 1, "a canceled selectstart leaves the selection alone");
+  } finally {
+    document.removeEventListener("selectstart", listener);
+  }
+}, "Canceling selectstart leaves the selection collapsed");
+
+promise_test(async () => {
+  const editor = document.getElementById("lines");
+  const second = editor.lastChild;
+  let selectstartCount = 0;
+  const listener = () => {
+    selectstartCount++;
+  };
+  document.addEventListener("selectstart", listener);
+  try {
+    focusAndCollapse(editor, second, 2);
+    await pressWith(SHIFT, HOME);
+    assert_equals(selectstartCount, 1, "selectstart fired once");
+    assertRange(second, 2, second, 0, "Shift+Home");
+
+    focusAndCollapse(editor, second, 1);
+    await pressWith(SHIFT, END);
+    assert_equals(selectstartCount, 2, "selectstart fired again");
+    assertRange(second, 1, second, 3, "Shift+End");
+  } finally {
+    document.removeEventListener("selectstart", listener);
+  }
+}, "Shift+Home and Shift+End extend the selection");
+
+promise_test(async () => {
+  const editor = document.getElementById("blocks");
+  const firstText = editor.firstChild.firstChild;
+  const secondText = editor.lastChild.firstChild;
+
+  focusAndCollapse(editor, secondText, 1);
+  await pressWith(CONTROL, HOME);
+  assertCaret(firstText, 0, "Ctrl+Home");
+
+  await pressWith(CONTROL, END);
+  assertCaret(secondText, 3, "Ctrl+End");
+}, "Ctrl+Home and Ctrl+End move to the editing host boundaries");
+
+promise_test(async () => {
+  const editor = document.getElementById("blocks");
+  const firstText = editor.firstChild.firstChild;
+  const secondText = editor.lastChild.firstChild;
+
+  focusAndCollapse(editor, secondText, 1);
+  await pressWithTwo(SHIFT, CONTROL, HOME);
+  assertRange(secondText, 1, firstText, 0, "Shift+Ctrl+Home");
+
+  focusAndCollapse(editor, firstText, 1);
+  await pressWithTwo(SHIFT, CONTROL, END);
+  assertRange(firstText, 1, secondText, 3, "Shift+Ctrl+End");
+}, "Shift+Ctrl+Home and Shift+Ctrl+End extend to the editing host boundaries");
+</script>

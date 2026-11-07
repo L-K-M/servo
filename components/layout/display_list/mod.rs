@@ -10,7 +10,7 @@ use app_units::{AU_PER_PX, Au};
 use clip::Clip;
 pub(crate) use clip::ClipId;
 use euclid::{Box2D, Point2D, Rect, Scale, SideOffsets2D, Size2D, UnknownUnit, Vector2D};
-use fonts::ShapedTextSlice;
+use fonts::{FontContext, ShapedTextSlice};
 use gradient::WebRenderGradient;
 use layout_api::ReflowStatistics;
 use paint_api::display_list::{PaintDisplayListInfo, SpatialTreeNodeInfo};
@@ -97,6 +97,9 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
     fragment_tree: &'a FragmentTree,
 
+    /// The [`FontContext`] used during layout, needed for font metrics such as caret geometry.
+    font_context: &'a FontContext,
+
     /// The current [`ScrollTreeNodeId`] for this [`DisplayListBuilder`]. This is
     /// necessary because some pieces of fragments as backgrounds with
     /// `background-attachment: fixed` need to not scroll while the rest of the fragment
@@ -145,6 +148,13 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// Whether or not the `WebView` this display list is being rendered for has system focus
     /// and is the focused frame in the frame tree.
     frame_focused: bool,
+    pending_carets: Vec<Option<PendingCaret>>,
+}
+
+struct PendingCaret {
+    common: CommonItemProperties,
+    rect: LayoutRect,
+    color: PropertyBinding<ColorF>,
 }
 
 struct InspectorHighlight {
@@ -190,6 +200,7 @@ impl DisplayListBuilder<'_> {
     pub(crate) fn build(
         stacking_context_tree: &mut StackingContextTree,
         fragment_tree: &FragmentTree,
+        font_context: &FontContext,
         image_resolver: Arc<ImageResolver>,
         device_pixel_ratio: Scale<f32, StyloCSSPixel, StyloDevicePixel>,
         highlighted_dom_node: Option<OpaqueNode>,
@@ -228,6 +239,7 @@ impl DisplayListBuilder<'_> {
         let _span = profile_traits::trace_span!("DisplayListBuilder::build").entered();
         let mut builder = DisplayListBuilder {
             fragment_tree,
+            font_context,
             current_reference_frame_scroll_node_id: paint_info.root_reference_frame_id,
             webrender_display_list_builder: &mut webrender_display_list_builder,
             paint_info,
@@ -241,6 +253,7 @@ impl DisplayListBuilder<'_> {
             largest_contentful_paint_enabled: pref!(largest_contentful_paint_enabled),
             shell_background_color,
             frame_focused,
+            pending_carets: Vec::new(),
         };
 
         // Clear any caret color from previous display list constructions.
@@ -738,6 +751,21 @@ impl DisplayListBuilder<'_> {
 }
 
 impl PaintTraversalHandler for DisplayListBuilder<'_> {
+    fn begin_caret_group(&mut self) {
+        self.pending_carets.push(None);
+    }
+
+    fn finish_caret_group(&mut self) {
+        if let Some(caret) = self
+            .pending_carets
+            .pop()
+            .expect("balanced caret painting groups")
+        {
+            self.wr()
+                .push_rect_with_animation(&caret.common, caret.rect, caret.color);
+        }
+    }
+
     /// A tuple composed of the number of real WebRender stacking contexts pushed
     /// and the previous `Self::current_reference_frame_scroll_node_id` value of
     /// the `DisplayListBuilder` when a stacking context was visited (or `None` if
@@ -1144,7 +1172,14 @@ impl Fragment {
             );
         }
 
-        Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
+        let paints_caret = fragment
+            .run_data
+            .selection
+            .borrow()
+            .is_some_and(|range| range.start().is_some() && range.start() == range.end());
+        if !paints_caret {
+            Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
+        }
 
         for text_decoration in state.text_decorations.iter() {
             if text_decoration.line.contains(TextDecorationLine::UNDERLINE) {
@@ -1232,6 +1267,11 @@ impl Fragment {
 
         if !shadows.0.is_empty() {
             builder.wr().pop_all_shadows();
+        }
+        // Unlike the selection background, the insertion point must be above the glyphs.
+        // A solid glyph at a character boundary must not cover the caret.
+        if paints_caret {
+            Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
         }
     }
 
@@ -1341,9 +1381,14 @@ impl Fragment {
         // OffsetMap contained within `run_data` to convert it to post-transformed character
         // offsets. This allows updating this selection directly from the DOM (skipping layout).
         let selection_character_range = run_data.map_dom_range_to_transformed_range(selection);
+        if selection_character_range.is_empty()
+            && (selection.start().is_none() || selection.end().is_none())
+        {
+            return;
+        }
 
-        if fragment.character_range_in_dom_node.start > selection_character_range.end ||
-            fragment.character_range_in_dom_node.end < selection_character_range.start
+        if fragment.character_range_in_dom_node.start > selection_character_range.end
+            || fragment.character_range_in_dom_node.end < selection_character_range.start
         {
             return;
         }
@@ -1432,12 +1477,6 @@ impl Fragment {
             return;
         }
 
-        // Never paint a caret when the WebView does not have system focus. This matches
-        // the behavior of other browsers.
-        if !builder.frame_focused {
-            return;
-        }
-
         let insertion_point_rect = Rect::new(
             fragment_origin,
             Size2D::new(
@@ -1447,6 +1486,26 @@ impl Fragment {
         )
         .to_webrender();
 
+        Self::paint_caret(
+            builder,
+            state,
+            &parent_style,
+            insertion_point_rect,
+            fragment.base.tag.as_ref().map(|tag| tag.node),
+        );
+    }
+
+    fn paint_caret(
+        builder: &mut DisplayListBuilder<'_>,
+        state: &TraversalState,
+        parent_style: &ComputedValues,
+        insertion_point_rect: LayoutRect,
+        node: Option<OpaqueNode>,
+    ) {
+        // The document selection can remain when its frame loses system focus.
+        if !builder.frame_focused {
+            return;
+        }
         let color = parent_style.clone_color();
         let caret_color = match parent_style.clone_caret_color().0 {
             ColorOrAuto::Color(caret_color) => caret_color.resolve_to_absolute(&color),
@@ -1468,11 +1527,20 @@ impl Fragment {
             PropertyBinding::Value(caret_color)
         };
 
-        builder.wr().push_rect_with_animation(
-            &insertion_point_common,
-            insertion_point_rect,
-            property_binding,
-        );
+        let prefer_upstream = node.is_some_and(crate::caret::prefers_upstream);
+        let slot = builder
+            .pending_carets
+            .last_mut()
+            .expect("caret inside a painting group");
+        // A soft wrap can represent the same DOM position in two text fragments. The
+        // selection's affinity chooses one, rather than painting two insertion points.
+        if slot.is_none() || !prefer_upstream {
+            *slot = Some(PendingCaret {
+                common: insertion_point_common,
+                rect: insertion_point_rect,
+                color: property_binding,
+            });
+        }
     }
 }
 
@@ -1617,15 +1685,33 @@ impl<'a> BuilderForBoxFragment<'a> {
             self.build_border(builder, state);
         }
 
+        if let Some(mut rect) =
+            crate::caret::element_caret_rect(self.fragment, builder.font_context)
+        {
+            rect.size.width = INSERTION_POINT_LOGICAL_WIDTH;
+            let origin = self.fragment.content_rect().origin.to_vector()
+                + self.containing_block_origin.to_vector();
+            // An element-boundary caret is content, not decoration: inherit the box's
+            // own overflow clip and scroll node just like its text descendants.
+            let content_state = state.push_box_fragment(self.fragment);
+            Fragment::paint_caret(
+                builder,
+                &content_state,
+                self.fragment.style(),
+                rect.translate(origin).to_webrender(),
+                self.fragment.base.tag.as_ref().map(|tag| tag.node),
+            );
+        }
+
         let overflow = self
             .fragment
             .style()
             .effective_overflow(self.fragment.base.flags);
         let scrolls_via_user_input =
             |overflow| matches!(overflow, ComputedOverflow::Scroll | ComputedOverflow::Auto);
-        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y)) &&
-            self.fragment.style().get_inherited_ui().pointer_events !=
-                style::computed_values::pointer_events::T::None
+        if (scrolls_via_user_input(overflow.x) || scrolls_via_user_input(overflow.y))
+            && self.fragment.style().get_inherited_ui().pointer_events
+                != style::computed_values::pointer_events::T::None
         {
             let mut inner_state = state.clone();
             inner_state.spatial_id = self

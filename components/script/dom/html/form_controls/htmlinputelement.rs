@@ -49,7 +49,7 @@ use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::Event;
-use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed};
+use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed, EventFlags};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
 use crate::dom::html::form_controls::input_type::radio_input_type::{
@@ -1738,6 +1738,14 @@ impl HTMLInputElement {
             .set_state(ElementState::CHECKED, should_checked_state_apply);
     }
 
+    /// Drop the preview marker without reinserting text after focus has left this field.
+    pub(crate) fn cancel_composition(&self, cx: &mut JSContext) {
+        if self.text_input.borrow_mut().cancel_composition() {
+            self.maybe_update_shared_selection();
+            self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#concept-fe-mutable>
     pub(crate) fn is_mutable(&self) -> bool {
         // https://html.spec.whatwg.org/multipage/#the-input-element:concept-fe-mutable
@@ -2321,11 +2329,19 @@ impl VirtualMethods for HTMLInputElement {
     // https://w3c.github.io/uievents/#default-action
     /// <https://dom.spec.whatwg.org/#action-versus-occurance>
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
-        if (event.type_() == atom!("compositionstart") ||
-            event.type_() == atom!("compositionupdate") ||
-            event.type_() == atom!("compositionend")) &&
-            self.input_type().is_textual_or_password() &&
-            event.IsTrusted()
+        if (event.type_() == atom!("compositionstart")
+            || event.type_() == atom!("compositionupdate")
+            || event.type_() == atom!("compositionend"))
+            && self.input_type().is_textual_or_password()
+            && event.IsTrusted()
+            && !event.flags().contains(EventFlags::Handled)
+            && self.is_mutable()
+            && (event.type_() == atom!("compositionend")
+                || self
+                    .owner_document()
+                    .event_handler()
+                    .composition_epoch_for(self.upcast())
+                    .is_some())
         {
             if let Some(compositionevent) = event.downcast::<CompositionEvent>() {
                 if event.type_() == atom!("compositionend") {
@@ -2341,10 +2357,19 @@ impl VirtualMethods for HTMLInputElement {
                         .text_input
                         .borrow_mut()
                         .handle_compositionupdate(compositionevent);
+                    let epoch = self
+                        .owner_document()
+                        .event_handler()
+                        .composition_epoch_for(self.upcast())
+                        .expect("validated composition target");
+                    self.owner_document()
+                        .event_handler()
+                        .composition_preview_updated(epoch, compositionevent.data().clone());
                     self.handle_key_reaction(cx, action);
                     self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
                     self.update_placeholder_shown_state();
                 } else if event.type_() == atom!("compositionstart") {
+                    self.text_input.borrow_mut().handle_compositionstart();
                     // Update placeholder state when composition starts
                     self.update_placeholder_shown_state();
                 }

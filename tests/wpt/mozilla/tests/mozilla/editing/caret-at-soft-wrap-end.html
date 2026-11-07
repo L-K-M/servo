@@ -1,0 +1,18 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>Line End paints one caret on the intended side of a soft wrap</title>
+<link rel="match" href="caret-soft-wrap-end-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; } #editor { width: 80px; word-break: break-all; caret-color: red; outline: none; }</style>
+<div id="editor" contenteditable>XXXXXX</div>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  const editor = document.getElementById('editor');
+  editor.focus();
+  getSelection().collapse(editor.firstChild, 2);
+  getSelection().modify('move', 'forward', 'lineboundary');
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+})();
+</script>

@@ -637,6 +637,28 @@ impl Layout for LayoutThread {
     }
 
     #[servo_tracing::instrument(skip_all)]
+    fn query_caret_movement(
+        &self,
+        scope: TrustedNodeAddress,
+        focus: TrustedNodeAddress,
+        offset: Utf32CodeUnits,
+        movement: layout_api::CaretMovement,
+        preferred_x: Option<Au>,
+    ) -> Option<layout_api::CaretPosition> {
+        with_layout_state(|| {
+            let scope = unsafe { ServoLayoutNode::new(&scope) };
+            let focus = unsafe { ServoLayoutNode::new(&focus) };
+            crate::caret::move_caret(
+                scope,
+                focus.opaque(),
+                offset,
+                movement,
+                preferred_x,
+                self.font_context.as_ref(),
+            )
+        })
+    }
+
     fn hit_test(
         &self,
         flags: HitTestFlags,
@@ -1607,6 +1629,7 @@ impl LayoutThread {
         let built_display_list = DisplayListBuilder::build(
             stacking_context_tree,
             fragment_tree,
+            self.font_context.as_ref(),
             image_resolver.clone(),
             self.device().device_pixel_ratio(),
             reflow_request.highlighted_dom_node,

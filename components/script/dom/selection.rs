@@ -39,9 +39,10 @@ use crate::dom::range::Range;
 use crate::dom::selection_range::{SelectionBoundary, SelectionRange};
 use crate::dom::staticrange::StaticRange;
 use crate::dom::traversal::FlatTreeForSelectionNoGcTraversal;
-use crate::dom::types::ShadowRoot;
+use crate::dom::types::{HTMLBRElement, ShadowRoot, Text};
 use crate::dom::{CharacterData, FlatTreeParent, NodeDamage, NodeFlags, StartOrEnd};
 
+mod geometry;
 pub(crate) mod modify;
 
 /// Used value of [`user-select`](https://drafts.csswg.org/css-ui-4/#propdef-user-select):
@@ -84,6 +85,10 @@ pub(crate) struct Selection {
     /// Whether or not this [`Selection`] needs to remark DOM nodes with selection flags
     /// after a change to its underlying [`Range`].
     visible_selection_dirty: Cell<bool>,
+    /// Retained across vertical caret moves, including a shorter intervening line.
+    #[no_trace]
+    preferred_caret_x: Cell<Option<app_units::Au>>,
+    caret_prefers_upstream: Cell<bool>,
 }
 
 impl Selection {
@@ -97,6 +102,8 @@ impl Selection {
             direction: Cell::new(Direction::Directionless),
             has_scheduled_selectionchange_event: Cell::new(false),
             visible_selection_dirty: Cell::new(false),
+            preferred_caret_x: Cell::new(None),
+            caret_prefers_upstream: Cell::new(false),
         }
     }
 
@@ -222,6 +229,10 @@ impl Selection {
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn set_range(&self, _no_gc: &NoGC, new_range: Option<SelectionRange>) -> bool {
+        self.preferred_caret_x.set(None);
+        if self.caret_prefers_upstream.replace(false) {
+            self.set_visible_selection_dirty();
+        }
         let changed;
         {
             let mut range = self.range.borrow_mut();
@@ -340,7 +351,13 @@ impl Selection {
         let previously_flagged_nodes = self
             .iter_nodes_with_overlaps_document_selection_flag(no_gc)
             .collect();
-        let flat_tree_selection = FlatTreeSelection::from_selection_if_renderable(no_gc, self);
+        // A collapsed document selection is a caret only in the focused editing context.
+        // Keep non-collapsed selections visible, including Find and selections on read-only pages.
+        let flat_tree_selection = if self.collapsed() && !self.caret_is_visible() {
+            None
+        } else {
+            FlatTreeSelection::from_selection_if_renderable(no_gc, self)
+        };
         VisibleSelectionFlagUpdate::run(
             no_gc,
             previously_flagged_nodes,
@@ -348,6 +365,60 @@ impl Selection {
             &self.document,
         );
         self.set_visible_range(flat_tree_selection);
+        // Element boundary points, including empty paragraphs, have no text-run selection
+        // setter to invalidate the display list on their behalf.
+        self.document.window().layout().set_needs_new_display_list();
+    }
+
+    fn caret_is_visible(&self) -> bool {
+        if self
+            .document
+            .focus_handler()
+            .focused_area()
+            .element()
+            .is_none()
+        {
+            return false;
+        }
+        self.composed_focus_position()
+            .and_then(|(node, _)| node.editing_host_of())
+            .is_some_and(|host| self.document.focus_allows_user_editing_of(&host))
+    }
+
+    /// Resolve an element boundary to adjacent text or an empty paragraph for painting,
+    /// without changing the DOM selection the page observes.
+    fn caret_position_for_rendering(node: &Node, offset: u32) -> (DomRoot<Node>, u32) {
+        let mut node = DomRoot::from_ref(node);
+        let mut offset = offset;
+        let host = node.editing_host_of();
+        loop {
+            if node.is::<Text>() {
+                return if node.len() == 0 {
+                    node.GetParentNode()
+                        .map(|parent| (parent, node.index()))
+                        .unwrap_or((node, 0))
+                } else {
+                    (node, offset)
+                };
+            }
+            let (child, end) = if let Some(child) = node.children().nth(offset as usize) {
+                (child, false)
+            } else if offset > 0 {
+                let Some(child) = node.children().nth(offset as usize - 1) else {
+                    break;
+                };
+                (child, true)
+            } else {
+                break;
+            };
+            let atomic = child.is::<HTMLBRElement>() || modify::is_replaced_or_control(&child);
+            if atomic || child.editing_host_of() != host {
+                break;
+            }
+            offset = if end { child.len() } else { 0 };
+            node = child;
+        }
+        (node, offset)
     }
 
     /// <https://w3c.github.io/selection-api/#dfn-schedule-a-selectionchange-event>
@@ -1452,6 +1523,10 @@ impl SelectionMethods<crate::DomTypeHolder> for Selection {
 }
 
 impl<'dom> LayoutDom<'dom, Selection> {
+    pub(crate) fn caret_prefers_upstream(&self) -> bool {
+        self.unsafe_get().caret_prefers_upstream.get()
+    }
+
     #[expect(unsafe_code)]
     pub(crate) fn range_for_layout(&self) -> &Option<SelectionRange> {
         unsafe { self.unsafe_get().visible_range.borrow_for_layout() }
@@ -1644,6 +1719,17 @@ impl<'no_gc> FlatTreeSelection<'no_gc> {
         if ordering == Ordering::Greater {
             std::mem::swap(&mut start_container, &mut end_container);
             std::mem::swap(&mut start_offset, &mut end_offset);
+        }
+
+        if selection.collapsed() && selection.caret_is_visible() {
+            let (node, offset) =
+                Selection::caret_position_for_rendering(&start_container, start_offset);
+            if node.is_in_flat_tree(no_gc) {
+                start_container = node.as_unrooted(no_gc);
+                start_offset = offset;
+                end_container = node.as_unrooted(no_gc);
+                end_offset = offset;
+            }
         }
 
         Some(FlatTreeSelection {

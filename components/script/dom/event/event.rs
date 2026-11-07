@@ -47,7 +47,9 @@ use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::virtualmethods::vtable_for;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::shadowroot::ShadowRoot;
-use crate::dom::types::{FocusEvent, KeyboardEvent, PointerEvent, UserActivation};
+use crate::dom::types::{
+    CompositionEvent, FocusEvent, KeyboardEvent, PointerEvent, UserActivation,
+};
 use crate::dom::window::Window;
 use crate::tasks::task::TaskOnce;
 
@@ -690,14 +692,17 @@ impl Event {
         // https://w3c.github.io/uievents/#default-action
         // https://dom.spec.whatwg.org/#action-versus-occurance
         if !self.DefaultPrevented() {
-            if self.is::<KeyboardEvent>() || self.is::<FocusEvent>() {
+            if self.is::<KeyboardEvent>()
+                || self.is::<FocusEvent>()
+                || self.is::<CompositionEvent>()
+            {
                 // Listeners see the shadow host; editing and IME defaults belong to the field.
                 if let Some(node) = original_target.downcast::<Node>() {
                     let vtable = vtable_for(node);
                     vtable.handle_event(cx, self);
                 }
-            } else if let Some(target) = self.GetTarget() &&
-                let Some(node) = target.downcast::<Node>()
+            } else if let Some(target) = self.GetTarget()
+                && let Some(node) = target.downcast::<Node>()
             {
                 let vtable = vtable_for(node);
                 vtable.handle_event(cx, self);

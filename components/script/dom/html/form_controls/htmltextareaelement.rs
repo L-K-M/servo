@@ -31,7 +31,7 @@ use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::Event;
-use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed};
+use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed, EventFlags};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::form_controls::input_type::text_input_widget::TextInputWidget;
@@ -155,6 +155,14 @@ impl HTMLTextAreaElement {
     pub(crate) fn auto_directionality(&self) -> String {
         let value: String = String::from(self.Value());
         HTMLInputElement::directionality_from_value(&value)
+    }
+
+    /// Drop the preview marker without reinserting text after focus has left this field.
+    pub(crate) fn cancel_composition(&self, cx: &mut JSContext) {
+        if self.text_input.borrow_mut().cancel_composition() {
+            self.maybe_update_shared_selection();
+            self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#concept-fe-mutable>
@@ -777,10 +785,18 @@ impl VirtualMethods for HTMLTextAreaElement {
 
     // copied and modified from htmlinputelement.rs
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
-        if (event.type_() == atom!("compositionstart") ||
-            event.type_() == atom!("compositionupdate") ||
-            event.type_() == atom!("compositionend")) &&
-            event.IsTrusted()
+        if (event.type_() == atom!("compositionstart")
+            || event.type_() == atom!("compositionupdate")
+            || event.type_() == atom!("compositionend"))
+            && event.IsTrusted()
+            && !event.flags().contains(EventFlags::Handled)
+            && self.is_mutable()
+            && (event.type_() == atom!("compositionend")
+                || self
+                    .owner_document()
+                    .event_handler()
+                    .composition_epoch_for(self.upcast())
+                    .is_some())
         {
             if let Some(compositionevent) = event.downcast::<CompositionEvent>() {
                 if event.type_() == atom!("compositionend") {
@@ -795,8 +811,18 @@ impl VirtualMethods for HTMLTextAreaElement {
                         .text_input
                         .borrow_mut()
                         .handle_compositionupdate(compositionevent);
+                    let epoch = self
+                        .owner_document()
+                        .event_handler()
+                        .composition_epoch_for(self.upcast())
+                        .expect("validated composition target");
+                    self.owner_document()
+                        .event_handler()
+                        .composition_preview_updated(epoch, compositionevent.data().clone());
                     self.handle_key_reaction(cx, action);
                     self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+                } else if event.type_() == atom!("compositionstart") {
+                    self.text_input.borrow_mut().handle_compositionstart();
                 }
                 self.maybe_update_shared_selection();
                 event.mark_as_handled();

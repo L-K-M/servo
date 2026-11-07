@@ -1,0 +1,16 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>An empty paragraph has its own caret position</title>
+<link rel="match" href="caret-paragraph-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; } #editor { width: 100px; caret-color: red; outline: none; }</style>
+<div id="editor" contenteditable><div>XX</div><div id="paragraph"><br></div></div>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  document.getElementById('editor').focus();
+  getSelection().collapse(document.getElementById('paragraph'), 0);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+})();
+</script>

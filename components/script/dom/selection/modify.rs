@@ -8,9 +8,13 @@
 //! by grapheme cluster or word inside a text node and, past its edge, to the nearest visible
 //! text node in tree order. Crossing a line break, a `<br>` or the boundary between two
 //! blocks, counts as one character. That is enough for rich text editors, which extend the
-//! selection by a character or a word to learn what Backspace or Delete removes. Moves by
-//! line, sentence, paragraph or to a boundary need layout and leave the selection alone, as
-//! do right-to-left specifics: "left" and "right" are taken as "backward" and "forward".
+//! selection by a character or a word to learn what Backspace or Delete removes.
+//!
+//! Line and line-boundary moves query the shaped fragment tree, retaining the desired
+//! inline position across shorter lines and distinguishing the two sides of a soft wrap.
+//! Document-boundary moves remain within the editing host. Sentence, paragraph and
+//! right-to-left specifics are not implemented: "left" and "right" are taken as
+//! "backward" and "forward".
 
 use cssparser::match_ignore_ascii_case;
 use js::context::{JSContext, NoGC};
@@ -25,16 +29,18 @@ use crate::dom::bindings::codegen::Bindings::SelectionBinding::SelectionMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::element::Element;
+use crate::dom::event::{Event, EventBubbles, EventCancelable};
+use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::htmlbrelement::HTMLBRElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::iterators::ShadowIncluding;
-use crate::dom::node::Node;
+use crate::dom::node::{Node, NodeTraits};
 use crate::dom::selection::Selection;
 use crate::dom::text::Text;
 use crate::dom::types::{
     HTMLButtonElement, HTMLCanvasElement, HTMLEmbedElement, HTMLHRElement, HTMLIFrameElement,
-    HTMLInputElement, HTMLMediaElement, HTMLObjectElement, HTMLSelectElement, HTMLTextAreaElement,
-    SVGSVGElement,
+    HTMLInputElement, HTMLMediaElement, HTMLMeterElement, HTMLObjectElement, HTMLProgressElement,
+    HTMLSelectElement, HTMLTextAreaElement, SVGSVGElement,
 };
 
 /// Whether a modification moves the whole selection or only its focus.
@@ -58,6 +64,17 @@ pub(crate) enum Granularity {
     Character,
     /// To the start of the previous word, or the end of the next one.
     Word,
+    /// To the adjacent shaped line, retaining the desired inline coordinate.
+    Line,
+    /// To the start or end of the current shaped line.
+    LineBoundary,
+    /// To the start or end of the editing host.
+    DocumentBoundary,
+}
+
+enum ChangeSource {
+    Script,
+    User,
 }
 
 impl Selection {
@@ -70,36 +87,110 @@ impl Selection {
         direction: Direction,
         granularity: Granularity,
     ) {
-        // If this selection is empty, abort these steps.
-        let Some((mut focus_node, mut focus_offset)) = self.composed_focus_position() else {
+        self.modify_focus_from(cx, alter, direction, granularity, ChangeSource::Script);
+    }
+
+    fn modify_focus_from(
+        &self,
+        cx: &mut JSContext,
+        alter: Alter,
+        direction: Direction,
+        granularity: Granularity,
+        source: ChangeSource,
+    ) {
+        let original_focus = self.composed_focus_position();
+        let original_anchor = self.composed_anchor_position();
+        let Some((mut focus_node, mut focus_offset)) = original_focus.clone() else {
             return;
         };
-        // Like browsers, moving a selection that is not collapsed starts at its edge in the
-        // direction of the move; by a character, it only collapses there.
-        if matches!(alter, Alter::Move) && !self.collapsed() {
-            let Some((edge_node, edge_offset)) = self.composed_edge(direction) else {
+        let was_collapsed = self.collapsed();
+        let mut only_collapse = false;
+        if matches!(alter, Alter::Move) && !was_collapsed {
+            let Some((node, offset)) = self.composed_edge(direction) else {
                 return;
             };
-            if matches!(granularity, Granularity::Character) {
-                let _ = self.Collapse(cx, Some(&edge_node), edge_offset);
-                return;
-            }
-            (focus_node, focus_offset) = (edge_node, edge_offset);
+            (focus_node, focus_offset) = (node, offset);
+            only_collapse = matches!(granularity, Granularity::Character);
         }
-        // Modify this selection as the user agent would if the user moved the focus.
-        let Some((node, offset)) = moved_position(
-            cx.no_gc(),
-            &focus_node,
-            focus_offset,
-            direction,
-            granularity,
-        ) else {
+        let position = if only_collapse {
+            Some((focus_node.clone(), focus_offset, None, false))
+        } else if matches!(granularity, Granularity::Line | Granularity::LineBoundary) {
+            let movement = match (granularity, direction) {
+                (Granularity::Line, Direction::Backward) => layout_api::CaretMovement::Up,
+                (Granularity::Line, Direction::Forward) => layout_api::CaretMovement::Down,
+                (_, Direction::Backward) => layout_api::CaretMovement::LineStart,
+                (_, Direction::Forward) => layout_api::CaretMovement::LineEnd,
+            };
+            self.layout_caret_position(cx, &focus_node, focus_offset, movement)
+                .map(|(node, offset, x, upstream)| (node, offset, Some(x), upstream))
+        } else {
+            moved_position(
+                cx.no_gc(),
+                &focus_node,
+                focus_offset,
+                direction,
+                granularity,
+            )
+            .map(|(node, offset)| (node, offset, None, false))
+        };
+        let Some((node, offset, x, prefer_upstream)) = position else {
             return;
         };
-        let _ = match alter {
+        if matches!(source, ChangeSource::User)
+            && matches!(alter, Alter::Extend)
+            && was_collapsed
+            && (node.clone(), offset) != (focus_node.clone(), focus_offset)
+        {
+            let target = match direction {
+                Direction::Backward => &node,
+                Direction::Forward => &focus_node,
+            };
+            if !fire_selectstart(cx, target) {
+                return;
+            }
+            // Listeners can move focus, change selection or remove the original editor.
+            if self.composed_focus_position() != original_focus
+                || self.composed_anchor_position() != original_anchor
+                || !node.is_connected()
+                || node
+                    .editing_host_of()
+                    .as_ref()
+                    .is_none_or(|host| !self.document.focus_allows_user_editing_of(host))
+            {
+                return;
+            }
+        }
+        let result = match alter {
             Alter::Move => self.Collapse(cx, Some(&node), offset),
             Alter::Extend => self.Extend(cx, &node, offset),
         };
+        if result.is_ok() && self.caret_prefers_upstream.replace(prefer_upstream) != prefer_upstream
+        {
+            self.set_visible_selection_dirty();
+        }
+        if result.is_ok() && matches!(granularity, Granularity::Line) {
+            self.preferred_caret_x.set(x);
+        } else {
+            self.preferred_caret_x.set(None);
+        }
+    }
+
+    /// Moves the focus of this selection as a user action, such as an arrow key. Extending a
+    /// collapsed selection first fires a cancelable `selectstart` event at the node of the new
+    /// range's start, as the selection API requires; a canceled event leaves the selection alone.
+    pub(crate) fn modify_focus_for_user(
+        &self,
+        cx: &mut JSContext,
+        direction: Direction,
+        granularity: Granularity,
+    ) {
+        self.modify_focus_from(
+            cx,
+            Alter::Extend,
+            direction,
+            granularity,
+            ChangeSource::User,
+        );
     }
 
     /// The start of this selection for [`Direction::Backward`] or its end for
@@ -141,10 +232,13 @@ pub(super) fn modify(
     // "sentence", "line", "paragraph", "lineboundary", "sentenceboundary",
     // "paragraphboundary", "documentboundary", abort these steps.
     //
-    // Only moves by character and word are implemented (see the module documentation).
+    // Sentence and paragraph granularities are not implemented (see the module documentation).
     let granularity = match_ignore_ascii_case! { granularity,
         "character" => Granularity::Character,
         "word" => Granularity::Word,
+        "line" => Granularity::Line,
+        "lineboundary" => Granularity::LineBoundary,
+        "documentboundary" => Granularity::DocumentBoundary,
         _ => return,
     };
     // Steps 4 to 6.
@@ -159,17 +253,22 @@ fn moved_position(
     direction: Direction,
     granularity: Granularity,
 ) -> Option<(DomRoot<Node>, u32)> {
-    if let Some(text) = node.downcast::<Text>() &&
-        let Some(moved) = move_within_text(text, offset, direction, granularity)
-    {
-        return Some((DomRoot::from_ref(node), moved));
-    }
-
     // Inside an editing host, the focus does not leave it.
     let editing_host = node.editing_host_of();
     let in_editing_host = editing_host.is_some();
     let scope =
         editing_host.unwrap_or_else(|| node.GetRootNode(&GetRootNodeOptions { composed: false }));
+
+    if matches!(granularity, Granularity::DocumentBoundary) {
+        return document_boundary_position(no_gc, &scope, direction, in_editing_host);
+    }
+
+    if let Some(text) = node.downcast::<Text>()
+        && let Some(moved) = move_within_text(text, offset, direction, granularity)
+    {
+        return Some((DomRoot::from_ref(node), moved));
+    }
+
     let origin_block = node.block_node_of();
     // The position beside the first line break crossed, where the move ends unless text in
     // the same block follows.
@@ -181,7 +280,7 @@ fn moved_position(
         // An image, a form control or, inside an editing host, content that is not editable
         // counts as one character: the focus stops beside it, never inside.
         if let Some(unit) = atomic_unit(&candidate, &scope, in_editing_host) {
-            if !unit.is_visible(no_gc) {
+            if !atomic_is_visible(&unit, no_gc) {
                 continue;
             }
             // The line a unit sits on: a block unit, such as a non-editable `<div>`, sits on
@@ -268,6 +367,174 @@ fn moved_position(
     beside_line_break.map(|(_, position)| position)
 }
 
+/// Resolve the host's edges to visible, editable positions without entering atomic units.
+fn document_boundary_position(
+    no_gc: &NoGC,
+    scope: &Node,
+    direction: Direction,
+    in_editing_host: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    match direction {
+        Direction::Backward => first_caret_position_from(no_gc, scope, 0, scope, in_editing_host),
+        Direction::Forward => {
+            last_caret_position_before(no_gc, scope, scope.children_count(), scope, in_editing_host)
+        },
+    }
+}
+
+/// The first caret position at or after (`node`, `offset`) inside `scope`.
+fn first_caret_position_from(
+    no_gc: &NoGC,
+    node: &Node,
+    offset: u32,
+    scope: &Node,
+    in_editing_host: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    if let Some(text) = node.downcast::<Text>() {
+        if offset < text.upcast::<CharacterData>().Length() && node.is_visible(no_gc) {
+            return Some((DomRoot::from_ref(node), offset));
+        }
+    }
+    if !node.is::<CharacterData>() && offset < node.children_count() {
+        let child = node.children().nth(offset as usize)?;
+        if let Some(position) = caret_position_before_child(&child, scope, in_editing_host, no_gc) {
+            return Some(position);
+        }
+    }
+    for candidate in nodes_beyond(node, offset, scope, Direction::Forward) {
+        if &*candidate == scope {
+            break;
+        }
+        if let Some(text) = candidate.downcast::<Text>() {
+            if text.upcast::<CharacterData>().Length() > 0 && candidate.is_visible(no_gc) {
+                return Some((candidate, 0));
+            }
+            continue;
+        }
+        if let Some(unit) = atomic_unit(&candidate, scope, in_editing_host) {
+            if atomic_is_visible(&unit, no_gc) {
+                return position_beside(&unit, Direction::Backward);
+            }
+            continue;
+        }
+        if candidate.is::<HTMLBRElement>() && breaks_a_line(&candidate, no_gc) {
+            return Some((candidate.GetParentNode()?, candidate.index()));
+        }
+    }
+    Some((DomRoot::from_ref(node), offset))
+}
+
+/// The last caret position at or before (`node`, `offset`) inside `scope`.
+fn last_caret_position_before(
+    no_gc: &NoGC,
+    node: &Node,
+    offset: u32,
+    scope: &Node,
+    in_editing_host: bool,
+) -> Option<(DomRoot<Node>, u32)> {
+    if node.is::<Text>() {
+        if offset > 0 && node.is_visible(no_gc) {
+            return Some((DomRoot::from_ref(node), offset));
+        }
+    }
+    if !node.is::<CharacterData>() && offset > 0 {
+        let child = node.children().nth(offset as usize - 1)?;
+        if let Some(position) = caret_position_after_child(&child, scope, in_editing_host, no_gc) {
+            return Some(position);
+        }
+        // The last caret position of an element is inside it, at its end.
+        if !child.is::<CharacterData>() && child.is_visible(no_gc) {
+            if let Some(position) = last_caret_position_before(
+                no_gc,
+                &child,
+                child.children_count(),
+                scope,
+                in_editing_host,
+            ) {
+                return Some(position);
+            }
+        }
+    }
+    for candidate in nodes_beyond(node, offset, scope, Direction::Backward) {
+        if &*candidate == scope {
+            break;
+        }
+        if let Some(text) = candidate.downcast::<Text>() {
+            let length = text.upcast::<CharacterData>().Length();
+            if length > 0
+                && candidate.is_visible(no_gc)
+                && atomic_unit(&candidate, scope, in_editing_host).is_none()
+            {
+                return Some((candidate, length));
+            }
+            continue;
+        }
+        if let Some(unit) = atomic_unit(&candidate, scope, in_editing_host) {
+            if atomic_is_visible(&unit, no_gc) {
+                return position_beside(&unit, Direction::Forward);
+            }
+            continue;
+        }
+        if candidate.is::<HTMLBRElement>() && breaks_a_line(&candidate, no_gc) {
+            return Some((candidate.GetParentNode()?, candidate.index() + 1));
+        }
+    }
+    Some((DomRoot::from_ref(node), offset))
+}
+
+/// The caret position at the start of `child`, if it has one before any nested content.
+fn caret_position_before_child(
+    child: &Node,
+    scope: &Node,
+    in_editing_host: bool,
+    no_gc: &NoGC,
+) -> Option<(DomRoot<Node>, u32)> {
+    if let Some(text) = child.downcast::<Text>() {
+        if text.upcast::<CharacterData>().Length() > 0 && child.is_visible(no_gc) {
+            return Some((DomRoot::from_ref(child), 0));
+        }
+        return None;
+    }
+    if let Some(unit) = atomic_unit(child, scope, in_editing_host) {
+        if atomic_is_visible(&unit, no_gc) {
+            return position_beside(&unit, Direction::Backward);
+        }
+        return None;
+    }
+    if child.is::<HTMLBRElement>() && breaks_a_line(child, no_gc) {
+        return Some((child.GetParentNode()?, child.index()));
+    }
+    None
+}
+
+/// The caret position at the end of `child`, if it has one after any nested content.
+fn caret_position_after_child(
+    child: &Node,
+    scope: &Node,
+    in_editing_host: bool,
+    no_gc: &NoGC,
+) -> Option<(DomRoot<Node>, u32)> {
+    if let Some(text) = child.downcast::<Text>() {
+        if text.upcast::<CharacterData>().Length() > 0 && child.is_visible(no_gc) {
+            return Some((
+                DomRoot::from_ref(child),
+                text.upcast::<CharacterData>().Length(),
+            ));
+        }
+        return None;
+    }
+    if let Some(unit) = atomic_unit(child, scope, in_editing_host) {
+        if atomic_is_visible(&unit, no_gc) {
+            return position_beside(&unit, Direction::Forward);
+        }
+        return None;
+    }
+    if child.is::<HTMLBRElement>() && breaks_a_line(child, no_gc) {
+        return Some((child.GetParentNode()?, child.index() + 1));
+    }
+    None
+}
+
 /// The outermost unit that `node` is, or is part of, inside `scope` and that the focus moves
 /// over in one step: a replaced element or form control, or, inside an editing host, content
 /// that is not editable.
@@ -286,20 +553,57 @@ fn atomic_unit(node: &Node, scope: &Node, in_editing_host: bool) -> Option<DomRo
     unit
 }
 
+/// Replaced controls are visible boxes even when they have no DOM text descendants.
+fn atomic_is_visible(node: &Node, no_gc: &NoGC) -> bool {
+    if !is_replaced_or_control(node) {
+        return node.is_visible(no_gc);
+    }
+    !node
+        .inclusive_ancestors(ShadowIncluding::No)
+        .any(|ancestor| {
+            ancestor
+                .downcast::<Element>()
+                .and_then(Element::resolved_display_value)
+                == Some(DisplayOutside::None)
+        })
+        && node
+            .downcast::<Element>()
+            .and_then(Element::style)
+            .is_none_or(|style| {
+                style.get_inherited_box().visibility
+                    == style::computed_values::visibility::T::Visible
+            })
+}
+
 /// Elements that render as one box with no caret positions inside.
-fn is_replaced_or_control(node: &Node) -> bool {
-    node.is::<HTMLImageElement>() ||
-        node.is::<HTMLInputElement>() ||
-        node.is::<HTMLTextAreaElement>() ||
-        node.is::<HTMLSelectElement>() ||
-        node.is::<HTMLButtonElement>() ||
-        node.is::<HTMLMediaElement>() ||
-        node.is::<HTMLIFrameElement>() ||
-        node.is::<HTMLCanvasElement>() ||
-        node.is::<HTMLObjectElement>() ||
-        node.is::<HTMLEmbedElement>() ||
-        node.is::<HTMLHRElement>() ||
-        node.is::<SVGSVGElement>()
+pub(super) fn is_replaced_or_control(node: &Node) -> bool {
+    node.is::<HTMLImageElement>()
+        || node.is::<HTMLInputElement>()
+        || node.is::<HTMLTextAreaElement>()
+        || node.is::<HTMLSelectElement>()
+        || node.is::<HTMLButtonElement>()
+        || node.is::<HTMLMediaElement>()
+        || node.is::<HTMLMeterElement>()
+        || node.is::<HTMLProgressElement>()
+        || node.is::<HTMLIFrameElement>()
+        || node.is::<HTMLCanvasElement>()
+        || node.is::<HTMLObjectElement>()
+        || node.is::<HTMLEmbedElement>()
+        || node.is::<HTMLHRElement>()
+        || node.is::<SVGSVGElement>()
+}
+
+/// Fires a cancelable `selectstart` event at `target`, returning whether it was not canceled.
+fn fire_selectstart(cx: &mut JSContext, target: &Node) -> bool {
+    let global = target.owner_global();
+    let event = Event::new(
+        cx,
+        &global,
+        atom!("selectstart"),
+        EventBubbles::Bubbles,
+        EventCancelable::Cancelable,
+    );
+    event.fire(cx, target.upcast::<EventTarget>())
 }
 
 /// The position just before (`side` backward) or just after (`side` forward) `node`, in the
@@ -417,6 +721,9 @@ fn move_within_text(
     let movement = match granularity {
         Granularity::Character => RopeMovement::Grapheme,
         Granularity::Word => RopeMovement::Word,
+        Granularity::Line | Granularity::LineBoundary | Granularity::DocumentBoundary => {
+            return None;
+        },
     };
     let amount = match direction {
         Direction::Backward => -1,

@@ -1,0 +1,17 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>A collapsed read-only selection does not paint an editing caret</title>
+<link rel="match" href="caret-absent-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; } #text { width: 100px; caret-color: red; outline: none; }</style>
+<div id="text" tabindex="0">XX</div>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  const text = document.getElementById('text');
+  text.focus();
+  getSelection().collapse(text.firstChild, 1);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+})();
+</script>

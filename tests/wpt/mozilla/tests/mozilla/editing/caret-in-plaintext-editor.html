@@ -1,0 +1,17 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>A plaintext-only editing host paints its caret</title>
+<link rel="match" href="caret-text-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; } #editor { width: 100px; caret-color: red; outline: none; }</style>
+<div id="editor" contenteditable="plaintext-only">XX</div>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  const editor = document.getElementById('editor');
+  editor.focus();
+  getSelection().collapse(editor.firstChild, 1);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+})();
+</script>

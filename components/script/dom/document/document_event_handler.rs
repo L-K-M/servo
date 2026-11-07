@@ -68,8 +68,8 @@ use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::{self, Node, NodeTraits};
 use crate::dom::pointerevent::{PointerEvent, PointerId};
 use crate::dom::types::{
-    CompositionEvent, Element, Event, EventTarget, GlobalScope, HTMLAnchorElement, HTMLElement,
-    HTMLLabelElement, MouseEvent, Touch, TouchEvent, TouchList, WheelEvent, Window,
+    Element, Event, EventTarget, GlobalScope, HTMLAnchorElement, HTMLElement, HTMLLabelElement,
+    MouseEvent, Touch, TouchEvent, TouchList, WheelEvent, Window,
 };
 use crate::dom::virtualmethods::vtable_for;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement, ScrollingBoxAxis};
@@ -137,6 +137,8 @@ impl ClickCountingInfo {
         self.count
     }
 }
+
+mod composition;
 
 /// The [`DocumentEventHandler`] is a structure responsible for handling input events for
 /// the [`crate::Document`] and storing data related to event handling. It exists to
@@ -209,6 +211,9 @@ pub(crate) struct DocumentEventHandler {
     /// The current drag gesture, if one exists. Events that affect this drag
     /// gesture will be forwarded to it.
     drag_gesture: DomRefCell<Option<DragGesture>>,
+    /// The native input method's original target and live preview range, never a new field.
+    composition: DomRefCell<Option<composition::Composition>>,
+    composition_epoch: Cell<u64>,
 }
 
 impl DocumentEventHandler {
@@ -236,6 +241,8 @@ impl DocumentEventHandler {
             pending_pointer_capture: Default::default(),
             pointer_capture_target: Default::default(),
             drag_gesture: Default::default(),
+            composition: Default::default(),
+            composition_epoch: Cell::new(0),
         }
     }
 
@@ -1678,32 +1685,7 @@ impl DocumentEventHandler {
         cx: &mut JSContext,
         composition_event: keyboard_types::CompositionEvent,
     ) -> InputEventResult {
-        let document = self.window.Document();
-        // spec: https://w3c.github.io/uievents/#compositionstart
-        // spec: https://w3c.github.io/uievents/#compositionupdate
-        // spec: https://w3c.github.io/uievents/#compositionend
-        // > Event.target : focused element processing the composition
-        let focused_area = document.focus_handler().focused_area();
-        let Some(focused_element) = focused_area.element() else {
-            // Event is only dispatched if there is a focused element.
-            return Default::default();
-        };
-
-        let cancelable = composition_event.state == keyboard_types::CompositionState::Start;
-        let event = CompositionEvent::new(
-            cx,
-            &self.window,
-            composition_event.state.event_type().into(),
-            true,
-            cancelable,
-            Some(&self.window),
-            0,
-            DOMString::from(composition_event.data),
-        );
-
-        let event = event.upcast::<Event>();
-        event.fire(cx, focused_element.upcast());
-        event.flags().into()
+        self.dispatch_ime_composition(cx, composition_event)
     }
 
     fn handle_ime_commit(&self, cx: &mut JSContext, text: String) -> InputEventResult {

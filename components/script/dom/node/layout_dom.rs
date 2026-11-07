@@ -5,6 +5,7 @@
 //! Methods for layout of node
 
 use atomic_refcell::AtomicRef;
+use html5ever::{local_name, ns};
 use layout_api::{
     GenericLayoutData, HTMLCanvasData, HTMLMediaData, LayoutElementType, LayoutNodeType,
     SVGElementData,
@@ -290,17 +291,99 @@ impl<'dom> LayoutDom<'dom, Node> {
                 return true;
             }
         }
-        // This is the cases where, if `selection_for_text_node` returns a selection
-        // it is a document selection.
-        // For now, never paint a caret for document selection.
-        // This will change as we improve `contenteditable` support.
+        // Focus and collapsed-selection visibility are resolved on the script thread.
+        // Here only determine whether this run can hold an editing caret. This stays true
+        // across selection moves, so existing text runs can update without being reshaped.
+        let mut node = Some(*self);
+        while let Some(current) = node {
+            if current.is::<crate::dom::html::htmlelement::HTMLElement>()
+                && let Some(value) = current.downcast::<Element>().and_then(|element| {
+                    element.get_attr_val_for_layout(&ns!(), &local_name!("contenteditable"))
+                })
+            {
+                if value.is_empty()
+                    || value.eq_ignore_ascii_case("true")
+                    || value.eq_ignore_ascii_case("plaintext-only")
+                {
+                    return true;
+                }
+                if value.eq_ignore_ascii_case("false") {
+                    return false;
+                }
+            }
+            node = current.parent_node_ref();
+        }
         false
+    }
+
+    #[expect(unsafe_code)]
+    pub(crate) fn element_caret(&self) -> Option<layout_api::ElementCaret> {
+        use crate::dom::html::htmlbrelement::HTMLBRElement;
+
+        if !self.is_element_for_layout()
+            || !self
+                .unsafe_get()
+                .get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+            || self.unsafe_get().get_flag(NodeFlags::SELECTION_INHIBITED)
+        {
+            return None;
+        }
+        let selection = self.owner_doc_for_layout().visible_selection_for_layout()?;
+        let range = selection.range_for_layout().as_ref()?;
+        if range.start.offset != range.end.offset
+            || range.start.container != range.end.container
+            || unsafe { range.start.container.to_layout() } != *self
+        {
+            return None;
+        }
+        let mut before = None;
+        let mut after = None;
+        let mut breaks_before: u32 = 0;
+        let mut breaks_after: u32 = 0;
+        let mut index = 0;
+        let mut child = self.first_child_ref();
+        while let Some(current) = child {
+            let br = current.is::<HTMLBRElement>();
+            if index < range.start.offset {
+                if br {
+                    breaks_before += 1;
+                } else {
+                    before = Some(current.opaque());
+                    breaks_before = 0;
+                }
+            } else if br {
+                breaks_after += 1;
+            } else {
+                after = Some(current.opaque());
+                break;
+            }
+            index += 1;
+            child = current.next_sibling_ref();
+        }
+        // A final <br> is the placeholder for the last line, not another empty line:
+        // "a<br>" has one visible line, while "a<br><br>" has two.
+        if after.is_none() && child.is_none() && index == range.start.offset {
+            breaks_before = breaks_before.saturating_sub(1);
+        }
+        Some(layout_api::ElementCaret {
+            offset: range.start.offset,
+            before,
+            after,
+            breaks_before,
+            breaks_after,
+        })
+    }
+
+    pub(crate) fn caret_prefers_upstream(&self) -> bool {
+        self.owner_doc_for_layout()
+            .visible_selection_for_layout()
+            .is_some_and(|selection| selection.caret_prefers_upstream())
     }
 
     pub(crate) fn replaced_is_selected(&self) -> bool {
         let unsafe_self = self.unsafe_get();
-        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) &&
-            !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
+        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+            && !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
     }
 
     pub(crate) fn image_url(self) -> Option<ServoUrl> {
