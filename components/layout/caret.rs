@@ -344,7 +344,14 @@ pub(crate) fn move_caret(
         CaretMovement::LineEnd => positions
             .iter()
             .filter(same_line)
-            .max_by_key(|position| position.rect.max_x()),
+            // A break box can share the text's endpoint. Keep the DOM caret in
+            // the text when it exists, using the break only for an empty line.
+            .max_by_key(|position| {
+                (
+                    position.rect.max_x(),
+                    matches!(&position.kind, PositionKind::Text(_)),
+                )
+            }),
         CaretMovement::Up | CaretMovement::Down => {
             let target_y = positions
                 .iter()
