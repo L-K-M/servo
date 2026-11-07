@@ -8092,6 +8092,32 @@
      ]
     ],
     "editing": {
+     "caret-after-trailing-br.html": [
+      "a9a7d0edc432f7950d5b9b211d1128b159f366e0",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-trailing-br-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-after-trailing-brs.html": [
+      "1e18ca32a017c320481e41530213e7f1c36ce015",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-paragraph-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
      "caret-at-soft-wrap-end.html": [
       "a60a10a2b13a7d0c48a68a45a560ac2623333313",
       [
@@ -11303,6 +11329,10 @@
      ],
      "caret-text-ref.html": [
       "4400c471cf27cf2b37cd46698def82f5e4f4fc47",
+      []
+     ],
+     "caret-trailing-br-ref.html": [
+      "317c5f988e88ea17ac68f342b32975ed824acf2d",
       []
      ]
     },
@@ -14527,7 +14557,7 @@
       ]
      ],
      "caret-visual-navigation.html": [
-      "c6dc3a911f584853afe57f2b2df573055b759869",
+      "6a54cf781f2c85b4f03d44d28809b98c18af2899",
       [
        null,
        {

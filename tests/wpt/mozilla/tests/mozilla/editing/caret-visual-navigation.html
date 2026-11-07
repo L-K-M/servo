@@ -92,4 +92,27 @@ promise_test(async t => {
   assert_true(getSelection().isCollapsed, 'Shift+Up returns to the anchor');
   assertFocus(first, 2, 'Shift+Up focus');
 }, 'Shift with vertical arrows extends the selection without moving its anchor');
+promise_test(async t => {
+  await readyFonts;
+  const editor = makeEditor(t, 'abcd<br><br>efgh');
+  const first = editor.firstChild, last = editor.lastChild;
+  getSelection().collapse(first, 2);
+  await sendKeys(editor, down);
+  assertFocus(editor, 2, 'Down reaches the empty line before its br');
+  await sendKeys(editor, down);
+  assertFocus(last, 2, 'Down leaves the empty line with the preferred coordinate');
+  await sendKeys(editor, up + up);
+  assertFocus(first, 2, 'Up traverses the empty line');
+}, 'Vertical movement visits an empty br line instead of skipping it');
+
+promise_test(async t => {
+  await readyFonts;
+  const editor = makeEditor(t, 'abcd<br><br>');
+  const first = editor.firstChild;
+  getSelection().collapse(first, 2);
+  await sendKeys(editor, down);
+  assertFocus(editor, 2, 'Down reaches the final empty line');
+  await sendKeys(editor, up);
+  assertFocus(first, 2, 'Up restores the preferred coordinate');
+}, 'Vertical movement reaches a final empty line before its placeholder br');
 </script>

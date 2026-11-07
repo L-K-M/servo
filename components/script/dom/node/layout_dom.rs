@@ -360,7 +360,8 @@ impl<'dom> LayoutDom<'dom, Node> {
             index += 1;
             child = current.next_sibling_ref();
         }
-        // A final <br> is the placeholder for the last line, not another empty line.
+        // A final <br> is the placeholder for the last line, not another empty line:
+        // "a<br>" has one visible line, while "a<br><br>" has two.
         if after.is_none() && child.is_none() && index == range.start.offset {
             breaks_before = breaks_before.saturating_sub(1);
         }

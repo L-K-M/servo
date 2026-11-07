@@ -264,7 +264,14 @@ fn collect_positions(
                     .children
                     .iter()
                     .any(|child| matches!(child, Fragment::Box(_) | Fragment::Float(_)));
-            if current.is_some() || empty {
+            // The break's own box sits at the end of its visual line, including a
+            // completely empty line. Its pseudo text is not a DOM text position.
+            let line_break = box_fragment
+                .base
+                .flags
+                .contains(FragmentFlags::IS_BR_ELEMENT)
+                && node.text_node_paints_caret();
+            if current.is_some() || empty || line_break {
                 let caret = current.unwrap_or(ElementCaret {
                     offset: 0,
                     before: None,

@@ -3241,6 +3241,8 @@ impl Window {
         preferred_x: Option<Au>,
     ) -> Option<(DomRoot<Node>, u32, Au, bool)> {
         use crate::dom::characterdata::CharacterData;
+        use crate::dom::html::htmlbrelement::HTMLBRElement;
+        use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
         use servo_base::text::{AssumeUnder4GB, Utf16CodeUnits, Utf32CodeUnits};
 
         let character_offset = focus
@@ -3256,6 +3258,18 @@ impl Window {
             preferred_x,
         )?;
         let node = unsafe { from_untrusted_node_address(result.node.into()) };
+        if node.is::<HTMLBRElement>() {
+            // Layout uses the break's box to locate an otherwise empty line. Editing
+            // belongs before the break, never inside a void element.
+            return node.GetParentNode().map(|parent| {
+                (
+                    parent,
+                    node.index(),
+                    result.preferred_x,
+                    result.prefer_upstream,
+                )
+            });
+        }
         let offset = node
             .downcast::<CharacterData>()
             .map(|text| {
