@@ -358,6 +358,14 @@ impl Document {
             return false;
         }
 
+        // A multiline Android input method may commit LF instead of sending Enter. The
+        // actual edit is a paragraph insertion, including its cancelable input type and null data.
+        let paragraph_action = EditingAction::InsertParagraph;
+        let editing_action = match editing_action {
+            EditingAction::InsertText(text) if text == "\n" => &paragraph_action,
+            action => action,
+        };
+
         // This function does not do any checks for whether or not we are actually inside an
         // editing host, since those checks are performed by exec_command_for_command_id either way.
         let (command, argument) = match editing_action {

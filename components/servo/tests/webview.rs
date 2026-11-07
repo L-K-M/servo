@@ -1361,6 +1361,62 @@ fn test_composition_cannot_follow_selection_moved_by_input_events() {
     }
 }
 
+/// Multiline Android input methods may commit LF instead of sending an Enter key.
+#[test]
+fn test_committed_newline_is_a_cancelable_paragraph_edit() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse(
+            "data:text/html,<div id='editor' contenteditable>a</div><script>\
+             window.__events=[]; window.__cancel=false;\
+             for(const type of ['beforeinput','input']) editor.addEventListener(type,e=>{\
+               __events.push([type,e.inputType,String(e.data)].join('|'));\
+               if(__cancel && type==='beforeinput' && e.inputType==='insertParagraph') e.preventDefault();\
+             });</script>"
+        ).unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let run = |script: &str| evaluate_javascript(&servo_test, webview.clone(), script).unwrap();
+    run("editor.focus(); getSelection().collapse(editor.firstChild,1)");
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("\n".into())));
+    let timeout = std::time::Duration::from_secs(5);
+    assert!(evaluate_until(
+        &servo_test,
+        &webview,
+        "__events.length === 2",
+        timeout
+    ));
+    assert_eq!(
+        run("__events.join(' ')"),
+        JSValue::String("beforeinput|insertParagraph|null input|insertParagraph|null".into())
+    );
+    assert_eq!(
+        run("editor.innerHTML"),
+        JSValue::String("a<div><br></div>".into())
+    );
+    run(
+        "editor.innerHTML='a'; getSelection().collapse(editor.firstChild,1); __events=[]; __cancel=true",
+    );
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("\n".into())));
+    assert!(evaluate_until(
+        &servo_test,
+        &webview,
+        "__events.length >= 1",
+        timeout
+    ));
+    assert_eq!(
+        run("__events.join(' ')"),
+        JSValue::String("beforeinput|insertParagraph|null".into())
+    );
+    assert_eq!(run("editor.innerHTML"), JSValue::String("a".into()));
+}
+
 /// Spin the event loop until `condition` holds or `timeout` elapses, returning
 /// whether `condition` was met. Unlike [`ServoTest::spin`] this cannot wait
 /// forever, which is what a regression test needs when the behavior it checks
