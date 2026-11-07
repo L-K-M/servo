@@ -1415,9 +1415,10 @@ impl VirtualMethods for HTMLElement {
             document
                 .focus_handler()
                 .set_focused_area(FocusableArea::Viewport);
-            // Without a blur event, a focused editing host must hide its input method here.
-            document.embedder_controls().hide_input_method(self);
         }
+        // Removal fires no blur event, so an editing host hides its input method here, as text
+        // controls do.
+        document.embedder_controls().hide_input_method(self);
 
         // 3. If removedNode is an element whose namespace is the HTML namespace, and this standard
         // defines HTML element removing steps for removedNode's local name, then run the

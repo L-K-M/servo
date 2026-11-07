@@ -979,6 +979,20 @@ fn test_ime_for_editing_host() {
         ),
         "an untrusted focus event asked for an input method"
     );
+
+    // Nor does an editing host whose focus listener moves focus on: no blur would hide it.
+    run("__editor.addEventListener('focus', \
+            () => document.getElementById('other').focus(), {once: true}); \
+        __editor.focus()");
+    let captured_delegate = delegate.clone();
+    assert!(
+        !spin_until(
+            &servo_test,
+            std::time::Duration::from_millis(500),
+            move || captured_delegate.number_of_controls_shown.get() != 3
+        ),
+        "an editing host that lost focus to its focus listener asked for an input method"
+    );
 }
 
 /// Typing into an editing host fires the input events of user input, carrying the inserted

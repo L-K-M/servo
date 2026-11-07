@@ -192,6 +192,8 @@ impl HTMLElement {
                 .hide_input_method(self);
         } else if *event_type == *"focus" &&
             self.is_editing_host() &&
+            // A focus listener may have moved focus on: no blur would hide the input method.
+            self.is_focused() &&
             !self
                 .owner_document()
                 .embedder_controls()
@@ -212,14 +214,17 @@ impl HTMLElement {
             document.embedder_controls().hide_input_method(self);
             return;
         }
-        let is_focused = document
+        if self.is_focused() && !document.embedder_controls().has_input_method(self) {
+            self.show_input_method_for_editing_host();
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.owner_document()
             .focus_handler()
             .focused_area()
             .element()
-            .is_some_and(|element| element == self.upcast::<Element>());
-        if is_focused && !document.embedder_controls().has_input_method(self) {
-            self.show_input_method_for_editing_host();
-        }
+            .is_some_and(|element| element == self.upcast::<Element>())
     }
 
     /// Text controls ask for their own input method, with their value and caret.
