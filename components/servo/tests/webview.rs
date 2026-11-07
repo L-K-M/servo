@@ -1100,6 +1100,267 @@ fn test_typing_in_editing_host() {
     );
 }
 
+/// IME updates are visible immediately and replace their own range, not the next field.
+#[test]
+fn test_composition_in_editing_host() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.network_http_proxy_uri = String::new();
+        preferences.network_https_proxy_uri = String::new();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(
+            Url::parse(
+                "data:text/html,<!DOCTYPE html><div id='editor' contenteditable>ab</div>\
+             <input id='other'><script>\
+             window.__editor = document.getElementById('editor');\
+             window.__other = document.getElementById('other'); window.__seen = [];\
+             for (const type of ['compositionstart', 'compositionupdate', 'compositionend',\
+                                 'beforeinput', 'input']) {\
+                 document.addEventListener(type, event => {\
+                     __seen.push([type, event.data, event.inputType || '',\
+                         event.isComposing || false, event.isTrusted,\
+                         event.composed, event.cancelable].join('|'));\
+                     if (type === 'beforeinput') event.preventDefault();\
+                 });\
+             }</script>",
+            )
+            .unwrap(),
+        )
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let run = |script: &str| {
+        evaluate_javascript(&servo_test, webview.clone(), script).expect("script should evaluate");
+    };
+    let compose = |state, data: &str| {
+        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+            state,
+            data: data.into(),
+        })));
+    };
+    let has_text = |text: &str| {
+        evaluate_until(
+            &servo_test,
+            &webview,
+            &format!("__editor.textContent === '{text}'"),
+            timeout,
+        )
+    };
+    run("__editor.focus(); getSelection().collapse(__editor.firstChild, 1)");
+    compose(CompositionState::Start, "");
+    compose(CompositionState::Update, "n");
+    assert!(
+        has_text("anb"),
+        "the first composition update was invisible"
+    );
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "getSelection().isCollapsed && getSelection().focusOffset === 2"
+        ),
+        Ok(JSValue::Boolean(true))
+    );
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__seen.join(' ')"),
+        Ok(JSValue::String(
+            "compositionstart|||false|true|true|true \
+             compositionupdate|n||false|true|true|false \
+             beforeinput|n|insertCompositionText|true|true|true|false \
+             input|n|insertCompositionText|true|true|true|false"
+                .into()
+        ))
+    );
+    compose(CompositionState::Update, "ni");
+    assert!(has_text("anib"), "an update appended instead of replacing");
+    compose(CompositionState::Update, "");
+    assert!(has_text("ab"), "an empty update did not remove the preview");
+    compose(CompositionState::Update, "é🦊");
+    assert!(has_text("aé🦊b"), "UTF-16 preview offsets were lost");
+    compose(CompositionState::End, "été");
+    assert!(
+        has_text("aétéb"),
+        "final text did not replace the preview once"
+    );
+    run("window.__seen = []");
+    compose(CompositionState::Start, "");
+    compose(CompositionState::Update, "x");
+    assert!(has_text("aétéxb"));
+    run("__other.focus()");
+    assert_eq!(
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "__seen.some(row => row.startsWith('compositionend|x|'))"
+        ),
+        Ok(JSValue::Boolean(true)),
+        "blur did not end the page's composition session"
+    );
+    compose(CompositionState::Update, "late");
+    compose(CompositionState::End, "late");
+    compose(CompositionState::Start, "");
+    assert!(evaluate_until(
+        &servo_test,
+        &webview,
+        "__seen.filter(row => row.startsWith('compositionstart|')).length === 2",
+        timeout
+    ));
+    assert_eq!(
+        evaluate_javascript(&servo_test, webview.clone(), "__other.value"),
+        Ok(JSValue::String(String::new())),
+        "late composition reached the next field"
+    );
+    assert!(
+        has_text("aétéxb"),
+        "late composition changed the blurred editor"
+    );
+
+    // Returning to the same field and caret is not the same native editing session.
+    run("__editor.focus(); getSelection().collapse(__editor.firstChild, 5)");
+    compose(CompositionState::Start, "");
+    compose(CompositionState::Update, "q");
+    assert!(has_text("aétéxqb"));
+    run(
+        "__other.focus(); __editor.focus(); getSelection().collapse(__editor.firstChild, 6); \
+         window.__barrier = false; __editor.addEventListener('compositionstart', () => __barrier = true, {once:true})",
+    );
+    compose(CompositionState::Update, "late");
+    compose(CompositionState::End, "late");
+    compose(CompositionState::Start, "");
+    assert!(evaluate_until(&servo_test, &webview, "__barrier", timeout));
+    assert!(
+        has_text("aétéxqb"),
+        "a blur/refocus cycle revived the old composition"
+    );
+}
+
+/// A page can make a live field read-only before an already queued IME update arrives.
+#[test]
+fn test_composition_stops_when_a_text_control_becomes_readonly() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<input value='ab'><textarea>ab</textarea>").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let compose = |state, data: &str| {
+        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+            state,
+            data: data.into(),
+        })));
+    };
+    for selector in ["input", "textarea"] {
+        evaluate_javascript(&servo_test, webview.clone(), &format!(
+            "window.__field = document.querySelector('{selector}'); __field.focus(); __field.setSelectionRange(2, 2); \
+             window.__starts = 0; __field.addEventListener('compositionstart', () => ++__starts); \
+             window.__ended = null; __field.addEventListener('compositionend', event => __ended = event.data)"
+        )).unwrap();
+        compose(CompositionState::Start, "");
+        compose(CompositionState::Update, "x");
+        assert!(evaluate_until(
+            &servo_test,
+            &webview,
+            "__field.value === 'abx'",
+            timeout
+        ));
+        evaluate_javascript(&servo_test, webview.clone(), "__field.blur()").unwrap();
+        assert_eq!(
+            evaluate_javascript(
+                &servo_test,
+                webview.clone(),
+                "[__ended, __field.value, __field.selectionStart, __field.selectionEnd].join('|')"
+            ),
+            Ok(JSValue::String("x|abx|3|3".into())),
+            "blur did not finish the {selector} preview without reinserting it"
+        );
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            "__field.value = 'ab'; __field.focus(); __field.setSelectionRange(2, 2); __starts = 0",
+        )
+        .unwrap();
+        compose(CompositionState::Start, "");
+        compose(CompositionState::Update, "x");
+        assert!(evaluate_until(
+            &servo_test,
+            &webview,
+            "__field.value === 'abx'",
+            timeout
+        ));
+        evaluate_javascript(&servo_test, webview.clone(), "__field.readOnly = true").unwrap();
+        compose(CompositionState::Update, "y");
+        compose(CompositionState::End, "z");
+        compose(CompositionState::Start, "");
+        assert!(evaluate_until(
+            &servo_test,
+            &webview,
+            "__starts === 2",
+            timeout
+        ));
+        assert!(
+            evaluate_until(&servo_test, &webview, "__field.value === 'abx'", timeout),
+            "composition changed a read-only {selector}"
+        );
+    }
+}
+
+/// Input listeners must not redirect a preview or make the next update delete other text.
+#[test]
+fn test_composition_cannot_follow_selection_moved_by_input_events() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<div id='editor' contenteditable>abc</div>").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    for (event_type, expected) in [("input", "nbc"), ("beforeinput", "abc")] {
+        evaluate_javascript(&servo_test, webview.clone(), &format!(
+            "document.body.textContent = ''; window.__editor = document.createElement('div'); \
+             __editor.contentEditable = 'true'; __editor.textContent = 'abc'; document.body.append(__editor); \
+             window.__starts = 0; __editor.addEventListener('compositionstart', () => ++__starts); \
+             __editor.focus(); getSelection().setBaseAndExtent(__editor.firstChild, 0, __editor.firstChild, 1); \
+             __editor.addEventListener('{event_type}', () => getSelection().collapse(__editor.firstChild, 3), {{once:true}})"
+        )).unwrap();
+        for (state, data) in [
+            (CompositionState::Start, ""),
+            (CompositionState::Update, "n"),
+            (CompositionState::Update, "ni"),
+            (CompositionState::End, "ni"),
+            (CompositionState::Start, ""),
+        ] {
+            webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+                state,
+                data: data.into(),
+            })));
+        }
+        // A new native start is a barrier even if every prior update was deliberately ignored.
+        assert!(evaluate_until(
+            &servo_test,
+            &webview,
+            "__starts === 2",
+            timeout
+        ));
+        assert_eq!(
+            evaluate_javascript(&servo_test, webview.clone(), "__editor.textContent"),
+            Ok(JSValue::String(expected.into())),
+            "{event_type} redirected native composition"
+        );
+    }
+}
+
 /// Spin the event loop until `condition` holds or `timeout` elapses, returning
 /// whether `condition` was met. Unlike [`ServoTest::spin`] this cannot wait
 /// forever, which is what a regression test needs when the behavior it checks
@@ -1213,18 +1474,14 @@ fn test_ime_in_shadow_dom() {
             window.__field.value.length, window.__field.value.length)",
     )
     .expect("setSelectionRange should evaluate");
-    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
-        CompositionEvent {
-            state: CompositionState::Start,
-            data: "w".into(),
-        },
-    )));
-    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
-        CompositionEvent {
-            state: CompositionState::End,
-            data: "world".into(),
-        },
-    )));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+        state: CompositionState::Start,
+        data: "w".into(),
+    })));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+        state: CompositionState::End,
+        data: "world".into(),
+    })));
     assert!(
         evaluate_until(
             &servo_test,
@@ -1278,10 +1535,9 @@ fn test_ime_in_shadow_dom() {
         "root.addEventListener('keydown', event => event.preventDefault())",
     )
     .expect("addEventListener should evaluate");
-    webview.notify_input_event(InputEvent::Keyboard(servo::KeyboardEvent::from_state_and_key(
-        KeyState::Down,
-        Key::Character("q".into()),
-    )));
+    webview.notify_input_event(InputEvent::Keyboard(
+        servo::KeyboardEvent::from_state_and_key(KeyState::Down, Key::Character("q".into())),
+    ));
     assert_eq!(
         evaluate_javascript(
             &servo_test,
@@ -1386,12 +1642,10 @@ fn test_ime_in_nested_shadow_dom() {
             window.__field.value.length, window.__field.value.length)",
     )
     .expect("setSelectionRange should evaluate");
-    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(
-        CompositionEvent {
-            state: CompositionState::End,
-            data: "def".into(),
-        },
-    )));
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+        state: CompositionState::End,
+        data: "def".into(),
+    })));
     assert!(
         evaluate_until(
             &servo_test,
@@ -1980,7 +2234,11 @@ fn test_viewport_script_scroll_to_the_top_brings_the_visual_viewport_along() {
     let _ = evaluate_javascript(&servo_test, webview.clone(), "window.scrollTo(0, 0)");
     wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
     let offset_top = evaluate_number(&servo_test, &webview, "visualViewport.offsetTop");
-    assert_close(offset_top, 0., "visualViewport.offsetTop after scrolling to the top");
+    assert_close(
+        offset_top,
+        0.,
+        "visualViewport.offsetTop after scrolling to the top",
+    );
     assert_eq!(
         webview.can_scroll_up_at_point(WebViewPoint::Device(DevicePoint::new(250., 250.))),
         Some(false)

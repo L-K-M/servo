@@ -152,6 +152,8 @@ pub struct TextInput<T: ClipboardProvider> {
 
     /// Was last change made by set_content?
     was_last_change_by_set_content: bool,
+    /// An empty compositionend removes a visible preview, not an untouched user selection.
+    composition_updated: bool,
 
     #[no_trace]
     pub(crate) previous_selection_range: Range<RopeIndex>,
@@ -224,6 +226,7 @@ impl<T: ClipboardProvider> TextInput<T> {
             min_length: Default::default(),
             selection_direction: SelectionDirection::None,
             was_last_change_by_set_content: true,
+            composition_updated: false,
             previous_selection_range: Default::default(),
             selection_for_layout: None,
         }
@@ -609,9 +612,22 @@ impl<T: ClipboardProvider> TextInput<T> {
         }
     }
 
+    pub(crate) fn cancel_composition(&mut self) -> bool {
+        let had_preview = std::mem::take(&mut self.composition_updated);
+        if had_preview {
+            self.clear_selection();
+        }
+        had_preview
+    }
+
+    pub(crate) fn handle_compositionstart(&mut self) {
+        self.composition_updated = false;
+    }
+
     pub(crate) fn handle_compositionend(&mut self, event: &CompositionEvent) -> KeyReaction {
         let insertion = event.data().str();
-        if insertion.is_empty() {
+        let had_preview = std::mem::take(&mut self.composition_updated);
+        if insertion.is_empty() && !had_preview {
             self.clear_selection();
             return KeyReaction::RedrawSelection;
         }
@@ -626,16 +642,13 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     pub(crate) fn handle_compositionupdate(&mut self, event: &CompositionEvent) -> KeyReaction {
         let insertion = event.data().str();
-        if insertion.is_empty() {
-            return KeyReaction::Nothing;
-        }
-
+        self.composition_updated = true;
         let start = self.selection_start_offset();
         let insertion = insertion.to_string();
         self.insert(insertion.clone());
         self.set_selection_range_utf8(
             start,
-            start + event.data().len_utf8(),
+            self.rope.index_to_utf8_offset(self.selection_end()),
             SelectionDirection::Forward,
         );
         KeyReaction::DispatchInput(

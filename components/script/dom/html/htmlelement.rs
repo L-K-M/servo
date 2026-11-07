@@ -1357,7 +1357,7 @@ impl VirtualMethods for HTMLElement {
 
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
         if event.is::<FocusEvent>() {
-            self.handle_focus_event_for_editing_host(event);
+            self.handle_focus_event_for_editing_host(cx, event);
         }
         if let Some(super_type) = self.super_type() {
             super_type.handle_event(cx, event);

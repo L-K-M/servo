@@ -180,12 +180,23 @@ impl HTMLElement {
     /// Asks the embedder for an input method while this editing host has focus, as text
     /// controls do, so that a virtual keyboard can open for typing into it; hides it again
     /// on blur.
-    pub(crate) fn handle_focus_event_for_editing_host(&self, event: &Event) {
+    pub(crate) fn handle_focus_event_for_editing_host(&self, cx: &mut JSContext, event: &Event) {
         // Script cannot open or close a keyboard by dispatching focus events of its own.
-        if !event.IsTrusted() || self.is_text_control() {
+        if !event.IsTrusted() {
             return;
         }
+        if let Some(selection) = self.owner_document().selection() {
+            selection.set_visible_selection_dirty();
+        }
         let event_type = event.type_();
+        if *event_type == *"blur" {
+            self.owner_document()
+                .event_handler()
+                .finish_composition_on_blur(cx);
+        }
+        if self.is_text_control() {
+            return;
+        }
         if *event_type == *"blur" {
             self.owner_document()
                 .embedder_controls()
@@ -210,6 +221,9 @@ impl HTMLElement {
             return;
         }
         let document = self.owner_document();
+        if let Some(selection) = document.selection() {
+            selection.set_visible_selection_dirty();
+        }
         if !self.is_editing_host() {
             document.embedder_controls().hide_input_method(self);
             return;

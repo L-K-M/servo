@@ -21,18 +21,19 @@ use crate::dom::execcommand::commands::fontsize::maybe_normalize_pixels;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::Node;
 use crate::dom::processinginstruction::ProcessingInstruction;
+use crate::dom::range::Range;
 use crate::dom::selection::Selection;
 
 /// <https://w3c.github.io/editing/docs/execCommand/#miscellaneous-commands>
 fn is_command_listed_in_miscellaneous_section(command_name: CommandName) -> bool {
     matches!(
         command_name,
-        CommandName::DefaultParagraphSeparator |
-            CommandName::Redo |
-            CommandName::SelectAll |
-            CommandName::StyleWithCss |
-            CommandName::Undo |
-            CommandName::Usecss
+        CommandName::DefaultParagraphSeparator
+            | CommandName::Redo
+            | CommandName::SelectAll
+            | CommandName::StyleWithCss
+            | CommandName::Undo
+            | CommandName::Usecss
     )
 }
 
@@ -105,6 +106,13 @@ pub(crate) enum EditingCommandSource {
     /// `beforeinput` and `input` events the Input Events specification defines for user input,
     /// whose `data` is the text the user inserted.
     User { data: Option<DOMString> },
+    /// Native IME preview replacement. Composition input is not cancelable and is composing.
+    Composition {
+        data: DOMString,
+        /// Private preview range, updated before page input listeners can move the caret.
+        range: DomRoot<Range>,
+        epoch: u64,
+    },
 }
 
 impl Document {
@@ -305,11 +313,23 @@ impl DocumentExecCommandSupport for Document {
         value: DOMString,
         source: EditingCommandSource,
     ) -> bool {
-        let is_user_input = matches!(source, EditingCommandSource::User { .. });
-        let user_data = match source {
-            EditingCommandSource::Script => None,
-            EditingCommandSource::User { data } => data,
+        let is_user_input = !matches!(source, EditingCommandSource::Script);
+        let is_composing = matches!(source, EditingCommandSource::Composition { .. });
+        let (user_data, composition) = match source {
+            EditingCommandSource::Script => (None, None),
+            EditingCommandSource::User { data } => (data, None),
+            EditingCommandSource::Composition { data, range, epoch } => {
+                (Some(data), Some((range, epoch)))
+            },
         };
+        let expected_range = composition.as_ref().map(|(range, _)| {
+            (
+                range.start_container(),
+                range.start_offset(),
+                range.end_container(),
+                range.end_offset(),
+            )
+        });
         let window = self.window();
         // Step 3. If command is not supported or not enabled, return false.
         let Some((command, mut selection)) = self.check_support_and_enabled(cx, &command_id) else {
@@ -345,12 +365,14 @@ impl DocumentExecCommandSupport for Document {
                 None,
                 atom!("beforeinput"),
                 true,
-                true,
+                !is_composing,
                 Some(window),
                 0,
                 user_data.clone(),
-                false,
-                if is_user_input {
+                is_composing,
+                if is_composing {
+                    DOMString::from_static("insertCompositionText")
+                } else if is_user_input {
                     mapped_value_of_command(command)
                 } else {
                     DOMString::new()
@@ -374,26 +396,81 @@ impl DocumentExecCommandSupport for Document {
             // Step 4.5. Let affected editing host be the editing host that is an inclusive ancestor
             // of the active range's start node and end node, and is not the ancestor of any editing host
             // that is an inclusive ancestor of the active range's start node and end node.
-            selection
+            let host = selection
                 .active_range(cx)
                 .expect("Must always have an active range")
                 .CommonAncestorContainer()
-                .editing_host_of()
+                .editing_host_of();
+            if is_user_input
+                && host
+                    .as_ref()
+                    .is_none_or(|host| !self.focus_allows_user_editing_of(host))
+            {
+                return false;
+            }
+            host
         } else {
             None
         };
 
-        if affected_editing_host.is_some() &&
-            bump_selection_out_of_invalid_node(cx, &selection).is_err()
+        if let Some((_, epoch)) = composition.as_ref() {
+            let Some(range) = selection.active_range(cx) else {
+                return false;
+            };
+            let current = (
+                range.start_container(),
+                range.start_offset(),
+                range.end_container(),
+                range.end_offset(),
+            );
+            if !self.event_handler().composition_is_current(*epoch)
+                || Some(current) != expected_range
+            {
+                // Non-cancelable beforeinput is still reentrant. Do not follow a listener's
+                // new caret, DOM replacement, or blur/refocus cycle with native preview text.
+                return false;
+            }
+        }
+        if affected_editing_host.is_some()
+            && bump_selection_out_of_invalid_node(cx, &selection).is_err()
         {
             return false;
         }
 
+        let composition_start = composition.as_ref().map(|(range, _)| {
+            let start = range.CloneRange(cx);
+            start.Collapse(cx.no_gc(), true);
+            start
+        });
         // Step 5. Take the action for command, passing value to the instructions as an argument.
         let result = command.execute(cx, self, &selection, value);
         // Step 6. If the previous step returned false, return false.
         if !result {
             return false;
+        }
+        if let Some(((range, epoch), start)) = composition.as_ref().zip(composition_start.as_ref())
+        {
+            let Some(caret) = selection.active_range(cx) else {
+                return false;
+            };
+            if !caret.collapsed()
+                || caret.end_container().editing_host_of()
+                    != start.start_container().editing_host_of()
+            {
+                return false;
+            }
+            // Capture the actual inserted interval before input fires. Reading the selection
+            // afterward could include unrelated text selected by a page listener.
+            start.set_end(cx.no_gc(), &caret.end_container(), caret.end_offset());
+            range.set_start(cx.no_gc(), &start.start_container(), start.start_offset());
+            range.set_end(cx.no_gc(), &start.end_container(), start.end_offset());
+            self.event_handler().composition_preview_updated(
+                *epoch,
+                user_data
+                    .as_ref()
+                    .expect("composition carries text")
+                    .clone(),
+            );
         }
         // Step 7. If the action modified DOM tree, then fire an event named "input" at affected editing
         // host using InputEvent, with its isTrusted and bubbles attributes initialized to true,
@@ -409,8 +486,12 @@ impl DocumentExecCommandSupport for Document {
                 Some(window),
                 0,
                 user_data,
-                false,
-                mapped_value_of_command(command),
+                is_composing,
+                if is_composing {
+                    DOMString::from_static("insertCompositionText")
+                } else {
+                    mapped_value_of_command(command)
+                },
             );
             let event = event.upcast::<Event>();
             event.set_trusted(true);
