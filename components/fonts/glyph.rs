@@ -623,6 +623,88 @@ impl ShapedTextSlice {
     pub fn glyphs(&self) -> impl DoubleEndedIterator<Item = GlyphInfo<'_>> + use<'_> {
         self.shaped_text.glyph_slice(self.glyph_range.clone())
     }
+
+    /// Split this [`ShapedTextSlice`] into smaller slices that end at the given
+    /// character offsets, which are relative to the start of this slice and must be
+    /// increasing. Glyphs that correspond to zero characters stay with the preceding
+    /// glyph, and a glyph is never split. The characters after the last offset form
+    /// the last slice, which keeps the [`ShapedTextSliceType`] of this slice. The
+    /// returned slices are in logical order.
+    pub fn split_at_character_offsets(
+        &self,
+        character_offsets: impl IntoIterator<Item = Utf32CodeUnits>,
+    ) -> Vec<Arc<ShapedTextSlice>> {
+        // Glyphs are stored in physical order, so walk them backwards for RTL text in
+        // order to consume characters in logical order.
+        let glyphs: Vec<GlyphInfo<'_>> = if self.shaped_text.is_rtl {
+            self.glyphs().rev().collect()
+        } else {
+            self.glyphs().collect()
+        };
+
+        let mut slices = Vec::new();
+        let mut make_slice = |logical_glyphs: Range<usize>,
+                              character_count: Utf32CodeUnits,
+                              slice_type: ShapedTextSliceType| {
+            let glyph_range = if self.shaped_text.is_rtl {
+                self.glyph_range.end - logical_glyphs.end..
+                    self.glyph_range.end - logical_glyphs.start
+            } else {
+                self.glyph_range.start + logical_glyphs.start..
+                    self.glyph_range.start + logical_glyphs.end
+            };
+            let glyphs = &glyphs[logical_glyphs];
+            slices.push(Arc::new(ShapedTextSlice {
+                shaped_text: self.shaped_text.clone(),
+                glyph_range,
+                total_advance: glyphs
+                    .iter()
+                    .fold(Au::zero(), |advance, glyph| advance + glyph.advance()),
+                character_count,
+                total_word_separators: glyphs
+                    .iter()
+                    .filter(|glyph| glyph.char_is_word_separator())
+                    .count(),
+                slice_type,
+            }));
+        };
+
+        let mut character_offsets = character_offsets.into_iter().peekable();
+        let mut slice_start = 0;
+        let mut slice_start_character = Utf32CodeUnits(0);
+        let mut current_character = Utf32CodeUnits(0);
+        for (index, glyph) in glyphs.iter().enumerate() {
+            if glyph.character_count().0 > 0 {
+                // Skip offsets that would produce an empty slice.
+                while character_offsets
+                    .next_if(|offset| *offset <= slice_start_character)
+                    .is_some()
+                {}
+                if character_offsets
+                    .next_if(|offset| *offset <= current_character)
+                    .is_some()
+                {
+                    make_slice(
+                        slice_start..index,
+                        current_character - slice_start_character,
+                        ShapedTextSliceType::Word,
+                    );
+                    slice_start = index;
+                    slice_start_character = current_character;
+                }
+            }
+            current_character += glyph.character_count();
+        }
+
+        if slice_start < glyphs.len() {
+            make_slice(
+                slice_start..glyphs.len(),
+                current_character - slice_start_character,
+                self.slice_type.clone(),
+            );
+        }
+        slices
+    }
 }
 
 /// A data structure used to efficiently slice up a [`ShapedText`] into [`ShapedTextSlice`]s.
