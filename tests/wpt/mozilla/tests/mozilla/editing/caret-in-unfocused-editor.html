@@ -1,0 +1,21 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>An editing caret disappears on blur</title>
+<link rel="match" href="caret-absent-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; } #editor { width: 100px; caret-color: red; outline: none; } button { position: absolute; left: -2000px; }</style>
+<div id="editor" contenteditable>XX</div><button id="other">Other</button>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  const editor = document.getElementById('editor');
+  editor.focus();
+  getSelection().collapse(editor.firstChild, 1);
+  // Paint the caret before changing only focus, not the selection.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.getElementById('other').focus();
+    requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+  }));
+})();
+</script>

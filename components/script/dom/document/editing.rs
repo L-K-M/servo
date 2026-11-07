@@ -419,11 +419,11 @@ impl Document {
         self.exec_command_for_command_id(cx, command, argument, EditingCommandSource::User { data })
     }
 
-    /// Moves the caret by a character or a word in the focused editing host, as the arrow keys
-    /// do. Returns false, leaving the keys to scroll the page, for other motions and when the
-    /// selection is not in the focused editing host. Extending the selection (Shift with an
-    /// arrow key) is left alone too: starting a selection must fire `selectstart` first, which
-    /// is not implemented.
+    /// Moves the caret in the focused editing host, as the arrow, Home, End and document
+    /// boundary keys do. Returns false, leaving the keys to scroll the page, for other motions
+    /// and when the selection is not in the focused
+    /// editing host. Extending the selection (Shift) fires a cancelable `selectstart` event
+    /// first, as the selection API requires.
     fn move_caret_in_focused_editing_host(
         &self,
         cx: &mut JSContext,
@@ -431,12 +431,12 @@ impl Document {
         motion: EditingMotion,
         modify_selection: ModifySelection,
     ) -> bool {
-        if modify_selection == ModifySelection::Yes {
-            return false;
-        }
         let granularity = match motion {
             EditingMotion::Character | EditingMotion::Grapheme => Granularity::Character,
             EditingMotion::Word => Granularity::Word,
+            EditingMotion::Line => Granularity::Line,
+            EditingMotion::LineStartOrEnd => Granularity::LineBoundary,
+            EditingMotion::DocumentStartOrEnd => Granularity::DocumentBoundary,
             _ => return false,
         };
         let Some(selection) = self.GetSelection(cx) else {
@@ -455,7 +455,14 @@ impl Document {
             EditingDirection::Backward => Direction::Backward,
             EditingDirection::Forward => Direction::Forward,
         };
-        selection.modify_focus(cx, Alter::Move, direction, granularity);
+        match modify_selection {
+            ModifySelection::Yes => {
+                selection.modify_focus_for_user(cx, direction, granularity);
+            },
+            ModifySelection::No => {
+                selection.modify_focus(cx, Alter::Move, direction, granularity);
+            },
+        }
         true
     }
 }
@@ -793,6 +800,44 @@ pub(crate) fn editing_action_from_keyboard_event(
                 update_selection,
             ))
         })
+        .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::Home), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::DocumentStartOrEnd,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::End), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::DocumentStartOrEnd,
+                update_selection,
+            ))
+        })
+        .optional_shortcut(
+            cfg!(target_os = "macos"),
+            Modifiers::META,
+            Key::Named(NamedKey::Home),
+            || {
+                Some(EditingAction::MoveCursor(
+                    EditingDirection::Backward,
+                    EditingMotion::DocumentStartOrEnd,
+                    update_selection,
+                ))
+            },
+        )
+        .optional_shortcut(
+            cfg!(target_os = "macos"),
+            Modifiers::META,
+            Key::Named(NamedKey::End),
+            || {
+                Some(EditingAction::MoveCursor(
+                    EditingDirection::Forward,
+                    EditingMotion::DocumentStartOrEnd,
+                    update_selection,
+                ))
+            },
+        )
         .shortcut(Modifiers::empty(), Key::Named(NamedKey::Home), || {
             Some(EditingAction::MoveCursor(
                 EditingDirection::Backward,

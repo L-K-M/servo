@@ -8091,6 +8091,177 @@
       {}
      ]
     ],
+    "editing": {
+     "caret-at-soft-wrap-end.html": [
+      "a60a10a2b13a7d0c48a68a45a560ac2623333313",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-soft-wrap-end-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-below-positioned-content.html": [
+      "a6ade0b0dc114e35eef0c274c6b9b03481623083",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-overlay-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-between-formatted-runs.html": [
+      "8d21cbc8e3d8a3611ee2bb4019aa2ae79470a4f5",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-text-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-clipped-in-empty-editor.html": [
+      "d8d66f06fb133ae886d940e5804fd20244f5076d",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-clipped-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-br-editor.html": [
+      "615c07e67e9e932cf240609aaf761cae882d2fdb",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-empty-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-empty-editor.html": [
+      "c64d754690398d4b9722da26c2937a1ce36ec839",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-empty-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-new-paragraph.html": [
+      "2070c0ff5050099535c6cb80fa92060707e9d3fa",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-paragraph-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-plaintext-editor.html": [
+      "666ea5348735a99242c7c0fb6343ce4b79ac37b0",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-text-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-shadow-editor.html": [
+      "85648a04b965a446234567a8101d1a87230be51d",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-empty-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-text-editor.html": [
+      "cabaaea29bb946d9492064223af83aab06302136",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-text-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-in-unfocused-editor.html": [
+      "2eded7f9f303fcb543bcd70adab101cb5c30e64e",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-absent-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-on-readonly-text.html": [
+      "4d919248a0d5e31ac35dd811de52c3d7dcd9550d",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-absent-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "caret-scrolled-in-empty-editor.html": [
+      "6b5fc951da8457c9f6374ede13a889c5b037e8dd",
+      [
+       null,
+       [
+        [
+         "/_mozilla/mozilla/editing/caret-empty-ref.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ]
+    },
     "font-element-comma-separated.html": [
      "db7e13f2ca3db0ebd3c610c3c25b052749b85e30",
      [
@@ -11092,6 +11263,36 @@
      "3e68ff395f5475e2b618147f270117f576a5b7bd",
      []
     ],
+    "editing": {
+     "caret-absent-ref.html": [
+      "c0ffbf43ee95c0de5a96a60893f7e77d6c4957da",
+      []
+     ],
+     "caret-clipped-ref.html": [
+      "6555f6fe6e49733edead35c2c1c4b52835f05420",
+      []
+     ],
+     "caret-empty-ref.html": [
+      "5e8b76700d56f69811da15d0fbc739ca44a90249",
+      []
+     ],
+     "caret-overlay-ref.html": [
+      "f955404e1e76d8ef0a4ee09b6f15cfc636f62896",
+      []
+     ],
+     "caret-paragraph-ref.html": [
+      "3809a3c177406c72049954c4f9463042e086558d",
+      []
+     ],
+     "caret-soft-wrap-end-ref.html": [
+      "158dd90728986d52f8928d0cef9b1fc95959d26c",
+      []
+     ],
+     "caret-text-ref.html": [
+      "4400c471cf27cf2b37cd46698def82f5e4f4fc47",
+      []
+     ]
+    },
     "font-element-comma-separated-ref.html": [
      "97efe2b83d5f78bdac0d4aa951b63342fb1fa1cf",
      []
@@ -14303,11 +14504,38 @@
      ]
     ],
     "editing": {
+     "caret-navigation-keys.html": [
+      "64dc14e2c28c28bb1cdf83dfbf51b4146e94dcfe",
+      [
+       null,
+       {
+        "testdriver": true
+       }
+      ]
+     ],
+     "caret-visual-navigation.html": [
+      "c6dc3a911f584853afe57f2b2df573055b759869",
+      [
+       null,
+       {
+        "testdriver": true
+       }
+      ]
+     ],
      "delete-restores-overrides.html": [
       "2d805e15a966d978b6a8132c800928556f65e696",
       [
        null,
        {}
+      ]
+     ],
+     "editing-nested-contenteditable.html": [
+      "1410a7283bfedada20103fd7b6c6cbae8f40efc2",
+      [
+       null,
+       {
+        "testdriver": true
+       }
       ]
      ],
      "selection-modify-atomic-units.html": [

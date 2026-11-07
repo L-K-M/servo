@@ -8,6 +8,7 @@
 //! painted.
 
 mod accessibility;
+mod caret;
 mod cell;
 mod context;
 mod display_list;

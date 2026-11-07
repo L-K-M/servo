@@ -3231,6 +3231,43 @@ impl Window {
         Some((node, result.1))
     }
 
+    #[expect(unsafe_code)]
+    pub(crate) fn caret_movement_query(
+        &self,
+        scope: &Node,
+        focus: &Node,
+        offset: u32,
+        movement: layout_api::CaretMovement,
+        preferred_x: Option<Au>,
+    ) -> Option<(DomRoot<Node>, u32, Au, bool)> {
+        use crate::dom::characterdata::CharacterData;
+        use servo_base::text::{AssumeUnder4GB, Utf16CodeUnits, Utf32CodeUnits};
+
+        let character_offset = focus
+            .downcast::<CharacterData>()
+            .map(|text| Utf16CodeUnits(offset).to_utf32_code_units_in(&text.data()))
+            .unwrap_or(Utf32CodeUnits(offset));
+        self.layout_reflow(QueryMsg::TextIndexQuery);
+        let result = self.layout.borrow().query_caret_movement(
+            scope.to_trusted_node_address(),
+            focus.to_trusted_node_address(),
+            character_offset,
+            movement,
+            preferred_x,
+        )?;
+        let node = unsafe { from_untrusted_node_address(result.node.into()) };
+        let offset = node
+            .downcast::<CharacterData>()
+            .map(|text| {
+                result
+                    .offset
+                    .to_utf16_code_units_in(AssumeUnder4GB, &text.data())
+                    .0
+            })
+            .unwrap_or(result.offset.0);
+        Some((node, offset, result.preferred_x, result.prefer_upstream))
+    }
+
     pub(crate) fn elements_from_point_query(
         &self,
         flags: HitTestFlags,

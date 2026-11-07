@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Editable caret navigation follows shaped lines</title>
+<link rel="help" href="https://w3c.github.io/selection-api/">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+<script src="/resources/testdriver-actions.js"></script>
+<style>
+  .editor { font: 20px/30px Ahem; width: 160px; white-space: pre-wrap; }
+</style>
+<div id="log"></div>
+<script>
+const left = '\uE012', up = '\uE013', right = '\uE014', down = '\uE015';
+const home = '\uE011', end = '\uE010', shift = '\uE008', release = '\uE000';
+const readyFonts = document.fonts.load('20px Ahem');
+
+function sendKeys(editor, keys) {
+  editor.focus();
+  const actions = new test_driver.Actions();
+  let extending = false;
+  for (const key of keys) {
+    if (key === shift) { actions.keyDown(shift); extending = true; }
+    else if (key === release) { if (extending) actions.keyUp(shift); extending = false; }
+    else actions.keyDown(key).keyUp(key);
+  }
+  if (extending) actions.keyUp(shift);
+  return actions.send();
+}
+
+function makeEditor(t, html, width = '160px') {
+  const editor = document.createElement('div');
+  editor.className = 'editor';
+  editor.contentEditable = 'true';
+  editor.style.width = width;
+  editor.innerHTML = html;
+  document.body.append(editor);
+  t.add_cleanup(() => editor.remove());
+  editor.focus();
+  return editor;
+}
+function assertFocus(node, offset, message) {
+  assert_equals(getSelection().focusNode, node, message + ' node');
+  assert_equals(getSelection().focusOffset, offset, message + ' offset');
+}
+
+promise_test(async t => {
+  await readyFonts;
+  const editor = makeEditor(t, 'abcd<br>e<br>ijkl');
+  const first = editor.childNodes[0], short = editor.childNodes[2], last = editor.childNodes[4];
+  getSelection().collapse(first, 2);
+  await sendKeys(editor, down);
+  assertFocus(short, 1, 'Down clamps to the shorter line');
+  await sendKeys(editor, down);
+  assertFocus(last, 2, 'A second Down retains the original inline position');
+  await sendKeys(editor, up);
+  assertFocus(short, 1, 'Up clamps to the shorter line');
+  await sendKeys(editor, up);
+  assertFocus(first, 2, 'A second Up restores the original inline position');
+}, 'Up and Down keep the desired inline coordinate across a short line');
+
+promise_test(async t => {
+  await readyFonts;
+  const editor = makeEditor(t, 'abcdefghij', '80px');
+  editor.style.wordBreak = 'break-all';
+  const text = editor.firstChild;
+  getSelection().collapse(text, 2);
+  await sendKeys(editor, down);
+  assertFocus(text, 6, 'Down across a soft wrap');
+  getSelection().collapse(text, 6);
+  await sendKeys(editor, home);
+  assertFocus(text, 4, 'Home reaches the visual line start');
+  getSelection().collapse(text, 6);
+  await sendKeys(editor, end);
+  assertFocus(text, 8, 'End reaches the visual line end');
+  await sendKeys(editor, end);
+  assertFocus(text, 8, 'Repeated End stays at that side of the soft wrap');
+}, 'Vertical movement and Home/End use soft-wrapped lines, not DOM newlines');
+
+promise_test(async t => {
+  await readyFonts;
+  const editor = makeEditor(t, 'abcd<br>efgh');
+  const first = editor.childNodes[0], last = editor.childNodes[2];
+  getSelection().collapse(first, 2);
+  await sendKeys(editor, shift + down + release);
+  assert_equals(getSelection().anchorNode, first);
+  assert_equals(getSelection().anchorOffset, 2);
+  assertFocus(last, 2, 'Shift+Down focus');
+  await sendKeys(editor, shift + up + release);
+  assert_true(getSelection().isCollapsed, 'Shift+Up returns to the anchor');
+  assertFocus(first, 2, 'Shift+Up focus');
+}, 'Shift with vertical arrows extends the selection without moving its anchor');
+</script>

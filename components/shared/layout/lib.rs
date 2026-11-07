@@ -356,6 +356,32 @@ pub trait LayoutFactory: Send + Sync {
     fn create(&self, config: LayoutConfig) -> Box<dyn Layout>;
 }
 
+/// Visual movement of an editable caret in the shaped fragment tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaretMovement {
+    Up,
+    Down,
+    LineStart,
+    LineEnd,
+}
+
+/// Neighbors of an element-boundary caret. Line breaks have no box of their own.
+pub struct ElementCaret {
+    pub offset: u32,
+    pub before: Option<OpaqueNode>,
+    pub after: Option<OpaqueNode>,
+    pub breaks_before: u32,
+    pub breaks_after: u32,
+}
+
+/// The DOM position reached by visual navigation, with the retained inline coordinate.
+pub struct CaretPosition {
+    pub node: OpaqueNode,
+    pub offset: Utf32CodeUnits,
+    pub preferred_x: Au,
+    pub prefer_upstream: bool,
+}
+
 pub trait Layout {
     /// Get a reference to this Layout's Stylo `Device` used to handle media queries and
     /// resolve font metrics.
@@ -494,6 +520,14 @@ pub trait Layout {
         node: TrustedNodeAddress,
         point_in_viewport: Point2D<Au, CSSPixel>,
     ) -> Option<(OpaqueNode, Utf32CodeUnits)>;
+    fn query_caret_movement(
+        &self,
+        scope: TrustedNodeAddress,
+        focus: TrustedNodeAddress,
+        offset: Utf32CodeUnits,
+        movement: CaretMovement,
+        preferred_x: Option<Au>,
+    ) -> Option<CaretPosition>;
     fn hit_test(&self, flags: HitTestFlags, point: LayoutPoint) -> HitTestResult;
     fn query_effective_overflow(&self, node: TrustedNodeAddress) -> Option<AxesOverflow>;
     fn stylist_mut(&mut self) -> &mut Stylist;

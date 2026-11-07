@@ -179,6 +179,12 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     /// (start == end)
     fn text_node_paints_caret(&self) -> bool;
 
+    /// A focused editing caret at this element's child boundary, if one is visible.
+    fn element_caret(&self) -> Option<crate::ElementCaret>;
+
+    /// Which of the two visual positions at a soft wrap should hold the insertion point.
+    fn caret_prefers_upstream(&self) -> bool;
+
     /// If this is an image element, returns its URL. If this is not an image element, fails.
     fn image_url(&self) -> Option<ServoUrl>;
 

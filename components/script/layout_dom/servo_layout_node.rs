@@ -71,6 +71,16 @@ impl<'dom> ServoLayoutNode<'dom> {
         unsafe { LayoutDom::from_trusted_node_address(*address) }.into()
     }
 
+    /// Recover a layout node from the JS identity stored in a fragment tag.
+    ///
+    /// # Safety
+    /// `opaque` must name a live DOM node from this layout's frozen document. It is a
+    /// reflector identity, not a native Node pointer, and must pass through DOM conversion.
+    pub unsafe fn from_opaque(opaque: style::dom::OpaqueNode) -> Self {
+        let node = unsafe { Node::from_untrusted_node_address(opaque.into()) };
+        unsafe { Self::new(&node.to_trusted_node_address()) }
+    }
+
     /// Get the first child of this node.
     ///
     /// # Safety
@@ -254,6 +264,14 @@ impl<'dom> LayoutNode<'dom> for ServoLayoutNode<'dom> {
 
     fn text_node_paints_caret(&self) -> bool {
         self.node.text_node_paints_caret()
+    }
+
+    fn element_caret(&self) -> Option<layout_api::ElementCaret> {
+        self.node.element_caret()
+    }
+
+    fn caret_prefers_upstream(&self) -> bool {
+        self.node.caret_prefers_upstream()
     }
 
     fn replaced_is_selected(&self) -> bool {

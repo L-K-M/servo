@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Nested editing hosts and atomic units</title>
+<link rel="help" href="https://w3c.github.io/editing/docs/execCommand/#editing-host-of">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="/resources/testdriver.js"></script>
+<script src="/resources/testdriver-actions.js"></script>
+<script src="/resources/testdriver-vendor.js"></script>
+<div id="outer" contenteditable></div>
+<div id="atomic" contenteditable></div>
+<script>
+"use strict";
+
+const selection = getSelection();
+
+const HOME = "\uE011";
+const END = "\uE010";
+const ARROW_LEFT = "\uE012";
+const ARROW_RIGHT = "\uE014";
+
+function press(key) {
+  return new test_driver.Actions().keyDown(key).keyUp(key).send();
+}
+
+function assertCaret(node, offset, message) {
+  assert_equals(selection.anchorNode, node, `${message}: anchor node`);
+  assert_equals(selection.anchorOffset, offset, `${message}: anchor offset`);
+  assert_true(selection.isCollapsed, `${message}: collapsed`);
+}
+
+function setupNested() {
+  const outer = document.getElementById("outer");
+  outer.innerHTML =
+    "outer text<div contenteditable='false'><div id='inner' contenteditable>inner text</div></div>";
+  const inner = document.getElementById("inner");
+  return { outer, inner, innerText: inner.firstChild };
+}
+
+promise_test(async () => {
+  const { inner, innerText } = setupNested();
+  inner.focus();
+  selection.collapse(innerText, 5);
+
+  await press(ARROW_LEFT);
+  assertCaret(innerText, 4, "ArrowLeft in the nested editing host");
+
+  await press(ARROW_RIGHT);
+  assertCaret(innerText, 5, "ArrowRight in the nested editing host");
+
+  await press(HOME);
+  assertCaret(innerText, 0, "Home in the nested editing host");
+
+  await press(END);
+  assertCaret(innerText, 10, "End in the nested editing host");
+}, "Movement works in an editing host nested in non-editable content");
+
+promise_test(async () => {
+  const { inner, innerText } = setupNested();
+  inner.focus();
+  selection.collapse(innerText, 5);
+
+  await press("x");
+  assert_equals(innerText.data, "innerx text", "typing in the nested editing host");
+  assertCaret(innerText, 6, "caret after typing in the nested editing host");
+}, "Typing works in an editing host nested in non-editable content");
+
+promise_test(async () => {
+  const outer = document.getElementById("outer");
+  outer.innerHTML =
+    "outer text<div contenteditable='false'><div>hidden</div></div>";
+  const outerText = outer.firstChild;
+  outer.focus();
+  selection.collapse(outerText, 10);
+
+  await press(ARROW_RIGHT);
+  assertCaret(outer, 2, "ArrowRight over the non-editable block");
+
+  await press(ARROW_LEFT);
+  assertCaret(outerText, 10, "ArrowLeft back to the outer text");
+}, "A non-editable block is one step from the outer host");
+
+test(() => {
+  const editor = document.getElementById("atomic");
+  editor.innerHTML = "foo<meter value='0.5'></meter>bar";
+  const first = editor.firstChild;
+  const last = editor.lastChild;
+  editor.focus();
+  selection.collapse(first, 3);
+
+  selection.modify("move", "forward", "character");
+  assert_equals(selection.focusNode, last, "meter: forward focus node");
+  assert_equals(selection.focusOffset, 0, "meter: forward focus offset");
+
+  selection.collapse(last, 0);
+  selection.modify("move", "backward", "character");
+  assert_equals(selection.focusNode, first, "meter: backward focus node");
+  assert_equals(selection.focusOffset, 3, "meter: backward focus offset");
+}, "A meter is one character");
+
+test(() => {
+  const editor = document.getElementById("atomic");
+  editor.innerHTML = "foo<progress value='0.5'></progress>bar";
+  const first = editor.firstChild;
+  const last = editor.lastChild;
+  editor.focus();
+  selection.collapse(first, 3);
+
+  selection.modify("move", "forward", "character");
+  assert_equals(selection.focusNode, last, "progress: forward focus node");
+  assert_equals(selection.focusOffset, 0, "progress: forward focus offset");
+
+  selection.collapse(last, 0);
+  selection.modify("move", "backward", "character");
+  assert_equals(selection.focusNode, first, "progress: backward focus node");
+  assert_equals(selection.focusOffset, 3, "progress: backward focus offset");
+}, "A progress bar is one character");
+</script>

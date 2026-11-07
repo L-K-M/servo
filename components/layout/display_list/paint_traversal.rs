@@ -43,6 +43,7 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         let old_outlines_length = self.outlines.len();
         let state = state.push_stacking_context(stacking_context);
         let stacking_context_state = self.handler.visit_stacking_context(stacking_context);
+        self.handler.begin_caret_group();
 
         // > Step 1: If root is an element, paint a stacking context given root’s principal
         // > box and canvas, then return.
@@ -83,6 +84,8 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         if let Some(root_fragment) = &root_fragment {
             self.traverse_stacking_context_inner(&state, root_fragment);
         }
+
+        self.handler.finish_caret_group();
 
         // > Step 9: For each of root’s positioned descendants with z-index: auto or
         // > z-index: 0, in tree order:
@@ -140,8 +143,10 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         if old_float_length < self.floats.len() {
             for (state, float_fragment) in &self.floats.split_off(old_float_length) {
                 let float_fragment = &float_fragment.with_style();
+                self.handler.begin_caret_group();
                 self.handle_box(state, float_fragment);
                 self.traverse_stacking_context_inner(state, float_fragment);
+                self.handler.finish_caret_group();
             }
         }
 
@@ -190,6 +195,7 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
         is_block_level: bool,
     ) {
         let old_outlines_length = self.outlines.len();
+        self.handler.begin_caret_group();
 
         // > Step 4: If root is a block-level box, paint a block’s decorations given root
         // > and canvas.
@@ -199,6 +205,7 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
 
         // This is steps 6 through 8.
         self.traverse_stacking_context_inner(state, root);
+        self.handler.finish_caret_group();
 
         // > Step 11: If the UA uses out-of-band outlines, draw all of root’s outlines
         // > (those that it skipped drawing due to not using in-band outlines during the
@@ -538,6 +545,10 @@ pub(crate) trait PaintTraversalHandler {
     }
 
     fn visit_box_for_root_background(&mut self, _state: &TraversalState) {}
+    /// Carets paint above a container's in-flow glyphs but below later positioned contexts.
+    fn begin_caret_group(&mut self) {}
+    fn finish_caret_group(&mut self) {}
+
     fn visit_box_for_outline(&mut self, _state: &TraversalState, _fragment: &Arc<BoxFragment>) {}
     fn visit_box_for_collapsed_table_borders(
         &mut self,
@@ -572,10 +583,11 @@ impl TraversalState {
         //
         // Also do not propagate text decorations to floats or replaced content.
         let mut propagated_text_decorations = self.text_decorations.clone();
-        if box_fragment.is_atomic_inline_level() ||
-            box_fragment.base.flags.contains(
-                FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED,
-            )
+        if box_fragment.is_atomic_inline_level()
+            || box_fragment
+                .base
+                .flags
+                .contains(FragmentFlags::IS_OUTSIDE_LIST_ITEM_MARKER | FragmentFlags::IS_REPLACED)
         {
             propagated_text_decorations = Default::default();
         }

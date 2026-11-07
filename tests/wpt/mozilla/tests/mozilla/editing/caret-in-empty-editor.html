@@ -1,0 +1,17 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>A focused empty editor paints a caret without changing its DOM</title>
+<link rel="match" href="caret-empty-ref.html">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<style>body { margin: 20px; font: 20px/20px Ahem; } #editor { width: 100px; height: 40px; caret-color: red; outline: none; }</style>
+<div id="editor" contenteditable></div>
+<script>
+(async () => {
+  await document.fonts.load('20px Ahem');
+  const editor = document.getElementById('editor');
+  editor.focus();
+  getSelection().collapse(editor, 0);
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+})();
+</script>
