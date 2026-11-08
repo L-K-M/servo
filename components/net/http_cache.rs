@@ -956,17 +956,24 @@ pub fn refresh(
     // Refresh the last cached resource that can be used to answer the request.
     // TODO: This should follow the rules specified in
     // <https://httpwg.org/specs/rfc9111.html#freshening.responses> more closely.
-    let cached_resource_index = cached_resources
+    let mut cached_resource_index = cached_resources
         .iter()
         .rposition(|resource| resource.can_be_used_to_answer(request))?;
 
     let mut constructed_response = if let Some(range_spec) = request.headers.typed_get::<Range>() {
-        let cached_resources: Vec<_> = cached_resources
+        // Answer from the newest resource that can serve the range, and refresh that same
+        // resource below, so that the headers and the body come from one stored response.
+        cached_resources
             .iter()
-            .filter(|resource| resource.can_be_used_to_answer(request))
-            .collect();
-        handle_range_request(request, &cached_resources, &range_spec, done_chan)
-            .map(|cached_response| cached_response.response)
+            .enumerate()
+            .rev()
+            .filter(|(_, resource)| resource.can_be_used_to_answer(request))
+            .find_map(|(index, resource)| {
+                let cached_response =
+                    handle_range_request(request, &[resource], &range_spec, done_chan)?;
+                cached_resource_index = index;
+                Some(cached_response.response)
+            })
     } else {
         // done_chan will have been set to Some(..) by http_network_fetch.
         // If the body is not receiving data, set the done_chan back to None.
