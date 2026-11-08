@@ -349,3 +349,62 @@ async fn http_cache_do_not_evict_unfinished_requests() {
     println!("cache {:?}", cache);
     assert!(result.is_some());
 }
+
+#[tokio::test]
+async fn test_refreshing_range_request_uses_one_stored_response() {
+    let url = ServoUrl::parse("https://servo.org").unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(RANGE, HeaderValue::from_static("bytes=0-4"));
+    let request = RequestBuilder::new(
+        None,
+        UrlWithBlobClaim::new(url.clone(), None),
+        Referrer::NoReferrer,
+    )
+    .pipeline_id(Some(TEST_PIPELINE_ID))
+    .origin(url.origin())
+    .headers(headers)
+    .build();
+
+    // Store two partial responses for the same resource: bytes 0-4, then bytes 5-9.
+    let cache = HttpCache::new(HttpCacheAssignment::Public);
+    for (content_range, body) in [
+        ("bytes 0-4/10", vec![0, 1, 2, 3, 4]),
+        ("bytes 5-9/10", vec![5, 6, 7, 8, 9]),
+    ] {
+        let timing = ResourceFetchTiming::new(ResourceTimingType::Navigation);
+        let mut response = Response::new(url.clone(), timing);
+        response.status = StatusCode::PARTIAL_CONTENT.into();
+        response
+            .headers
+            .insert(CONTENT_RANGE, HeaderValue::from_static(content_range));
+        response
+            .headers
+            .insert(EXPIRES, HeaderValue::from_static("0"));
+        *response.body.lock() = ResponseBody::Done(body);
+        let guard = cache.get_or_guard(CacheKey::new(&request)).await;
+        guard.insert(&request, &response);
+    }
+
+    // Revalidating bytes 0-4 must answer with the first stored response's body and headers.
+    let timing = ResourceFetchTiming::new(ResourceTimingType::Navigation);
+    let mut not_modified = Response::new(url.clone(), timing);
+    not_modified.status = StatusCode::NOT_MODIFIED.into();
+    let mut resources = cache.get_or_guard(CacheKey::new(&request)).await;
+    let mut done_chan = None;
+    let refreshed_response = refresh(
+        &request,
+        not_modified,
+        &mut done_chan,
+        resources.try_as_mut().unwrap(),
+    )
+    .expect("the cache should answer the range request");
+
+    match &*refreshed_response.body.lock() {
+        ResponseBody::Done(body) => assert_eq!(body, &[0, 1, 2, 3, 4]),
+        _ => panic!("the refreshed response should have a complete body"),
+    }
+    assert_eq!(
+        refreshed_response.headers.get(CONTENT_RANGE).unwrap(),
+        "bytes 0-4/10"
+    );
+}
