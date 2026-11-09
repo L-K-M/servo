@@ -1574,7 +1574,10 @@ impl ScriptThread {
 
         let mut wake_up_at: Option<Instant> = None;
         for (_, document) in self.documents.borrow().iter() {
-            if !document.is_fully_active() {
+            // A throttled window, such as one in a background tab, gets no idle periods,
+            // so that it does not keep waking the event loop; idle callbacks with a
+            // timeout still run from their timers.
+            if !document.is_fully_active() || document.window().throttled() {
                 continue;
             }
             let window = document.window();

@@ -109,12 +109,13 @@ promise_test(async () => {
   assert_less_than(runs, 50, "idle periods in 200 ms");
 }, "A callback that requests itself runs once per idle period");
 
-promise_test(async () => {
+promise_test(async t => {
   let thrown = false;
+  const previousOnError = window.onerror;
+  t.add_cleanup(() => { window.onerror = previousOnError; });
   window.onerror = () => { thrown = true; };
   requestIdleCallback(() => { throw new Error("idle"); });
   await new Promise(resolve => requestIdleCallback(resolve));
-  window.onerror = null;
   assert_true(thrown, "the exception is reported");
 }, "An exception in an idle callback is reported and later callbacks still run");
 
