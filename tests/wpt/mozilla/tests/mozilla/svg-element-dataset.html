@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SVGElement.dataset reflects data-* attributes like HTMLElement.dataset</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-dataset">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#domstringmap">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<svg width="20" height="20"><rect id="bar" data-bar-id="alpha" data-reveal-axis="x" width="10" height="10"/><g id="plain"/></svg>
+<script>
+test(() => {
+  const bar = document.getElementById("bar");
+  assert_true(bar.dataset instanceof DOMStringMap, "dataset is a DOMStringMap");
+  assert_equals(bar.dataset, bar.dataset, "[SameObject]");
+  assert_true(document.getElementById("plain").dataset instanceof DOMStringMap);
+}, "dataset of an SVG element is the same DOMStringMap object each time");
+
+test(() => {
+  const bar = document.getElementById("bar");
+  assert_equals(bar.dataset.barId, "alpha", "a hyphenated name maps to camelCase");
+  assert_equals(bar.dataset.revealAxis, "x");
+  assert_equals(bar.dataset.missing, undefined, "a name without an attribute is undefined");
+  assert_equals(document.getElementById("plain").dataset.barId, undefined);
+}, "dataset of an SVG element reads its data-* attributes by camelCase name");
+
+test(() => {
+  const bar = document.getElementById("bar");
+  bar.dataset.visualizationEntrance = "entering";
+  assert_equals(bar.getAttribute("data-visualization-entrance"), "entering");
+  assert_equals(bar.dataset.visualizationEntrance, "entering");
+  bar.setAttribute("data-reveal-axis", "y");
+  assert_equals(bar.dataset.revealAxis, "y", "attribute changes are seen");
+  delete bar.dataset.visualizationEntrance;
+  assert_false(bar.hasAttribute("data-visualization-entrance"));
+}, "dataset of an SVG element writes and deletes data-* attributes");
+
+test(() => {
+  const bar = document.getElementById("bar");
+  assert_throws_dom("SyntaxError", () => {
+    bar.dataset["a-b"] = "x";
+  }, "a hyphen followed by a lowercase letter throws SyntaxError");
+  assert_false(bar.hasAttribute("data-a-b"));
+}, "dataset of an SVG element throws SyntaxError for names it cannot map");
+</script>
