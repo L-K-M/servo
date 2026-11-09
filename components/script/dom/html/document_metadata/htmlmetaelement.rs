@@ -172,7 +172,7 @@ impl HTMLMetaElement {
         let doc = self.owner_document();
         // Step 1. Let candidate elements be the list of all meta elements
         // that meet the following criteria, in tree order:
-        let new_theme = doc
+        let metadata = doc
             .upcast::<Node>()
             // Do not traverse shadow trees for optimization, which also implies:
             // > the element is in a document tree;
@@ -191,23 +191,18 @@ impl HTMLMetaElement {
                     })
             })
             // Step 2. For each element in candidate elements:
-            .find_map(|content| {
-                // Step 2.1. Let parsed be the result of parsing a list of
-                // component values given the value of element's content attribute.
-                // Step 2.2. If parsed is a valid CSS 'color-scheme' property value,
-                // then return parsed.
-                // TODO: Allow for more different themes than the ones that embedders can set
-                if content.eq_ignore_ascii_case("dark") {
-                    Some(Theme::Dark)
-                } else if content.eq_ignore_ascii_case("light") {
-                    Some(Theme::Light)
-                } else {
-                    // Step 3. Return null.
-                    None
-                }
-            });
+            // Step 2.1. Let parsed be the result of parsing a list of
+            // component values given the value of element's content attribute.
+            // Step 2.2. If parsed is a valid CSS 'color-scheme' property value,
+            // then return parsed.
+            // Step 3. Return null.
+            .find_map(|content| ColorSchemeMetadata::parse(&content));
 
-        doc.set_theme(new_theme, cx.no_gc());
+        // TODO: Allow for more different themes than the ones that embedders can set
+        doc.set_theme(metadata.and_then(|metadata| metadata.theme), cx.no_gc());
+        doc.set_color_scheme_metadata_opts_out_of_adaptive_dark_mode(
+            metadata.is_some_and(|metadata| metadata.opts_out_of_adaptive_dark_mode),
+        );
     }
 
     /// <https://html.spec.whatwg.org/multipage/#attr-meta-http-equiv-content-security-policy>
@@ -416,5 +411,71 @@ impl<T: AsRef<str>> IsColorSchemeValue for Option<T> {
     fn is_color_scheme(&self) -> bool {
         self.as_ref()
             .is_some_and(|name| name.as_ref().eq_ignore_ascii_case("color-scheme"))
+    }
+}
+
+/// What a valid `<meta name="color-scheme">` content tells the engine.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ColorSchemeMetadata {
+    /// The theme for a page that supports exactly one color scheme.
+    theme: Option<Theme>,
+    /// Whether the page declares dark support or `only`, which keeps adaptive dark mode
+    /// from painting it.
+    opts_out_of_adaptive_dark_mode: bool,
+}
+
+impl ColorSchemeMetadata {
+    /// Parses `content` as a CSS `color-scheme` value (`normal`, or scheme names with
+    /// `only` first or last), returning `None` if it is not one.
+    fn parse(content: &str) -> Option<Self> {
+        let keywords: Vec<&str> = content.split_ascii_whitespace().collect();
+        let is_ident =
+            |keyword: &&str| {
+                keyword.chars().next().is_some_and(|first| {
+                    first.is_ascii_alphabetic() || first == '_' || first == '-'
+                }) && keyword
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "_-".contains(character))
+            };
+        if keywords.is_empty() || !keywords.iter().all(is_ident) {
+            return None;
+        }
+        if let [keyword] = keywords[..] &&
+            keyword.eq_ignore_ascii_case("normal")
+        {
+            return Some(Self {
+                theme: None,
+                opts_out_of_adaptive_dark_mode: false,
+            });
+        }
+
+        let is = |keyword: &str, name: &str| keyword.eq_ignore_ascii_case(name);
+        let only_count = keywords
+            .iter()
+            .filter(|keyword| is(keyword, "only"))
+            .count();
+        let only_in_middle = keywords.len() > 2 &&
+            keywords[1..keywords.len() - 1]
+                .iter()
+                .any(|keyword| is(keyword, "only"));
+        if only_count > 1 ||
+            only_in_middle ||
+            only_count == keywords.len() ||
+            keywords.iter().any(|keyword| is(keyword, "normal"))
+        {
+            return None;
+        }
+
+        let theme = match keywords[..] {
+            [keyword] if is(keyword, "dark") => Some(Theme::Dark),
+            [keyword] if is(keyword, "light") => Some(Theme::Light),
+            _ => None,
+        };
+        Some(Self {
+            theme,
+            opts_out_of_adaptive_dark_mode: keywords
+                .iter()
+                .any(|keyword| is(keyword, "dark") || is(keyword, "only")),
+        })
     }
 }

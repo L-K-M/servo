@@ -552,6 +552,7 @@ impl ReplacedContents {
                         natural_width: self.natural_size.width,
                         natural_height: self.natural_size.height,
                         selected: self.selected.clone(),
+                        is_inline_svg: false,
                     }))
                 })
                 .into_iter()
@@ -568,6 +569,7 @@ impl ReplacedContents {
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
+                    is_inline_svg: false,
                 }))]
             },
             ReplacedContentKind::IFrame(iframe) => {
@@ -615,6 +617,7 @@ impl ReplacedContents {
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
+                    is_inline_svg: false,
                 }))]
             },
             ReplacedContentKind::SVGElement {
@@ -672,6 +675,7 @@ impl ReplacedContents {
                             natural_width: self.natural_size.width,
                             natural_height: self.natural_size.height,
                             selected: self.selected.clone(),
+                            is_inline_svg: true,
                         }))
                     })
                     .into_iter()

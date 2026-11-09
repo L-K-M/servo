@@ -341,6 +341,8 @@ pub struct LayoutConfig {
     pub viewport_details: ViewportDetails,
     pub user_stylesheets: Rc<Vec<DocumentStyleSheet>>,
     pub theme: Theme,
+    /// Whether the document is painted in adaptive dark mode.
+    pub adaptive_dark_mode: bool,
     pub embedder_chan: ScriptToEmbedderChan,
 }
 
@@ -391,6 +393,11 @@ pub trait Layout {
     /// new layout when this happens, though it can happen later. Returns `true` if the
     /// [`Theme`] actually changed or `false` otherwise.
     fn set_theme(&mut self, theme: Theme) -> bool;
+
+    /// Set whether this [`Layout`] paints a light document with dark colors (adaptive dark
+    /// mode). This only changes the display list, which is rebuilt at the next rendering
+    /// update. Returns `true` if the setting actually changed or `false` otherwise.
+    fn set_adaptive_dark_mode(&mut self, enabled: bool) -> bool;
 
     /// Set the [`ViewportDetails`] on this [`Layout`]'s [`Device`]. The caller should also
     /// trigger a new layout when this happens, though it can happen later. Returns `true`

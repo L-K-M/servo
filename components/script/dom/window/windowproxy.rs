@@ -394,6 +394,8 @@ impl WindowProxy {
                 theme: Cell::new(window.webview_theme()),
                 // WebViews start focused by default for now.
                 has_system_focus: Cell::new(true),
+                // Like the theme, inherited until the embedder changes it.
+                adaptive_dark_mode: Cell::new(window.webview_adaptive_dark_mode()),
             },
             parent_info: None,
             new_pipeline_id: response.new_pipeline_id,

@@ -1394,6 +1394,9 @@ where
             EmbedderToConstellationMessage::ThemeChange(webview_id, theme) => {
                 self.handle_theme_change(webview_id, theme);
             },
+            EmbedderToConstellationMessage::AdaptiveDarkModeChange(webview_id, enabled) => {
+                self.handle_adaptive_dark_mode_change(webview_id, enabled);
+            },
             EmbedderToConstellationMessage::TickAnimation(webview_ids) => {
                 self.handle_tick_animation(webview_ids)
             },
@@ -3836,6 +3839,11 @@ where
             .get(&opener_webview_id)
             .map_or(Theme::Light, |webview| webview.theme());
         new_webview.set_theme(opener_theme);
+        let opener_adaptive_dark_mode = self
+            .webviews
+            .get(&opener_webview_id)
+            .is_some_and(|webview| webview.adaptive_dark_mode());
+        new_webview.set_adaptive_dark_mode(opener_adaptive_dark_mode);
 
         new_webview.add_pending_change(SessionHistoryChange {
             webview_id: new_webview_id,
@@ -6268,6 +6276,30 @@ where
             return;
         };
         if !webview.set_theme(theme) {
+            return;
+        }
+        let state = webview.state();
+        for event_loop in self.event_loops() {
+            if let Err(error) =
+                event_loop.send(ScriptThreadMessage::UpdateWebViewState(state.clone()))
+            {
+                warn!(
+                    "Sending to closed event loop ({:?}): {error}",
+                    event_loop.id()
+                );
+            }
+        }
+    }
+
+    /// Handle the embedder turning adaptive dark mode on or off for a `WebView`, and forward
+    /// that to all `ScriptThread`s, like a theme change.
+    #[servo_tracing::instrument(skip_all)]
+    fn handle_adaptive_dark_mode_change(&mut self, webview_id: WebViewId, enabled: bool) {
+        let Some(webview) = self.webviews.get_mut(&webview_id) else {
+            warn!("Received adaptive dark mode change for unknown WebViewId: {webview_id:?}");
+            return;
+        };
+        if !webview.set_adaptive_dark_mode(enabled) {
             return;
         }
         let state = webview.state();

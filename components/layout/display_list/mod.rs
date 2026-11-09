@@ -56,6 +56,9 @@ use webrender_api::{
 use wr::units::LayoutVector2D;
 
 use crate::context::{ImageResolver, ResolvedImage};
+use crate::display_list::adaptive_dark::{
+    AdaptiveDarkPainter, Backdrop, MIN_BORDER_CONTRAST, MIN_OUTLINE_CONTRAST, MIN_TEXT_CONTRAST,
+};
 use crate::display_list::background::BackgroundPainter;
 use crate::display_list::conversions::FilterToWebRender;
 pub(crate) use crate::display_list::conversions::ToWebRender;
@@ -71,6 +74,7 @@ use crate::geom::{
 use crate::replaced::NaturalSizes;
 use crate::style_ext::{BorderStyleColor, ComputedValuesExt};
 
+mod adaptive_dark;
 mod background;
 mod clip;
 mod conversions;
@@ -149,6 +153,13 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// and is the focused frame in the frame tree.
     frame_focused: bool,
     pending_carets: Vec<Option<PendingCaret>>,
+
+    /// Paints this document's colors darker in adaptive dark mode, or `None` when the
+    /// document is painted as authored. See [`adaptive_dark`].
+    adaptive_dark: Option<AdaptiveDarkPainter>,
+
+    /// Whether this document is a top-level one, whose canvas has nothing painted beneath it.
+    is_top_level: bool,
 }
 
 struct PendingCaret {
@@ -208,6 +219,8 @@ impl DisplayListBuilder<'_> {
         paint_timing_handler: &mut PaintTimingHandler,
         reflow_statistics: &mut ReflowStatistics,
         frame_focused: bool,
+        adaptive_dark_mode: bool,
+        is_top_level: bool,
     ) -> BuiltDisplayList {
         // Build the rest of the display list which inclues all of the WebRender primitives.
         let paint_info = &mut stacking_context_tree.paint_info;
@@ -254,6 +267,14 @@ impl DisplayListBuilder<'_> {
             shell_background_color,
             frame_focused,
             pending_carets: Vec::new(),
+            // A root that declares dark support or `only` keeps the whole document as authored.
+            adaptive_dark: fragment_tree
+                .root_box_fragment()
+                .filter(|root| {
+                    adaptive_dark_mode && !adaptive_dark::opts_out(root.with_style().style())
+                })
+                .map(|_| AdaptiveDarkPainter::default()),
+            is_top_level,
         };
 
         // Clear any caret color from previous display list constructions.
@@ -286,6 +307,89 @@ impl DisplayListBuilder<'_> {
 
     fn wr(&mut self) -> &mut wr::DisplayListBuilder {
         self.webrender_display_list_builder
+    }
+
+    /// The color to paint for a background-like `color` of an element with `style`:
+    /// background colors, gradient stops, shadows and highlights.
+    fn background_color(&self, style: &ComputedValues, color: AbsoluteColor) -> wr::ColorF {
+        match &self.adaptive_dark {
+            Some(painter) => painter.background(style, color),
+            None => rgba(color),
+        }
+    }
+
+    /// The color to paint for the `background-color` of an element with `style`.
+    fn background_layer_color(&self, style: &ComputedValues, color: AbsoluteColor) -> wr::ColorF {
+        match &self.adaptive_dark {
+            Some(painter) => painter.background_layer(style, color),
+            None => rgba(color),
+        }
+    }
+
+    /// The gradient `stops` to paint for a gradient of an element with `style`.
+    fn background_gradient_stops(
+        &self,
+        style: &ComputedValues,
+        mut stops: Vec<wr::GradientStop>,
+    ) -> Vec<wr::GradientStop> {
+        if let Some(painter) = &self.adaptive_dark {
+            for stop in &mut stops {
+                stop.color = painter.background_rgba(style, stop.color);
+            }
+        }
+        stops
+    }
+
+    /// The color to paint for a foreground `color` of an element with `style`, such as
+    /// text or a border, given what `state` paints behind it.
+    fn foreground_color(
+        &self,
+        state: &TraversalState,
+        style: &ComputedValues,
+        color: AbsoluteColor,
+        min_contrast: f32,
+    ) -> wr::ColorF {
+        match (&self.adaptive_dark, &state.backdrop) {
+            (Some(painter), Some(backdrop)) => {
+                painter.foreground(style, color, backdrop, min_contrast)
+            },
+            _ => rgba(color),
+        }
+    }
+
+    /// The area the canvas background covers.
+    fn canvas_painting_area(&self) -> LayoutRect {
+        // The painting area is theoretically the infinite 2D plane,
+        // but we need a rectangle with finite coordinates.
+        //
+        // If the document is smaller than the viewport (and doesn’t scroll),
+        // we still want to paint the rest of the viewport, the layout viewport, which
+        // is larger than the initial containing block when zoomed out.
+        // If it’s larger, we also want to paint areas reachable after scrolling.
+        self.fragment_tree
+            .initial_containing_block
+            .union(&self.fragment_tree.scrollable_overflow())
+            .to_webrender()
+            .union(&LayoutRect::from_size(
+                self.paint_info.viewport_details.layout_size(),
+            ))
+    }
+
+    /// The style whose background paints the canvas: the root's, or the `<body>`'s when the
+    /// root's is transparent. See <https://drafts.csswg.org/css-backgrounds/#body-background>.
+    fn canvas_background_style(&self) -> Option<ServoArc<ComputedValues>> {
+        let root = self.fragment_tree.root_box_fragment()?;
+        let root = root.with_style();
+        let root_style = root.style();
+        if !root_style.background_is_transparent() {
+            return Some(root_style.clone());
+        }
+        Some(
+            self.fragment_tree
+                .body_fragment()
+                .map(|body| body.style().clone())
+                .unwrap_or_else(|| root_style.clone()),
+        )
     }
 
     fn pipeline_id(&self) -> wr::PipelineId {
@@ -870,6 +974,26 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         let common = self.common_properties(state, clip, &style);
 
         if let Some(image_key) = fragment.image_key {
+            let inverts_lightness = fragment.is_inline_svg &&
+                match (&self.adaptive_dark, &state.backdrop) {
+                    (Some(painter), Some(backdrop)) => painter.inverts_inline_svg(&style, backdrop),
+                    _ => false,
+                };
+            if inverts_lightness {
+                let spatial_id = self.spatial_id(state.spatial_id);
+                self.wr().push_stacking_context(
+                    spatial_id,
+                    PrimitiveFlags::empty(),
+                    None,
+                    TransformStyle::Flat,
+                    wr::MixBlendMode::Normal,
+                    &[adaptive_dark::inverted_lightness_filter()],
+                    &[],
+                    RasterSpace::Screen,
+                    StackingContextFlags::empty(),
+                    None,
+                );
+            }
             self.wr().push_image(
                 &common,
                 rect,
@@ -878,6 +1002,9 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
                 image_key,
                 wr::ColorF::WHITE,
             );
+            if inverts_lightness {
+                self.wr().pop_stacking_context();
+            }
 
             self.paint_timing_handler
                 .check_if_paintable(rect, style.clone_opacity());
@@ -921,11 +1048,9 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
 
             if !background_color.is_transparent() {
                 background_color.alpha *= 0.5;
-                self.wr().push_rect(
-                    &common,
-                    containing_block.to_webrender(),
-                    rgba(background_color),
-                );
+                let color = self.background_color(&style, background_color);
+                self.wr()
+                    .push_rect(&common, containing_block.to_webrender(), color);
             }
         }
     }
@@ -981,30 +1106,24 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         // This can happen if the root fragment does not have a `<body>` child (either because it is
         // `display: none` or `display: contents`) or if the `<body>`'s background is transparent.
         if source_style.background_is_transparent() {
+            // The shell's white would show through, so adaptive dark mode paints the canvas
+            // itself. A frame's canvas stays transparent over its parent's page.
+            if self.adaptive_dark.is_some() && self.is_top_level {
+                let painting_area = self.canvas_painting_area();
+                let common = self.common_properties(state, painting_area, &source_style);
+                self.wr()
+                    .push_rect(&common, painting_area, Backdrop::blank_canvas_color());
+            }
             return;
         }
 
-        // The painting area is theoretically the infinite 2D plane,
-        // but we need a rectangle with finite coordinates.
-        //
-        // If the document is smaller than the viewport (and doesn’t scroll),
-        // we still want to paint the rest of the viewport, the layout viewport, which
-        // is larger than the initial containing block when zoomed out.
-        // If it’s larger, we also want to paint areas reachable after scrolling.
-        let painting_area = self
-            .fragment_tree
-            .initial_containing_block
-            .union(&self.fragment_tree.scrollable_overflow())
-            .to_webrender()
-            .union(&LayoutRect::from_size(
-                self.paint_info.viewport_details.layout_size(),
-            ));
+        let painting_area = self.canvas_painting_area();
 
         let background_color =
             source_style.resolve_color(&source_style.get_background().background_color);
         if background_color.alpha > 0.0 {
             let common = self.common_properties(state, painting_area, &source_style);
-            let color = rgba(background_color);
+            let color = self.background_layer_color(&source_style, background_color);
             self.wr().push_rect(&common, painting_area, color);
 
             // From <https://www.w3.org/TR/paint-timing/#sec-terminology>:
@@ -1025,6 +1144,12 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             positioning_area_override: None,
         };
         fragment_builder.build_background_image(self, state, &painter);
+    }
+
+    fn canvas_backdrop(&self) -> Option<Backdrop> {
+        self.adaptive_dark.as_ref()?;
+        let canvas_style = self.canvas_background_style()?;
+        Some(Backdrop::for_canvas(&canvas_style))
     }
 
     fn visit_box_for_outline(&mut self, state: &TraversalState, fragment: &Arc<BoxFragment>) {
@@ -1158,6 +1283,8 @@ impl Fragment {
         // back).
         let shadows = &parent_style.get_inherited_text().text_shadow;
         for shadow in shadows.0.iter().rev() {
+            let shadow_color =
+                builder.background_color(&parent_style, shadow.color.resolve_to_absolute(&color));
             builder.wr().push_shadow(
                 &wr::SpaceAndClipInfo {
                     spatial_id: common.spatial_id,
@@ -1165,7 +1292,7 @@ impl Fragment {
                 },
                 wr::Shadow {
                     offset: LayoutVector2D::new(shadow.horizontal.px(), shadow.vertical.px()),
-                    color: rgba(shadow.color.resolve_to_absolute(&color)),
+                    color: shadow_color,
                     blur_radius: shadow.blur.px(),
                 },
                 true, /* should_inflate */
@@ -1212,12 +1339,13 @@ impl Fragment {
             }
         }
 
+        let text_color = builder.foreground_color(state, &parent_style, color, MIN_TEXT_CONTRAST);
         builder.wr().push_text(
             &common,
             glyph_bounds,
             &glyphs,
             fragment.font_key,
-            rgba(color),
+            text_color,
             None,
         );
 
@@ -1311,13 +1439,19 @@ impl Fragment {
             rect
         };
 
+        let decoration_color = builder.foreground_color(
+            state,
+            parent_style,
+            text_decoration.color,
+            MIN_TEXT_CONTRAST,
+        );
         let common_properties = builder.common_properties(state, rect, parent_style);
         builder.wr().push_line(
             &common_properties,
             &expand_rect_for_text_decoration(rect),
             wavy_line_thickness,
             wr::LineOrientation::Horizontal,
-            &rgba(text_decoration.color),
+            &decoration_color,
             text_decoration.style.to_webrender(),
         );
 
@@ -1334,7 +1468,7 @@ impl Fragment {
                 &rect,
                 wavy_line_thickness,
                 wr::LineOrientation::Horizontal,
-                &rgba(text_decoration.color),
+                &decoration_color,
                 text_decoration.style.to_webrender(),
             );
         }
@@ -1466,9 +1600,10 @@ impl Fragment {
             };
 
             let selection_common = builder.common_properties(state, selection_rect, &parent_style);
+            let selection_color = builder.background_color(&parent_style, *selection_color);
             builder
                 .wr()
-                .push_rect(&selection_common, selection_rect, rgba(*selection_color));
+                .push_rect(&selection_common, selection_rect, selection_color);
 
             return;
         }
@@ -1514,7 +1649,8 @@ impl Fragment {
         let insertion_point_common =
             builder.common_properties(state, insertion_point_rect, &parent_style);
 
-        let caret_color = rgba(caret_color);
+        let caret_color =
+            builder.foreground_color(state, parent_style, caret_color, MIN_TEXT_CONTRAST);
         let property_binding = if prefs::get().editing_caret_blink_time().is_some() {
             // It's okay to always use the same property binding key for this pipeline, as
             // there is currently only a single thing that animates in this way (the caret).
@@ -1769,9 +1905,8 @@ impl<'a> BuilderForBoxFragment<'a> {
             let layer_index = b.background_image.0.len() - 1;
             let bounds = painter.painting_area(self, builder, layer_index);
             let common = painter.common_properties(self, builder, state, layer_index, bounds);
-            builder
-                .wr()
-                .push_rect(&common, bounds, rgba(background_color));
+            let color = builder.background_layer_color(painter.style, background_color);
+            builder.wr().push_rect(&common, bounds, color);
 
             // From <https://www.w3.org/TR/paint-timing/#sec-terminology>:
             // First paint ... includes non-default background paint and the enclosing box of an iframe.
@@ -1927,7 +2062,7 @@ impl<'a> BuilderForBoxFragment<'a> {
                             }
                         },
                         ResolvedImage::Color(color) => {
-                            let color = rgba(style.resolve_color(color));
+                            let color = builder.background_color(style, style.resolve_color(color));
                             builder.wr().push_rect(&layer.common, layer.bounds, color);
                         },
                         _ => {},
@@ -2031,9 +2166,20 @@ impl<'a> BuilderForBoxFragment<'a> {
         }
     }
 
-    fn build_border_side(&self, style_color: BorderStyleColor) -> wr::BorderSide {
+    fn build_border_side(
+        &self,
+        builder: &DisplayListBuilder,
+        state: &TraversalState,
+        style_color: BorderStyleColor,
+        min_contrast: f32,
+    ) -> wr::BorderSide {
         wr::BorderSide {
-            color: rgba(style_color.color),
+            color: builder.foreground_color(
+                state,
+                self.fragment.style(),
+                style_color.color,
+                min_contrast,
+            ),
             style: match style_color.style {
                 BorderStyle::None => wr::BorderStyle::None,
                 BorderStyle::Solid => wr::BorderStyle::Solid,
@@ -2081,10 +2227,30 @@ impl<'a> BuilderForBoxFragment<'a> {
                 let top_border = &table_info.collapsed_borders.y[y][x];
                 let bottom_border = &table_info.collapsed_borders.y[y + 1][x];
                 let details = wr::BorderDetails::Normal(wr::NormalBorder {
-                    left: self.build_border_side(left_border.style_color.clone()),
-                    right: self.build_border_side(right_border.style_color.clone()),
-                    top: self.build_border_side(top_border.style_color.clone()),
-                    bottom: self.build_border_side(bottom_border.style_color.clone()),
+                    left: self.build_border_side(
+                        builder,
+                        state,
+                        left_border.style_color.clone(),
+                        MIN_BORDER_CONTRAST,
+                    ),
+                    right: self.build_border_side(
+                        builder,
+                        state,
+                        right_border.style_color.clone(),
+                        MIN_BORDER_CONTRAST,
+                    ),
+                    top: self.build_border_side(
+                        builder,
+                        state,
+                        top_border.style_color.clone(),
+                        MIN_BORDER_CONTRAST,
+                    ),
+                    bottom: self.build_border_side(
+                        builder,
+                        state,
+                        bottom_border.style_color.clone(),
+                        MIN_BORDER_CONTRAST,
+                    ),
                     radius,
                     do_aa: true,
                 });
@@ -2150,10 +2316,10 @@ impl<'a> BuilderForBoxFragment<'a> {
         let current_color = style.get_inherited_text().clone_color();
         let style_color = BorderStyleColor::from_border(border, &current_color);
         let details = wr::BorderDetails::Normal(wr::NormalBorder {
-            top: self.build_border_side(style_color.top),
-            right: self.build_border_side(style_color.right),
-            bottom: self.build_border_side(style_color.bottom),
-            left: self.build_border_side(style_color.left),
+            top: self.build_border_side(builder, state, style_color.top, MIN_BORDER_CONTRAST),
+            right: self.build_border_side(builder, state, style_color.right, MIN_BORDER_CONTRAST),
+            bottom: self.build_border_side(builder, state, style_color.bottom, MIN_BORDER_CONTRAST),
+            left: self.build_border_side(builder, state, style_color.left, MIN_BORDER_CONTRAST),
             radius: self.border_radius(),
             do_aa: true,
         });
@@ -2238,7 +2404,7 @@ impl<'a> BuilderForBoxFragment<'a> {
             Ok(ResolvedImage::Color(color)) => {
                 // NinePatchBorderSource doesn't support a lone color, so pretend that
                 // its a linear gradient.
-                let color = rgba(style.resolve_color(color));
+                let color = builder.background_color(style, style.resolve_color(color));
                 let gradient = builder.wr().create_gradient(
                     Point2D::zero(),
                     Point2D::zero(),
@@ -2310,10 +2476,15 @@ impl<'a> BuilderForBoxFragment<'a> {
             OutlineStyle::Auto => BorderStyle::Solid,
             OutlineStyle::BorderStyle(s) => s,
         };
-        let side = self.build_border_side(BorderStyleColor {
-            style: border_style,
-            color: style.resolve_color(&outline.outline_color),
-        });
+        let side = self.build_border_side(
+            builder,
+            state,
+            BorderStyleColor {
+                style: border_style,
+                color: style.resolve_color(&outline.outline_color),
+            },
+            MIN_OUTLINE_CONTRAST,
+        );
         let details = wr::BorderDetails::Normal(wr::NormalBorder {
             top: side,
             right: side,
@@ -2377,11 +2548,13 @@ impl<'a> BuilderForBoxFragment<'a> {
                 }),
             );
             let common = builder.common_properties(state, clip_rect, style);
+            let color =
+                builder.background_color(style, style.resolve_color(&box_shadow.base.color));
             builder.wr().push_box_shadow(
                 &common,
                 rect,
                 offset,
-                rgba(style.resolve_color(&box_shadow.base.color)),
+                color,
                 blur,
                 spread,
                 border_radius,

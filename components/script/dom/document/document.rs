@@ -765,6 +765,10 @@ pub(crate) struct Document {
     #[no_trace]
     theme_override: Cell<Option<Theme>>,
 
+    /// Whether a `<meta name="color-scheme">` declares dark support or `only`, which
+    /// keeps adaptive dark mode from painting this document.
+    color_scheme_metadata_opts_out_of_adaptive_dark_mode: Cell<bool>,
+
     /// Language specific for this document, set by a meta element
     default_language: DomRefCell<Option<String>>,
 
@@ -4246,6 +4250,7 @@ impl Document {
             history: Default::default(),
             theme: Default::default(),
             theme_override: Default::default(),
+            color_scheme_metadata_opts_out_of_adaptive_dark_mode: Default::default(),
             default_language: Default::default(),
             window_detached: Default::default(),
             live_ranges: Default::default(),
@@ -5450,6 +5455,21 @@ impl Document {
         }
         self.add_restyle_reason(RestyleReason::ThemeChanged);
         self.window.refresh_theme();
+    }
+
+    pub(crate) fn color_scheme_metadata_opts_out_of_adaptive_dark_mode(&self) -> bool {
+        self.color_scheme_metadata_opts_out_of_adaptive_dark_mode
+            .get()
+    }
+
+    pub(crate) fn set_color_scheme_metadata_opts_out_of_adaptive_dark_mode(&self, opts_out: bool) {
+        if self
+            .color_scheme_metadata_opts_out_of_adaptive_dark_mode
+            .replace(opts_out) !=
+            opts_out
+        {
+            self.window.refresh_adaptive_dark_mode();
+        }
     }
 
     pub(crate) fn theme_override(&self) -> Option<Theme> {

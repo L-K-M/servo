@@ -60,6 +60,8 @@ pub enum EmbedderToConstellationMessage {
     ChangeViewportDetails(WebViewId, ViewportDetails, WindowSizeType),
     /// Inform the constellation of a theme change.
     ThemeChange(WebViewId, Theme),
+    /// Inform the constellation that a `WebView` turned adaptive dark mode on or off.
+    AdaptiveDarkModeChange(WebViewId, bool),
     /// Requests that the constellation instruct script/layout to try to layout again and tick
     /// animations.
     TickAnimation(Vec<WebViewId>),
