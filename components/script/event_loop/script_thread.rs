@@ -405,6 +405,9 @@ pub struct ScriptThread {
     #[no_trace]
     scheduled_update_the_rendering: RefCell<Option<TimerId>>,
 
+    /// When the timer that wakes the event loop to start the next idle period fires.
+    idle_period_wake_up: Cell<Option<Instant>>,
+
     /// Whether an animation tick or ScriptThread-triggered rendering update is pending. This might
     /// either be because the Servo renderer is managing animations and the [`ScriptThread`] has
     /// received a [`ScriptThreadMessage::TickAllAnimations`] message, because the [`ScriptThread`]
@@ -981,6 +984,7 @@ impl ScriptThread {
                     gpu_id_hub,
                     layout_factory,
                     scheduled_update_the_rendering: Default::default(),
+                    idle_period_wake_up: Default::default(),
                     needs_rendering_update: Arc::new(AtomicBool::new(false)),
                     debugger_global: debugger_global.as_traced(),
                     debugger_paused: Cell::new(false),
@@ -1510,6 +1514,7 @@ impl ScriptThread {
 
         self.maybe_fulfill_font_ready_promises(cx);
         self.maybe_resolve_pending_screenshot_readiness_requests(cx);
+        self.maybe_start_idle_periods();
 
         // This must happen last to detect if any change above makes a rendering update necessary.
         self.maybe_schedule_rendering_opportunity_after_ipc_message(
@@ -1518,6 +1523,84 @@ impl ScriptThread {
         );
 
         true
+    }
+
+    /// When an idle period must end at the latest because of work this event loop has
+    /// scheduled for its fully active windows: their earliest timer and, while a
+    /// rendering update is pending, the next rendering opportunity. Part of
+    /// computeDeadline in <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>.
+    pub(crate) fn idle_period_deadline_limit(&self, now: Instant) -> Option<Instant> {
+        // Servo does not know the display's refresh rate, so assume 60 Hz.
+        const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+        let mut limit: Option<Instant> = None;
+        let mut has_pending_renders = self.needs_rendering_update.load(Ordering::Relaxed);
+        for (_, document) in self.documents.borrow().iter() {
+            if !document.is_fully_active() {
+                continue;
+            }
+            // As in `maybe_schedule_rendering_opportunity_after_ipc_message`: running
+            // animations and animation frame callbacks of unthrottled windows mean
+            // rendering opportunities keep coming.
+            has_pending_renders |= !document.window().throttled() &&
+                (document.animation_manager().running_animation_count() != 0 ||
+                    document.has_active_request_animation_frame_callbacks());
+            if let Some(next_timer) = document
+                .window()
+                .with_timers(|timers| timers.time_until_next_timer())
+            {
+                let due = now + next_timer;
+                limit = Some(limit.map_or(due, |limit| limit.min(due)));
+            }
+        }
+
+        if has_pending_renders {
+            let last_render = self.last_render_opportunity_time.get().unwrap_or(now);
+            let next_render = last_render + FRAME_INTERVAL;
+            limit = Some(limit.map_or(next_render, |limit| limit.min(next_render)));
+        }
+        limit
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model>: once the
+    /// event loop has no tasks left, start an idle period for each fully active window.
+    /// <https://www.w3.org/TR/requestidlecallback/#start-an-idle-period-algorithm>
+    fn maybe_start_idle_periods(&self) {
+        // The tasks that just ran may have queued more tasks: the event loop is not idle
+        // until it has run them, after which it comes back here.
+        if self.task_queue.has_pending_tasks() {
+            return;
+        }
+
+        let mut wake_up_at: Option<Instant> = None;
+        for (_, document) in self.documents.borrow().iter() {
+            if !document.is_fully_active() {
+                continue;
+            }
+            let window = document.window();
+            if let Some(time) = window.idle_callbacks().maybe_start_an_idle_period(window) {
+                wake_up_at = Some(wake_up_at.map_or(time, |earliest| earliest.min(time)));
+            }
+        }
+
+        // Wake the event loop when the current idle period ends, so that the next one
+        // can start even if nothing else happens.
+        let Some(wake_up_at) = wake_up_at else {
+            return;
+        };
+        let now = Instant::now();
+        if self
+            .idle_period_wake_up
+            .get()
+            .is_some_and(|scheduled| now < scheduled && scheduled <= wake_up_at)
+        {
+            return;
+        }
+        self.idle_period_wake_up.set(Some(wake_up_at));
+        self.schedule_timer(TimerEventRequest {
+            callback: Box::new(|| {}),
+            duration: wake_up_at.saturating_duration_since(now),
+        });
     }
 
     fn categorize_msg(&self, msg: &MixedMessage) -> ScriptThreadEventCategory {

@@ -273,6 +273,7 @@ pub(crate) mod globalscope;
 pub(crate) use self::globalscope::*;
 pub(crate) mod html;
 pub(crate) use self::html::*;
+pub(crate) mod idledeadline;
 pub(crate) mod indexeddb;
 pub(crate) use self::indexeddb::*;
 pub(crate) mod intersectionobserver;

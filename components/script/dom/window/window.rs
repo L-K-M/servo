@@ -124,6 +124,9 @@ use crate::dom::bindings::codegen::Bindings::MediaQueryListBinding::MediaQueryLi
 use crate::dom::bindings::codegen::Bindings::MessagePortBinding::StructuredSerializeOptions;
 use crate::dom::bindings::codegen::Bindings::ReportingObserverBinding::Report;
 use crate::dom::bindings::codegen::Bindings::RequestBinding::{RequestInfo, RequestInit};
+use crate::dom::bindings::codegen::Bindings::RequestIdleCallbackBinding::{
+    IdleRequestCallback, IdleRequestOptions,
+};
 use crate::dom::bindings::codegen::Bindings::VoidFunctionBinding::VoidFunction;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::{
     self, DeferredRequestInit, ScrollBehavior, WindowMethods, WindowPostMessageOptions,
@@ -165,6 +168,7 @@ use crate::dom::history::History;
 use crate::dom::html::htmlcollection::{CollectionFilter, HTMLCollection};
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::idbfactory::IDBFactory;
+use crate::dom::idledeadline::IdleCallbacks;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::location::Location;
 use crate::dom::medialist::MediaList;
@@ -501,6 +505,10 @@ pub(crate) struct Window {
 
     /// <https://wicg.github.io/event-timing/#has-dispatched-input-event>
     has_dispatched_input_event: Cell<bool>,
+
+    /// The idle request callbacks of this [`Window`].
+    /// <https://www.w3.org/TR/requestidlecallback/#window_extensions>
+    idle_callbacks: IdleCallbacks,
 }
 
 impl Window {
@@ -524,6 +532,10 @@ impl Window {
     /// <https://www.w3.org/TR/largest-contentful-paint/#has-dispatched-scroll-event>
     pub(crate) fn mark_has_dispatched_scroll_event(&self) {
         self.has_dispatched_scroll_event.set(true);
+    }
+
+    pub(crate) fn idle_callbacks(&self) -> &IdleCallbacks {
+        &self.idle_callbacks
     }
 
     /// <https://wicg.github.io/event-timing/#has-dispatched-input-event>
@@ -1858,6 +1870,21 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         let doc = self.Document();
         doc.cancel_animation_frame(ident);
         Ok(())
+    }
+
+    /// <https://www.w3.org/TR/requestidlecallback/#dom-window-requestidlecallback>
+    fn RequestIdleCallback(
+        &self,
+        callback: RootedCallback<IdleRequestCallback>,
+        options: &IdleRequestOptions,
+    ) -> u32 {
+        self.idle_callbacks
+            .request(self, callback.to_traced(), options.timeout)
+    }
+
+    /// <https://www.w3.org/TR/requestidlecallback/#dom-window-cancelidlecallback>
+    fn CancelIdleCallback(&self, handle: u32) {
+        self.idle_callbacks.cancel(handle);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-postmessage>
@@ -4082,6 +4109,7 @@ impl Window {
             devtools_wants_updates: Default::default(),
             has_dispatched_scroll_event: Cell::new(false),
             has_dispatched_input_event: Cell::new(false),
+            idle_callbacks: Default::default(),
         });
 
         WindowBinding::Wrap::<crate::DomTypeHolder>(cx, &origin, win)

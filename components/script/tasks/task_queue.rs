@@ -75,6 +75,17 @@ impl<T: QueuedTaskConversion> TaskQueue<T> {
         self.inactive.borrow_mut().remove(pipeline_id);
     }
 
+    /// Whether tasks are waiting to run: received but not yet taken, held back by
+    /// throttling, or not yet received from the port.
+    pub(crate) fn has_pending_tasks(&self) -> bool {
+        !self.msg_queue.borrow().is_empty() ||
+            self.throttled
+                .borrow()
+                .values()
+                .any(|queue| !queue.is_empty()) ||
+            !self.port.is_empty()
+    }
+
     /// Release previously held-back tasks for documents that are now fully-active.
     /// <https://html.spec.whatwg.org/multipage/#event-loop-processing-model:fully-active>
     fn release_tasks_for_fully_active_documents(
