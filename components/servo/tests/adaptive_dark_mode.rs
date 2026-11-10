@@ -743,6 +743,11 @@ fn test_adaptive_dark_mode() {
     }
     harness.webview.set_adaptive_dark_mode(false);
 
+    // A root that names neither scheme follows the preferred one, as its system colors do
+    // in Stylo: the canvas must not stay white under their light text.
+    harness.load(page("<style>:root{color-scheme:normal}</style>"));
+    harness.assert_dark_scheme("CSS normal under a dark theme");
+
     // That canvas is the `Canvas` system color, as an element paints it.
     harness.load(page(
         "<style>:root{color-scheme:dark}</style><div style='position:fixed;left:300px;\
@@ -760,6 +765,20 @@ fn test_adaptive_dark_mode() {
     harness.assert_dark_scheme("metadata changed to light dark");
     harness.evaluate("document.querySelector('meta').remove()");
     harness.assert_authored_light("metadata removed");
+
+    // The first metadata with a valid value counts, and only that one.
+    harness.load(page(
+        "<meta name=color-scheme content='light dark'><meta name=color-scheme content=light>",
+    ));
+    harness.assert_dark_scheme("the first of two metadata");
+    harness.load(page(
+        "<meta name=color-scheme content=only><meta name=color-scheme content='light dark'>",
+    ));
+    harness.assert_dark_scheme("metadata after an invalid one");
+    harness.load(page(
+        "<meta name=color-scheme content=light><meta name=color-scheme content='light dark'>",
+    ));
+    harness.assert_authored_light("metadata after a valid one");
 
     // Under a light theme, a page that supports both schemes is light, and a page that
     // supports only the dark one is still dark.
