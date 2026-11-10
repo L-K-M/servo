@@ -59,6 +59,7 @@ use wr::units::LayoutVector2D;
 use crate::context::{ImageResolver, ResolvedImage};
 use crate::display_list::adaptive_dark::{
     AdaptiveDarkPainter, Backdrop, MIN_BORDER_CONTRAST, MIN_OUTLINE_CONTRAST, MIN_TEXT_CONTRAST,
+    PaintedAreas,
 };
 use crate::display_list::background::BackgroundPainter;
 use crate::display_list::conversions::FilterToWebRender;
@@ -100,17 +101,8 @@ static UNFOCUSED_SELECTION_COLOR: LazyLock<AbsoluteColor> =
     LazyLock::new(|| AbsoluteColor::srgb_legacy(200, 200, 200, 1.0));
 
 /// A background color with at least this alpha hides what is painted under it, for
-/// [`PaintedArea`].
+/// [`PaintedAreas`].
 const COVERING_ALPHA: f32 = 0.5;
-
-/// An area that adaptive dark mode remembers while it paints: an opaque image that kept
-/// its pixels, or a background painted over such an image later. What is painted over
-/// the image was drawn for it, not for the page behind both.
-struct PaintedArea {
-    spatial_id: ScrollTreeNodeId,
-    rect: LayoutRect,
-    is_kept_image: bool,
-}
 
 pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
@@ -176,8 +168,9 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// Whether this document is a top-level one, whose canvas has nothing painted beneath it.
     is_top_level: bool,
 
-    /// The [`PaintedArea`]s so far, in paint order. See [`Self::backdrop_at`].
-    painted_areas: Vec<PaintedArea>,
+    /// What adaptive dark mode painted so far that later content may lie over. See
+    /// [`Self::backdrop_at`].
+    painted_areas: PaintedAreas,
 }
 
 struct PendingCaret {
@@ -298,7 +291,7 @@ impl DisplayListBuilder<'_> {
                 })
                 .map(|_| AdaptiveDarkPainter::default()),
             is_top_level,
-            painted_areas: Vec::new(),
+            painted_areas: PaintedAreas::default(),
         };
 
         // Clear any caret color from previous display list constructions.
@@ -379,26 +372,16 @@ impl DisplayListBuilder<'_> {
     /// Remembers that an opaque image kept its pixels in `rect`.
     fn note_kept_image(&mut self, state: &TraversalState, rect: LayoutRect) {
         if self.adaptive_dark.is_some() {
-            self.painted_areas.push(PaintedArea {
-                spatial_id: state.spatial_id,
-                rect,
-                is_kept_image: true,
-            });
+            self.painted_areas.note_kept_image(state.spatial_id, rect);
         }
     }
 
     /// Remembers that a background color that hides what is under it was painted in
     /// `rect`, if that is over an image that kept its pixels.
     fn note_covering_background(&mut self, state: &TraversalState, rect: LayoutRect) {
-        let covers_kept_image = self.painted_areas.iter().any(|area| {
-            area.is_kept_image && area.spatial_id == state.spatial_id && area.rect.intersects(&rect)
-        });
-        if covers_kept_image {
-            self.painted_areas.push(PaintedArea {
-                spatial_id: state.spatial_id,
-                rect,
-                is_kept_image: false,
-            });
+        if self.adaptive_dark.is_some() {
+            self.painted_areas
+                .note_covering_background(state.spatial_id, rect);
         }
     }
 
@@ -412,15 +395,12 @@ impl DisplayListBuilder<'_> {
     /// corners are not considered.
     fn backdrop_at(&self, state: &TraversalState, rect: &LayoutRect) -> Option<Backdrop> {
         let backdrop = state.backdrop?;
-        let middle = rect.center();
-        let topmost = self
+        let is_over_kept_image = self
             .painted_areas
-            .iter()
-            .rev()
-            .find(|area| area.spatial_id == state.spatial_id && area.rect.contains(middle));
-        Some(match topmost {
-            Some(area) if area.is_kept_image => backdrop.under_image(),
-            _ => backdrop,
+            .is_over_kept_image(state.spatial_id, rect.center());
+        Some(match is_over_kept_image {
+            true => backdrop.under_image(),
+            false => backdrop,
         })
     }
 
