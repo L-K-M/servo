@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 mod layout;
 mod stylo_taffy;
+pub(crate) mod subgrid;
 use std::fmt;
 
 use app_units::Au;
@@ -13,6 +14,7 @@ use style::Atom;
 use style::context::SharedStyleContext;
 use style::properties::ComputedValues;
 pub(crate) use stylo_taffy::TaffyStyloStyle;
+pub(crate) use subgrid::SubgridTemplates;
 use taffy::GridItemStyle;
 
 use crate::cell::ArcRefCell;
@@ -31,6 +33,9 @@ use crate::{DefiniteContainingBlock, PropagatedBoxTreeData};
 pub(crate) struct TaffyContainer {
     children: Vec<ArcRefCell<TaffyItemBox>>,
     style: Arc<ComputedValues>,
+    /// Approximated `subgrid` template, resolved by this container's parent
+    /// grid at construction time. See [`subgrid`].
+    subgrid_templates: Option<SubgridTemplates>,
 }
 
 impl TaffyContainer {
@@ -67,6 +72,14 @@ impl TaffyContainer {
                     },
                 };
 
+                // Approximate this item's `subgrid` template from our own
+                // track list while the parent grid's style is in hand.
+                let templates =
+                    subgrid::resolve_for_item(&info.style, &taffy_item_box.borrow().style);
+                if let Some(templates) = templates {
+                    taffy_item_box.borrow_mut().set_subgrid_templates(templates);
+                }
+
                 item.box_slot.set(LayoutBox::TaffyItemBox(taffy_item_box.clone()));
                 taffy_item_box
             })
@@ -75,11 +88,17 @@ impl TaffyContainer {
         Self {
             children,
             style: info.style.clone(),
+            subgrid_templates: None,
         }
     }
 
     pub(crate) fn repair_style(&mut self, new_style: &Arc<ComputedValues>) {
         self.style = new_style.clone();
+    }
+
+    /// Set the `subgrid` fallback template resolved by the parent grid.
+    pub(crate) fn set_subgrid_templates(&mut self, templates: SubgridTemplates) {
+        self.subgrid_templates = Some(templates);
     }
 }
 
@@ -128,6 +147,14 @@ impl TaffyItemBox {
             positioning_context: PositioningContext::default(),
             style,
             taffy_level_box: inner,
+        }
+    }
+
+    /// Route the parent grid's `subgrid` fallback template to the item's
+    /// grid container, if it is one.
+    pub(crate) fn set_subgrid_templates(&mut self, templates: SubgridTemplates) {
+        if let TaffyItemBoxInner::InFlowBox(context) = &mut self.taffy_level_box {
+            context.set_subgrid_templates(templates);
         }
     }
 

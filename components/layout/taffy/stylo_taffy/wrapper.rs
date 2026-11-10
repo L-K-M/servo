@@ -14,24 +14,34 @@ use style::{Atom, OwnedSlice};
 use taffy::prelude::TaffyAuto;
 
 use super::{as_clamped_i16, convert, stylo};
+use crate::taffy::subgrid::{SubgridAxisTemplate, SubgridTemplates};
 
 /// A wrapper struct for anything that Deref's to a [`ComputedValues`], which
 /// implements Taffy's layout traits and can used with Taffy's layout algorithms.
-pub struct TaffyStyloStyle<T: Deref<Target = ComputedValues>> {
+pub struct TaffyStyloStyle<'s, T: Deref<Target = ComputedValues>> {
     pub style: T,
     pub is_compressible_replaced: bool,
+    /// Resolved fallback template for a `subgrid` axis; Taffy has no subgrid
+    /// support. See [`crate::taffy::subgrid`].
+    pub subgrid: Option<&'s SubgridTemplates>,
 }
 
-impl<T: Deref<Target = ComputedValues>> TaffyStyloStyle<T> {
+impl<'s, T: Deref<Target = ComputedValues>> TaffyStyloStyle<'s, T> {
     pub fn new(style: T, is_compressible_replaced: bool) -> Self {
         Self {
             style,
             is_compressible_replaced,
+            subgrid: None,
         }
+    }
+
+    pub fn with_subgrid(mut self, subgrid: Option<&'s SubgridTemplates>) -> Self {
+        self.subgrid = subgrid;
+        self
     }
 }
 
-impl<T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle<T> {
+impl<'s, T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle<'s, T> {
     type CustomIdent = Atom;
 
     #[inline]
@@ -239,7 +249,68 @@ impl taffy::GenericRepetition for RepetitionWrapper<'_> {
     }
 }
 
-impl<T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyStyloStyle<T> {
+/// Map one computed track list value to Taffy's template component. Shared
+/// by real track lists and resolved `subgrid` fallbacks.
+fn track_value_to_taffy(
+    track: &TrackListValue<LengthPercentage, i32>,
+) -> taffy::GenericGridTemplateComponent<Atom, RepetitionWrapper<'_>> {
+    match track {
+        stylo::TrackListValue::TrackSize(size) => {
+            taffy::GenericGridTemplateComponent::Single(convert::track_size(size))
+        },
+        stylo::TrackListValue::TrackRepeat(repeat) => {
+            taffy::GenericGridTemplateComponent::Repeat(RepetitionWrapper(repeat))
+        },
+    }
+}
+
+type AxisTemplateTrackFn<'a> =
+    fn(&'a TrackListValue<LengthPercentage, i32>) ->
+        taffy::GenericGridTemplateComponent<Atom, RepetitionWrapper<'a>>;
+
+/// The template track list of one axis: the explicit track list, or the
+/// resolved fallback slice for a `subgrid` axis.
+fn axis_template_tracks<'a>(
+    component: &'a stylo::GenericGridTemplateComponent<LengthPercentage, i32>,
+    subgrid_axis: Option<&'a SubgridAxisTemplate>,
+) -> Option<
+    core::iter::Map<
+        core::slice::Iter<'a, TrackListValue<LengthPercentage, i32>>,
+        fn(
+            &'a TrackListValue<LengthPercentage, i32>,
+        ) -> taffy::GenericGridTemplateComponent<Atom, RepetitionWrapper<'a>>,
+    >,
+> {
+    match component {
+        stylo::GenericGridTemplateComponent::None => None,
+        stylo::GenericGridTemplateComponent::TrackList(list) => {
+            Some(list.values.iter().map(track_value_to_taffy))
+        },
+        stylo::GenericGridTemplateComponent::Subgrid(_) => subgrid_axis
+            .map(|axis| axis.tracks().iter().map(track_value_to_taffy as AxisTemplateTrackFn<'a>)),
+        stylo::GenericGridTemplateComponent::Masonry => None,
+    }
+}
+
+/// The template line names of one axis: the explicit track list's names, or
+/// the resolved fallback names for a `subgrid` axis.
+fn axis_template_names<'a>(
+    component: &'a stylo::GenericGridTemplateComponent<LengthPercentage, i32>,
+    subgrid_axis: Option<&'a SubgridAxisTemplate>,
+) -> Option<StyloLineNameIter<'a>> {
+    match component {
+        stylo::GenericGridTemplateComponent::None => None,
+        stylo::GenericGridTemplateComponent::TrackList(list) => {
+            Some(StyloLineNameIter::new(&list.line_names))
+        },
+        stylo::GenericGridTemplateComponent::Subgrid(_) => {
+            subgrid_axis.map(|axis| StyloLineNameIter::new(axis.line_names()))
+        },
+        stylo::GenericGridTemplateComponent::Masonry => None,
+    }
+}
+
+impl<'s, T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyStyloStyle<'s, T> {
     type Repetition<'a>
         = RepetitionWrapper<'a>
     where
@@ -271,44 +342,18 @@ impl<T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyStylo
 
     #[inline]
     fn grid_template_rows(&self) -> Option<Self::TemplateTrackList<'_>> {
-        match &self.style.get_position().grid_template_rows {
-            stylo::GenericGridTemplateComponent::None => None,
-            stylo::GenericGridTemplateComponent::TrackList(list) => {
-                Some(list.values.iter().map(|track| match track {
-                    stylo::TrackListValue::TrackSize(size) => {
-                        taffy::GenericGridTemplateComponent::Single(convert::track_size(size))
-                    },
-                    stylo::TrackListValue::TrackRepeat(repeat) => {
-                        taffy::GenericGridTemplateComponent::Repeat(RepetitionWrapper(repeat))
-                    },
-                }))
-            },
-
-            // TODO: Implement subgrid and masonry
-            stylo::GenericGridTemplateComponent::Subgrid(_) => None,
-            stylo::GenericGridTemplateComponent::Masonry => None,
-        }
+        axis_template_tracks(
+            &self.style.get_position().grid_template_rows,
+            self.subgrid.and_then(|templates| templates.rows.as_ref()),
+        )
     }
 
     #[inline]
     fn grid_template_columns(&self) -> Option<Self::TemplateTrackList<'_>> {
-        match &self.style.get_position().grid_template_columns {
-            stylo::GenericGridTemplateComponent::None => None,
-            stylo::GenericGridTemplateComponent::TrackList(list) => {
-                Some(list.values.iter().map(|track| match track {
-                    stylo::TrackListValue::TrackSize(size) => {
-                        taffy::GenericGridTemplateComponent::Single(convert::track_size(size))
-                    },
-                    stylo::TrackListValue::TrackRepeat(repeat) => {
-                        taffy::GenericGridTemplateComponent::Repeat(RepetitionWrapper(repeat))
-                    },
-                }))
-            },
-
-            // TODO: Implement subgrid and masonry
-            stylo::GenericGridTemplateComponent::Subgrid(_) => None,
-            stylo::GenericGridTemplateComponent::Masonry => None,
-        }
+        axis_template_tracks(
+            &self.style.get_position().grid_template_columns,
+            self.subgrid.and_then(|templates| templates.columns.as_ref()),
+        )
     }
 
     #[inline]
@@ -361,27 +406,17 @@ impl<T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyStylo
     }
 
     fn grid_template_column_names(&self) -> Option<Self::TemplateLineNames<'_>> {
-        match &self.style.get_position().grid_template_columns {
-            stylo::GenericGridTemplateComponent::None => None,
-            stylo::GenericGridTemplateComponent::TrackList(list) => {
-                Some(StyloLineNameIter::new(&list.line_names))
-            },
-            // TODO: Implement subgrid and masonry
-            stylo::GenericGridTemplateComponent::Subgrid(_) => None,
-            stylo::GenericGridTemplateComponent::Masonry => None,
-        }
+        axis_template_names(
+            &self.style.get_position().grid_template_columns,
+            self.subgrid.and_then(|templates| templates.columns.as_ref()),
+        )
     }
 
     fn grid_template_row_names(&self) -> Option<Self::TemplateLineNames<'_>> {
-        match &self.style.get_position().grid_template_rows {
-            stylo::GenericGridTemplateComponent::None => None,
-            stylo::GenericGridTemplateComponent::TrackList(list) => {
-                Some(StyloLineNameIter::new(&list.line_names))
-            },
-            // TODO: Implement subgrid and masonry
-            stylo::GenericGridTemplateComponent::Subgrid(_) => None,
-            stylo::GenericGridTemplateComponent::Masonry => None,
-        }
+        axis_template_names(
+            &self.style.get_position().grid_template_rows,
+            self.subgrid.and_then(|templates| templates.rows.as_ref()),
+        )
     }
 
     #[inline]
@@ -419,7 +454,7 @@ impl<T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyStylo
     }
 }
 
-impl<T: Deref<Target = ComputedValues>> taffy::GridItemStyle for TaffyStyloStyle<T> {
+impl<'s, T: Deref<Target = ComputedValues>> taffy::GridItemStyle for TaffyStyloStyle<'s, T> {
     #[inline]
     fn grid_row(&self) -> taffy::Line<taffy::GridPlacement<Atom>> {
         let position_styles = self.style.get_position();

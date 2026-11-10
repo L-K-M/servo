@@ -14,7 +14,8 @@ use taffy::style_helpers::{TaffyMaxContent, TaffyMinContent};
 use taffy::{AvailableSpace, MaybeMath, RequestedAxis, RunMode};
 
 use super::{
-    SpecificTaffyGridInfo, TaffyContainer, TaffyItemBox, TaffyItemBoxInner, TaffyStyloStyle,
+    SpecificTaffyGridInfo, SubgridTemplates, TaffyContainer, TaffyItemBox, TaffyItemBoxInner,
+    TaffyStyloStyle,
 };
 use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
@@ -67,6 +68,7 @@ struct TaffyContainerContext<'a> {
     positioning_context: &'a mut PositioningContext,
     content_box_size_override: &'a ContainingBlock<'a>,
     style: &'a ComputedValues,
+    subgrid_templates: Option<&'a SubgridTemplates>,
     specific_layout_info: Option<SpecificLayoutInfo>,
 
     /// Temporary location for children specific info, which will be moved into child fragments
@@ -108,12 +110,12 @@ impl taffy::LayoutPartialTree for TaffyContainerContext<'_> {
     type CustomIdent = Atom;
 
     type CoreContainerStyle<'a>
-        = TaffyStyloStyle<&'a ComputedValues>
+        = TaffyStyloStyle<'a, &'a ComputedValues>
     where
         Self: 'a;
 
     fn get_core_container_style(&self, _node_id: taffy::NodeId) -> Self::CoreContainerStyle<'_> {
-        TaffyStyloStyle::new(self.style, false /* is_replaced */)
+        TaffyStyloStyle::new(self.style, false /* is_replaced */).with_subgrid(self.subgrid_templates)
     }
 
     fn set_unrounded_layout(&mut self, node_id: taffy::NodeId, layout: &taffy::Layout) {
@@ -266,12 +268,12 @@ impl taffy::LayoutPartialTree for TaffyContainerContext<'_> {
 
 impl taffy::LayoutGridContainer for TaffyContainerContext<'_> {
     type GridContainerStyle<'a>
-        = TaffyStyloStyle<&'a ComputedValues>
+        = TaffyStyloStyle<'a, &'a ComputedValues>
     where
         Self: 'a;
 
     type GridItemStyle<'a>
-        = TaffyStyloStyle<AtomicRef<'a, ComputedValues>>
+        = TaffyStyloStyle<'a, AtomicRef<'a, ComputedValues>>
     where
         Self: 'a;
 
@@ -279,7 +281,7 @@ impl taffy::LayoutGridContainer for TaffyContainerContext<'_> {
         &self,
         _node_id: taffy::prelude::NodeId,
     ) -> Self::GridContainerStyle<'_> {
-        TaffyStyloStyle::new(self.style, false /* is_replaced */)
+        TaffyStyloStyle::new(self.style, false /* is_replaced */).with_subgrid(self.subgrid_templates)
     }
 
     fn get_grid_child_style(
@@ -346,6 +348,7 @@ impl ComputeInlineContentSizes for TaffyContainer {
             positioning_context: &mut PositioningContext::default(),
             content_box_size_override: containing_block,
             style,
+            subgrid_templates: self.subgrid_templates.as_ref(),
             source_child_nodes: &self.children,
             specific_layout_info: None,
             child_specific_layout_infos: vec![None; self.children.len()],
@@ -402,6 +405,7 @@ impl TaffyContainer {
             positioning_context,
             content_box_size_override,
             style: content_box_size_override.style,
+            subgrid_templates: self.subgrid_templates.as_ref(),
             source_child_nodes: &self.children,
             specific_layout_info: None,
             child_specific_layout_infos: vec![None; self.children.len()],
