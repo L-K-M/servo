@@ -1279,6 +1279,10 @@ impl<'dom> LayoutDom<'dom, Element> {
         let mut property_declaration_block = self.is_root().then(|| {
             let scheme = match document.theme_for_layout() {
                 Some(Theme::Dark) => "color-scheme: dark",
+                // The page styles itself for both, so its defaults follow the preference.
+                None if document.color_scheme_metadata_supports_light_and_dark_for_layout() => {
+                    "color-scheme: light dark"
+                },
                 _ => "color-scheme: light",
             };
             parse_style_attribute(

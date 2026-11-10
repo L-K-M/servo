@@ -704,13 +704,21 @@ fn test_adaptive_dark_mode() {
 
     // A page that uses a dark color scheme and sets no colors has that scheme's canvas
     // under its light default text, not the shell's white. The theme is still dark, so a
-    // page whose CSS supports both schemes uses the dark one. Adaptive dark mode leaves
-    // such pages alone.
+    // page that supports both schemes uses the dark one. Adaptive dark mode leaves such
+    // pages alone.
     for adaptive_dark_mode in [false, true] {
         harness.webview.set_adaptive_dark_mode(adaptive_dark_mode);
         for (case, head) in [
             ("metadata dark", "<meta name=color-scheme content=dark>"),
             ("CSS dark", "<style>:root{color-scheme:dark}</style>"),
+            (
+                "metadata light dark",
+                "<meta name=color-scheme content='light dark'>",
+            ),
+            (
+                "metadata dark light",
+                "<meta name=color-scheme content='dark light'>",
+            ),
             (
                 "CSS light dark",
                 "<style>:root{color-scheme:light dark}</style>",
@@ -731,8 +739,20 @@ fn test_adaptive_dark_mode() {
     assert!(painted.is_dark_scheme(), "{}", painted.describe());
     assert_eq!(painted.pixel(KEPT_POINT), painted.canvas, "Canvas");
 
-    // Under a light theme, a page that supports only the dark scheme is still dark.
+    // Metadata that starts to declare both schemes switches a painted page, and removing
+    // it switches the page back.
+    harness.load(page("<meta name=color-scheme content=light>"));
+    harness.assert_authored_light("metadata light");
+    harness.evaluate("document.querySelector('meta').content = 'light dark'");
+    harness.assert_dark_scheme("metadata changed to light dark");
+    harness.evaluate("document.querySelector('meta').remove()");
+    harness.assert_authored_light("metadata removed");
+
+    // Under a light theme, a page that supports both schemes is light, and a page that
+    // supports only the dark one is still dark.
     harness.webview.notify_theme_change(Theme::Light);
+    harness.load(page("<meta name=color-scheme content='light dark'>"));
+    harness.assert_authored_light("metadata light dark under a light theme");
     harness.load(page("<style>:root{color-scheme:dark}</style>"));
     harness.assert_dark_scheme("CSS dark under a light theme");
 

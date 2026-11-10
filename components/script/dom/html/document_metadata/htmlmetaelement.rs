@@ -200,6 +200,10 @@ impl HTMLMetaElement {
 
         // TODO: Allow for more different themes than the ones that embedders can set
         doc.set_theme(metadata.and_then(|metadata| metadata.theme), cx.no_gc());
+        doc.set_color_scheme_metadata_supports_light_and_dark(
+            metadata.is_some_and(|metadata| metadata.supports_light_and_dark),
+            cx.no_gc(),
+        );
         doc.set_color_scheme_metadata_opts_out_of_adaptive_dark_mode(
             metadata.is_some_and(|metadata| metadata.opts_out_of_adaptive_dark_mode),
         );
@@ -419,6 +423,8 @@ impl<T: AsRef<str>> IsColorSchemeValue for Option<T> {
 struct ColorSchemeMetadata {
     /// The theme for a page that supports exactly one color scheme.
     theme: Option<Theme>,
+    /// Whether the page declares both light and dark support.
+    supports_light_and_dark: bool,
     /// Whether the page declares dark support or `only`, which keeps adaptive dark mode
     /// from painting it.
     opts_out_of_adaptive_dark_mode: bool,
@@ -445,6 +451,7 @@ impl ColorSchemeMetadata {
         {
             return Some(Self {
                 theme: None,
+                supports_light_and_dark: false,
                 opts_out_of_adaptive_dark_mode: false,
             });
         }
@@ -471,11 +478,11 @@ impl ColorSchemeMetadata {
             [keyword] if is(keyword, "light") => Some(Theme::Light),
             _ => None,
         };
+        let names = |name: &str| keywords.iter().any(|keyword| is(keyword, name));
         Some(Self {
             theme,
-            opts_out_of_adaptive_dark_mode: keywords
-                .iter()
-                .any(|keyword| is(keyword, "dark") || is(keyword, "only")),
+            supports_light_and_dark: names("light") && names("dark"),
+            opts_out_of_adaptive_dark_mode: names("dark") || names("only"),
         })
     }
 }

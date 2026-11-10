@@ -769,6 +769,10 @@ pub(crate) struct Document {
     /// keeps adaptive dark mode from painting this document.
     color_scheme_metadata_opts_out_of_adaptive_dark_mode: Cell<bool>,
 
+    /// Whether a `<meta name="color-scheme">` declares both light and dark support, so
+    /// that the page's default colors follow the preferred color scheme.
+    color_scheme_metadata_supports_light_and_dark: Cell<bool>,
+
     /// Language specific for this document, set by a meta element
     default_language: DomRefCell<Option<String>>,
 
@@ -3944,6 +3948,12 @@ impl<'dom> LayoutDom<'dom, Document> {
         self.unsafe_get().theme.get()
     }
 
+    pub(crate) fn color_scheme_metadata_supports_light_and_dark_for_layout(self) -> bool {
+        self.unsafe_get()
+            .color_scheme_metadata_supports_light_and_dark
+            .get()
+    }
+
     #[inline]
     pub(crate) fn shared_style_locks(self) -> &'dom SharedRwLocks {
         self.unsafe_get().shared_style_locks()
@@ -4251,6 +4261,7 @@ impl Document {
             theme: Default::default(),
             theme_override: Default::default(),
             color_scheme_metadata_opts_out_of_adaptive_dark_mode: Default::default(),
+            color_scheme_metadata_supports_light_and_dark: Default::default(),
             default_language: Default::default(),
             window_detached: Default::default(),
             live_ranges: Default::default(),
@@ -5448,13 +5459,32 @@ impl Document {
             return;
         }
 
-        // Rematch the root: recascading alone reuses its previous presentational hints.
+        self.rematch_root_color_scheme_hint(no_gc);
+        self.window.refresh_theme();
+    }
+
+    /// Rematches the root element after the metadata its `color-scheme` presentational
+    /// hint comes from changed: recascading alone reuses its previous hints.
+    fn rematch_root_color_scheme_hint(&self, no_gc: &NoGC) {
         if let Some(root) = self.GetDocumentElement() {
             root.restyle(no_gc, NodeDamage::Style);
             self.note_dirty_element(no_gc, &root);
         }
         self.add_restyle_reason(RestyleReason::ThemeChanged);
-        self.window.refresh_theme();
+    }
+
+    pub(crate) fn set_color_scheme_metadata_supports_light_and_dark(
+        &self,
+        supports_both: bool,
+        no_gc: &NoGC,
+    ) {
+        if self
+            .color_scheme_metadata_supports_light_and_dark
+            .replace(supports_both) !=
+            supports_both
+        {
+            self.rematch_root_color_scheme_hint(no_gc);
+        }
     }
 
     pub(crate) fn color_scheme_metadata_opts_out_of_adaptive_dark_mode(&self) -> bool {
