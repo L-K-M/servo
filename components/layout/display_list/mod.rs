@@ -14,6 +14,7 @@ use fonts::{FontContext, ShapedTextSlice};
 use gradient::WebRenderGradient;
 use layout_api::ReflowStatistics;
 use paint_api::display_list::{PaintDisplayListInfo, SpatialTreeNodeInfo};
+use pixels::RasterImage;
 use servo_arc::Arc as ServoArc;
 use servo_base::id::{PipelineId, ScrollTreeNodeId};
 use servo_config::opts::{DiagnosticsLogging, DiagnosticsLoggingOption};
@@ -84,6 +85,7 @@ mod paint_timing_handler;
 mod paint_traversal;
 mod stacking_context;
 
+pub(crate) use adaptive_dark::ImageTones;
 pub(crate) use hit_test::{ClosestFragmentSearch, HitTest};
 pub(crate) use paint_timing_handler::PaintTimingHandler;
 pub(crate) use stacking_context::*;
@@ -355,6 +357,58 @@ impl DisplayListBuilder<'_> {
             (Some(painter), Some(backdrop)) => painter.foreground(color, backdrop, min_contrast),
             _ => rgba(color),
         }
+    }
+
+    /// Whether adaptive dark mode paints the `pixels` of the image `image_key` with
+    /// their lightness inverted over `backdrop`, what is painted behind the image.
+    fn inverts_image_lightness(
+        &self,
+        backdrop: Option<&Backdrop>,
+        image_key: wr::ImageKey,
+        pixels: &RasterImage,
+    ) -> bool {
+        let (Some(painter), Some(backdrop)) = (&self.adaptive_dark, backdrop) else {
+            return false;
+        };
+        painter.inverts_image(backdrop, || {
+            self.image_resolver.image_tones.tone(image_key, pixels)
+        })
+    }
+
+    /// Like [`Self::inverts_image_lightness`], for the image of background layer `index`
+    /// of an element with `style`, where `backdrop` is what is painted behind the element.
+    fn inverts_background_image_lightness(
+        &self,
+        backdrop: Option<&Backdrop>,
+        style: &ComputedValues,
+        index: usize,
+        image_key: wr::ImageKey,
+        pixels: &RasterImage,
+    ) -> bool {
+        let (Some(painter), Some(backdrop)) = (&self.adaptive_dark, backdrop) else {
+            return false;
+        };
+        painter.inverts_background_image(style, index, backdrop, || {
+            self.image_resolver.image_tones.tone(image_key, pixels)
+        })
+    }
+
+    /// Paints what follows with its lightness inverted, for adaptive dark mode, until the
+    /// matching `pop_stacking_context`.
+    fn push_inverted_lightness(&mut self, state: &TraversalState) {
+        let spatial_id = self.spatial_id(state.spatial_id);
+        self.wr().push_stacking_context(
+            spatial_id,
+            PrimitiveFlags::empty(),
+            None,
+            TransformStyle::Flat,
+            wr::MixBlendMode::Normal,
+            &[adaptive_dark::inverted_lightness_filter()],
+            &[],
+            RasterSpace::Screen,
+            StackingContextFlags::empty(),
+            None,
+        );
     }
 
     /// The area the canvas background covers.
@@ -974,25 +1028,18 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         let common = self.common_properties(state, clip, &style);
 
         if let Some(image_key) = fragment.image_key {
-            let inverts_lightness = fragment.is_inline_svg &&
+            let inverts_lightness = if fragment.is_inline_svg {
                 match (&self.adaptive_dark, &state.backdrop) {
                     (Some(painter), Some(backdrop)) => painter.inverts_inline_svg(&style, backdrop),
                     _ => false,
-                };
+                }
+            } else {
+                fragment.pixels.as_ref().is_some_and(|pixels| {
+                    self.inverts_image_lightness(state.backdrop.as_ref(), image_key, pixels)
+                })
+            };
             if inverts_lightness {
-                let spatial_id = self.spatial_id(state.spatial_id);
-                self.wr().push_stacking_context(
-                    spatial_id,
-                    PrimitiveFlags::empty(),
-                    None,
-                    TransformStyle::Flat,
-                    wr::MixBlendMode::Normal,
-                    &[adaptive_dark::inverted_lightness_filter()],
-                    &[],
-                    RasterSpace::Screen,
-                    StackingContextFlags::empty(),
-                    None,
-                );
+                self.push_inverted_lightness(state);
             }
             self.wr().push_image(
                 &common,
@@ -2105,11 +2152,14 @@ impl<'a> BuilderForBoxFragment<'a> {
                         .to_i32()
                     });
 
-                    let Some(image_key) = builder.image_resolver.image_key_from_cached_image(
-                        &image,
-                        preferred_size.unwrap_or(default_size),
-                        node,
-                    ) else {
+                    let Some((image_key, pixels)) = builder
+                        .image_resolver
+                        .image_key_and_pixels_from_cached_image(
+                            &image,
+                            preferred_size.unwrap_or(default_size),
+                            node,
+                        )
+                    else {
                         continue;
                     };
 
@@ -2117,6 +2167,17 @@ impl<'a> BuilderForBoxFragment<'a> {
                         let needs_blending = layer.blend_mode != BackgroundBlendMode::Normal;
                         if needs_blending {
                             push_stacking_context(builder, layer.blend_mode, Default::default());
+                        }
+                        // An icon drawn for a light page, on a page that got dark.
+                        let inverts_lightness = builder.inverts_background_image_lightness(
+                            state.backdrop.as_ref(),
+                            style,
+                            index,
+                            image_key,
+                            &pixels,
+                        );
+                        if inverts_lightness {
+                            builder.push_inverted_lightness(state);
                         }
 
                         if layer.repeat {
@@ -2141,6 +2202,9 @@ impl<'a> BuilderForBoxFragment<'a> {
                             )
                         }
 
+                        if inverts_lightness {
+                            builder.wr().pop_stacking_context();
+                        }
                         if needs_blending {
                             builder.wr().pop_stacking_context();
                         }

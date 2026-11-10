@@ -47,6 +47,53 @@ const CARD_POINT: (u32, u32) = (340, 340);
 /// The area the card's glyph is drawn in.
 const CARD_GLYPH_AREA: (u32, u32, u32, u32) = (250, 250, 300, 300);
 
+/// Where the image of the image cases is: 100 by 100 pixels, clear of the glyph and the
+/// `<canvas>`.
+const IMAGE_STYLE: &str = "position:fixed;left:250px;top:250px;width:100px;height:100px";
+/// Inside the artwork on the left of those images.
+const ARTWORK_POINT: (u32, u32) = (265, 300);
+/// Inside those images, to the right of their artwork.
+const BESIDE_ARTWORK_POINT: (u32, u32) = (330, 300);
+
+/// Inside the glyph of the caption that the caption case puts over its image.
+const CAPTION_POINT: (u32, u32) = (260, 270);
+
+/// A PNG of 10 by 10 pixels: four black columns on the left, the rest transparent.
+const DARK_ON_CLEAR_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs\
+    +9AAAAFUlEQVR42mNgYGD4j4ZxglGFdFQIAI3dJ9mgfgNXAAAAAElFTkSuQmCC";
+
+/// A PNG of 8 by 8 pixels: 32 different dark colors on the left half, the rest transparent.
+/// So many colors make a picture, not a logo.
+const DARK_PICTURE_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76L\
+    AAAASUlEQVR42m3OMREAMQACwZRIQAIS8G8sufofZra7giPpGkFxvpMJENQrCAGCZgUlQNCuQOaD+WA+eH0gQFCvIAQI\
+    mhWUAEH7Dx4hginhq6osBAAAAABJRU5ErkJggg==";
+
+/// The URL of an SVG image of 100 by 100 pixels with `shapes`. Their colors need names:
+/// `#` would end the URL.
+fn svg(shapes: &str) -> String {
+    format!(
+        "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>\
+         {shapes}</svg>"
+    )
+}
+
+/// An `<img>` of `source` at [`IMAGE_STYLE`].
+fn image(source: &str) -> String {
+    format!("<img style='{IMAGE_STYLE}' src=\"{source}\">")
+}
+
+/// An element at [`IMAGE_STYLE`] with `source` as its background image, repeated as `repeat`
+/// says. The image's quotes would end a `style` attribute.
+fn background_image(source: &str, repeat: &str) -> String {
+    format!(
+        "<style>#icon{{{IMAGE_STYLE};background:url(\"{source}\") {repeat}}}</style>\
+         <div id=icon></div>"
+    )
+}
+
+/// Black artwork on the left of a transparent image.
+const DARK_ARTWORK: &str = "<rect width='40' height='100'/>";
+
 /// A new URL for a page with `head` and [`PLAIN_BODY`].
 fn page(head: &str) -> Url {
     static PAGES: AtomicUsize = AtomicUsize::new(0);
@@ -124,6 +171,16 @@ impl Painted {
     fn has_readable_dark_card(&self) -> bool {
         let card = self.pixel(CARD_POINT);
         luminance(card) < 0.03 && self.max_contrast(CARD_GLYPH_AREA, card) >= 4.5
+    }
+
+    /// Whether the artwork of the image case is light on a part that is as dark as the page.
+    fn has_light_artwork(&self) -> bool {
+        let beside = self.pixel(BESIDE_ARTWORK_POINT);
+        luminance(self.pixel(ARTWORK_POINT)) > 0.5 &&
+            beside
+                .iter()
+                .zip(self.canvas)
+                .all(|(a, b)| a.abs_diff(b) <= 2)
     }
 
     fn is_authored_light(&self) -> bool {
@@ -398,6 +455,132 @@ fn test_adaptive_dark_mode() {
         harness.load(page(head));
         harness.assert_adapted(case);
     }
+
+    // A dark logo on a transparent background would vanish on the darkened page: its
+    // lightness is inverted. So is that of a dark icon in a background that it does not fill.
+    let dark_svg = svg(DARK_ARTWORK);
+    for (case, markup) in [
+        ("dark SVG image", image(&dark_svg)),
+        ("dark PNG image", image(DARK_ON_CLEAR_PNG)),
+        (
+            "dark background icon",
+            background_image(&dark_svg, "no-repeat"),
+        ),
+    ] {
+        harness.load(page(&markup));
+        let painted = harness.painted_when(Painted::has_light_artwork);
+        assert!(
+            painted.has_light_artwork(),
+            "{case}: artwork {:?}, beside it {:?}, {}",
+            painted.pixel(ARTWORK_POINT),
+            painted.pixel(BESIDE_ARTWORK_POINT),
+            painted.describe()
+        );
+    }
+
+    // Scripts still read the image's own pixels.
+    harness.load(page(&image(DARK_ON_CLEAR_PNG)));
+    assert_eq!(
+        harness.evaluate(
+            "(() => { const context = document.createElement('canvas').getContext('2d');\
+             context.drawImage(document.querySelector('img'), 0, 0);\
+             return context.getImageData(1, 5, 1, 1).data.join() })()"
+        ),
+        JSValue::String("0,0,0,255".into())
+    );
+
+    // A black and white logo in a white box: the box turns into the page's dark too.
+    harness.load(page(&image(&svg(
+        "<rect width='100' height='100' fill='white'/><rect x='10' y='10' width='15' height='80'/>",
+    ))));
+    let painted = harness.painted_when(Painted::has_light_artwork);
+    assert!(
+        painted.has_light_artwork(),
+        "black and white logo: artwork {:?}, beside it {:?}, {}",
+        painted.pixel(ARTWORK_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // Images that show on a dark page, pictures, and images that may be codes for a
+    // scanner keep their pixels. `artwork` is the darkest and lightest their artwork may be.
+    let half_dark =
+        svg("<rect width='100' height='100' fill='white'/><rect width='50' height='100'/>");
+    for (case, markup, artwork) in [
+        (
+            "white SVG image",
+            image(&svg("<rect width='40' height='100' fill='white'/>")),
+            0.99..=1.0,
+        ),
+        (
+            "red SVG image",
+            image(&svg("<rect width='40' height='100' fill='red'/>")),
+            0.2..=0.22,
+        ),
+        ("dark picture", image(DARK_PICTURE_PNG), 0.0..=0.05),
+        ("half dark image", image(&half_dark), 0.0..=0.0),
+        (
+            "dark background image that fills its area",
+            background_image(&dark_svg, "repeat"),
+            0.0..=0.0,
+        ),
+    ] {
+        harness.load(page(&markup));
+        // The image shows once its artwork differs from the page around it.
+        let painted =
+            harness.painted_when(|painted| painted.pixel(ARTWORK_POINT) != painted.canvas);
+        let painted_artwork = luminance(painted.pixel(ARTWORK_POINT));
+        assert!(
+            artwork.contains(&painted_artwork),
+            "{case}: artwork {:?}, {}",
+            painted.pixel(ARTWORK_POINT),
+            painted.describe()
+        );
+        assert!(painted.is_adapted(), "{case}: {}", painted.describe());
+    }
+
+    // A dark image on a page that is dark as authored, or in an element that keeps its
+    // light background, has the backdrop it was drawn for.
+    for (case, head) in [
+        (
+            "dark image on a dark page",
+            format!("<style>html{{background:#333}}</style>{}", image(&dark_svg)),
+        ),
+        (
+            "dark image in an opted-out element",
+            format!(
+                "<div style='{IMAGE_STYLE};color-scheme:light only;background:white'>\
+                 <img style='width:100px;height:100px' src=\"{dark_svg}\"></div>"
+            ),
+        ),
+    ] {
+        harness.load(page(&head));
+        let is_painted =
+            |painted: &Painted| painted.pixel(ARTWORK_POINT) != painted.pixel(BESIDE_ARTWORK_POINT);
+        let painted = harness.painted_when(is_painted);
+        assert_eq!(
+            painted.pixel(ARTWORK_POINT),
+            [0, 0, 0],
+            "{case}: {}",
+            painted.describe()
+        );
+    }
+
+    // White text positioned over a picture keeps its color: the page behind both got dark,
+    // but the text was never drawn for the page.
+    harness.load(page(&format!(
+        "{}<span style='position:fixed;left:250px;top:250px;font-size:40px;color:white'>\
+         &#x2588;</span>",
+        image(&svg("<rect width='100' height='100' fill='red'/>"))
+    )));
+    let is_white = |painted: &Painted| painted.pixel(CAPTION_POINT) == [255, 255, 255];
+    let painted = harness.painted_when(is_white);
+    assert!(
+        is_white(&painted),
+        "white text over a picture: {:?}, {}",
+        painted.pixel(CAPTION_POINT),
+        painted.describe()
+    );
 
     // Under a dark theme, as in an embedder with a dark appearance, the root's light
     // color-scheme hint does not opt pages out, but an opt-out still applies.

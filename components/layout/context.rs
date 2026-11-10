@@ -30,6 +30,8 @@ use uuid::Uuid;
 use webrender_api::ImageKey;
 use webrender_api::units::{DeviceIntSize, DeviceSize};
 
+use crate::display_list::ImageTones;
+
 pub(crate) type CachedImageOrError = Result<CachedImage, ResolveImageError>;
 
 pub(crate) struct LayoutContext<'a> {
@@ -138,6 +140,9 @@ pub(crate) struct ImageResolver {
 
     /// The current animation timeline value used to properly initialize animating images.
     pub animation_timeline_value: f64,
+
+    /// What adaptive dark mode knows about the pixels of this document's images.
+    pub image_tones: Arc<ImageTones>,
 }
 
 impl Drop for ImageResolver {
@@ -271,6 +276,24 @@ impl ImageResolver {
                 });
         }
         result
+    }
+
+    /// Resolve a cached image to a WebRender [`ImageKey`] and the pixels it stands for: a
+    /// raster image's own, or those of a vector image rasterized at `size`.
+    pub(crate) fn image_key_and_pixels_from_cached_image(
+        &self,
+        image: &CachedImage,
+        size: DeviceIntSize,
+        node: Option<OpaqueNode>,
+    ) -> Option<(ImageKey, Arc<RasterImage>)> {
+        match image {
+            CachedImage::Raster(raster_image) => Some((raster_image.id?, raster_image.clone())),
+            CachedImage::Vector(vector_image) => {
+                let rasterized_image =
+                    self.rasterize_vector_image(vector_image.id, size, node?, vector_image.svg_id)?;
+                Some((rasterized_image.id?, Arc::new(rasterized_image)))
+            },
+        }
     }
 
     /// Resolve a cached image to a WebRender [`ImageKey`]
