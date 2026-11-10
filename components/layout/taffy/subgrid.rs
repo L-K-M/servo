@@ -273,6 +273,14 @@ fn span_and_offset(
     end: LineResolution,
     track_count: usize,
 ) -> (usize, usize) {
+    // Definite lines past each other swap: the item covers the tracks
+    // between the earlier line and the later one.
+    let (start, end) = match (start, end) {
+        (LineResolution::Index(start), LineResolution::Index(end)) if start > end => {
+            (LineResolution::Index(end), LineResolution::Index(start))
+        },
+        _ => (start, end),
+    };
     let span = match (&start, &end) {
         (LineResolution::Span(span), _) | (_, LineResolution::Span(span)) => *span,
         (LineResolution::Index(start), LineResolution::Index(end)) => {
@@ -366,6 +374,15 @@ mod tests {
             span_and_offset(LineResolution::Auto, index(2), 3),
             (1, 1),
             "auto / c ends at c"
+        );
+    }
+
+    #[test]
+    fn reversed_definite_lines_swap() {
+        assert_eq!(
+            span_and_offset(index(3), index(1), 4),
+            (1, 2),
+            "3 / 1 covers the two tracks between lines 1 and 3"
         );
     }
 
