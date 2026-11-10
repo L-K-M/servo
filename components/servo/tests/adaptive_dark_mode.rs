@@ -539,8 +539,10 @@ fn test_adaptive_dark_mode() {
         ),
         ("dark picture", image(DARK_PICTURE_PNG), 0.0..=0.05),
         ("half dark image", image(&half_dark), 0.0..=0.0),
+        // The same image and box as the icon above: declared to repeat, it is a
+        // texture, whatever the sizes are.
         (
-            "dark background image that fills its area",
+            "repeated dark background image",
             background_image(&dark_svg, "repeat"),
             0.0..=0.0,
         ),
@@ -593,12 +595,16 @@ fn test_adaptive_dark_mode() {
          &#x2588;</span>",
         image(&svg("<rect width='100' height='100' fill='red'/>"))
     )));
-    let is_white = |painted: &Painted| painted.pixel(CAPTION_POINT) == [255, 255, 255];
+    let is_white = |painted: &Painted| {
+        painted.pixel(CAPTION_POINT) == [255, 255, 255] &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [255, 0, 0]
+    };
     let painted = harness.painted_when(is_white);
     assert!(
         is_white(&painted),
-        "white text over a picture: {:?}, {}",
+        "white text over a picture: {:?} beside {:?}, {}",
         painted.pixel(CAPTION_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
         painted.describe()
     );
 
