@@ -58,6 +58,9 @@ const BESIDE_ARTWORK_POINT: (u32, u32) = (330, 300);
 /// Inside the glyph of the caption that the caption case puts over its image.
 const CAPTION_POINT: (u32, u32) = (260, 270);
 
+/// The middle of an element at [`IMAGE_STYLE`], where a radio button has its bullet.
+const BULLET_POINT: (u32, u32) = (300, 300);
+
 /// A PNG of 10 by 10 pixels: four black columns on the left, the rest transparent.
 const DARK_ON_CLEAR_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs\
     +9AAAAFUlEQVR42mNgYGD4j4ZxglGFdFQIAI3dJ9mgfgNXAAAAAElFTkSuQmCC";
@@ -295,6 +298,14 @@ fn test_adaptive_dark_mode() {
     // Off by default.
     harness.load(page(""));
     harness.assert_authored_light("default");
+    harness.load(page(&format!("<input type=radio checked style='{IMAGE_STYLE}'>")));
+    let has_black_bullet = |painted: &Painted| luminance(painted.pixel(BULLET_POINT)) < 0.01;
+    let painted = harness.painted_when(has_black_bullet);
+    assert!(
+        has_black_bullet(&painted),
+        "authored radio bullet: {:?}",
+        painted.pixel(BULLET_POINT)
+    );
 
     // On: the canvas turns dark, the text light, the <canvas> keeps its pixels, and
     // scripts read the authored colors.
@@ -579,6 +590,18 @@ fn test_adaptive_dark_mode() {
         is_white(&painted),
         "white text over a picture: {:?}, {}",
         painted.pixel(CAPTION_POINT),
+        painted.describe()
+    );
+
+    // The bullet of a checked radio button is a mark like text: it turns light on the
+    // darkened control.
+    harness.load(page(&format!("<input type=radio checked style='{IMAGE_STYLE}'>")));
+    let has_light_bullet = |painted: &Painted| luminance(painted.pixel(BULLET_POINT)) > 0.5;
+    let painted = harness.painted_when(has_light_bullet);
+    assert!(
+        has_light_bullet(&painted),
+        "radio bullet: {:?}, {}",
+        painted.pixel(BULLET_POINT),
         painted.describe()
     );
 

@@ -389,12 +389,16 @@ input[type="radio"]::after {
   border-radius: 50%;
 }
 
+/* The bullet is all border, in the text color like the check mark of a checkbox: a mark is
+   a foreground, which stays visible where the control's background is painted in another
+   color (a dark color scheme, adaptive dark mode). */
 input[type="radio"]:checked::after {
-  background: black;
+  box-sizing: border-box;
+  border: 4px solid currentColor;
 }
 
 input[type="radio"]:checked:disabled::after {
-  background: grey;
+  border-color: grey;
 }
 
 td[align="left"]    { text-align: left; }
