@@ -8,16 +8,17 @@
 //! subgrid item come out as implicit auto tracks sized to its content, and
 //! wide content widens the item and the page far past the viewport. This
 //! module approximates subgrid by resolving the slice of the parent grid's
-//! explicit track list that the item spans, together with the line names
-//! covering that slice, so the item's children lay out against the parent's
-//! tracks.
+//! track list that the item spans, together with the line names covering
+//! that slice, so the item's children lay out against the parent's tracks.
 //!
-//! The approximation covers the common cases: an explicit parent track list
-//! and a definite or spanning placement. It does not resolve parent
-//! `repeat(auto-fill, ...)` lists, implicit parent tracks, or subgrids of
-//! subgrids; those keep the previous behavior (implicit auto tracks). The
-//! subgrid's own `subgrid <line-name-list>` names override the sliced parent
-//! names when they are plain name groups.
+//! A subgrid's own resolved tracks serve as the parent data for subgrids
+//! nested inside it, and [`SubgridTemplates::re_resolve`] re-derives the
+//! slice when a restyle changes the styles it was resolved from. The
+//! approximation does not resolve parent `repeat(auto-fill, ...)` lists or
+//! auto-repeating `<track-repeat>` groups; those keep the previous behavior
+//! (implicit auto tracks), as does inheriting the parent grid's gutters.
+//! The subgrid's own `subgrid <line-name-list>` names override the sliced
+//! parent names when they are plain name groups.
 
 use malloc_size_of_derive::MallocSizeOf;
 use style::OwnedSlice;
@@ -26,8 +27,14 @@ use style::values::computed::{GridLine, GridTemplateComponent, Integer, LengthPe
 use style::values::generics::grid::{LineNameList, LineNameListValue, RepeatCount, TrackListValue};
 use stylo_atoms::atom;
 
-/// The resolved template for one axis of a subgrid item.
-#[derive(Debug, MallocSizeOf)]
+/// The most expanded track values one axis may materialize from
+/// `<track-repeat>` groups. A larger count (a page can ask for
+/// `repeat(2147483647, ...)`) is not sliced here; the axis keeps the
+/// previous behavior instead of allocating the whole list.
+const MAX_EXPANDED_TRACKS: usize = 10_000;
+
+/// One axis of grid tracks with the line names for their edges.
+#[derive(Clone, Debug, MallocSizeOf)]
 pub(crate) struct SubgridAxisTemplate {
     // The stylo values use stylo's separate malloc trait; the layout tree is
     // rebuilt per layout pass, so they are not measured here.
@@ -47,42 +54,116 @@ impl SubgridAxisTemplate {
     }
 }
 
-/// Fallback templates for a subgrid item, one per axis. An axis is `Some`
-/// only when it is `subgrid` and its fallback could be resolved from the
-/// parent's explicit track list.
+/// Fallback templates for a subgrid item. Each axis is `Some` only when it
+/// is `subgrid` and its slice could be resolved from the parent's tracks.
 #[derive(Debug, Default, MallocSizeOf)]
 pub(crate) struct SubgridTemplates {
+    /// The slice of the parent's tracks this item spans.
     pub columns: Option<SubgridAxisTemplate>,
     pub rows: Option<SubgridAxisTemplate>,
+    /// The parent axis data the slices were resolved from, kept so a
+    /// restyle can re-resolve them against changed styles.
+    parent_columns: Option<SubgridAxisTemplate>,
+    parent_rows: Option<SubgridAxisTemplate>,
 }
 
-/// Resolve the fallback templates for one grid item whose parent grid has
-/// `parent` computed values. Returns `None` when no axis needs one.
+impl SubgridTemplates {
+    /// Re-resolve this item's slices after its own style changed, against
+    /// the parent data they were originally resolved from.
+    pub(crate) fn re_resolve(
+        &self,
+        item: &style::properties::ComputedValues,
+    ) -> Option<SubgridTemplates> {
+        resolve_for_item(
+            self.parent_columns.as_ref(),
+            self.parent_rows.as_ref(),
+            item,
+        )
+    }
+}
+
+/// The track and name data one axis of a grid container exposes to its grid
+/// items: its explicit track list (fixed `<track-repeat>` groups expanded),
+/// or the axis's resolved fallback when the container is itself a subgrid.
+/// Returns `None` for `none`, `masonry` and auto-repeating lists.
+pub(crate) fn axis_source(
+    component: &GridTemplateComponent,
+    own_fallback: Option<&SubgridAxisTemplate>,
+) -> Option<SubgridAxisTemplate> {
+    match component {
+        style::values::generics::grid::GenericGridTemplateComponent::TrackList(list) => {
+            let mut tracks = Vec::new();
+            let mut names = Some(list.line_names.clone());
+            for value in list.values.iter() {
+                match value {
+                    TrackListValue::TrackSize(_) => tracks.push(value.clone()),
+                    TrackListValue::TrackRepeat(repeat) => match repeat.count {
+                        RepeatCount::Number(count) => {
+                            let repeated = count.max(0) as usize * repeat.track_sizes.len().max(1);
+                            if tracks.len() + repeated > MAX_EXPANDED_TRACKS {
+                                return None;
+                            }
+                            names = None;
+                            for _ in 0..count.max(0) {
+                                for size in repeat.track_sizes.iter() {
+                                    tracks.push(TrackListValue::TrackSize(size.clone()));
+                                }
+                            }
+                        },
+                        RepeatCount::AutoFill | RepeatCount::AutoFit => return None,
+                    },
+                }
+            }
+            if tracks.is_empty() {
+                return None;
+            }
+            let line_names = names.unwrap_or_else(|| unnamed_line_names(tracks.len() + 1));
+            Some(SubgridAxisTemplate { tracks, line_names })
+        },
+        style::values::generics::grid::GenericGridTemplateComponent::Subgrid(_) => {
+            own_fallback.cloned()
+        },
+        style::values::generics::grid::GenericGridTemplateComponent::None => None,
+        style::values::generics::grid::GenericGridTemplateComponent::Masonry => None,
+    }
+}
+
+/// Resolve the fallback templates for one grid item whose parent grid
+/// exposes `parent_columns` and `parent_rows`. Returns `None` when no axis
+/// needs a fallback or none could be resolved.
 pub(crate) fn resolve_for_item(
-    parent: &style::properties::ComputedValues,
+    parent_columns: Option<&SubgridAxisTemplate>,
+    parent_rows: Option<&SubgridAxisTemplate>,
     item: &style::properties::ComputedValues,
 ) -> Option<SubgridTemplates> {
     let position = item.get_position();
-    let parent_position = parent.get_position();
-    let mut templates = SubgridTemplates::default();
+    let mut templates = SubgridTemplates {
+        parent_columns: parent_columns.cloned(),
+        parent_rows: parent_rows.cloned(),
+        ..Default::default()
+    };
 
     if let style::values::generics::grid::GenericGridTemplateComponent::Subgrid(names) =
         &position.grid_template_columns
     {
-        templates.columns = resolve_axis(
-            &parent_position.grid_template_columns,
-            names,
-            (&position.grid_column_start, &position.grid_column_end),
-        );
+        templates.columns = parent_columns.and_then(|parent| {
+            resolve_axis(
+                parent,
+                names,
+                (&position.grid_column_start, &position.grid_column_end),
+            )
+        });
     }
     if let style::values::generics::grid::GenericGridTemplateComponent::Subgrid(names) =
         &position.grid_template_rows
     {
-        templates.rows = resolve_axis(
-            &parent_position.grid_template_rows,
-            names,
-            (&position.grid_row_start, &position.grid_row_end),
-        );
+        templates.rows = parent_rows.and_then(|parent| {
+            resolve_axis(
+                parent,
+                names,
+                (&position.grid_row_start, &position.grid_row_end),
+            )
+        });
     }
 
     (templates.columns.is_some() || templates.rows.is_some()).then_some(templates)
@@ -100,63 +181,26 @@ enum LineResolution {
     Span(usize),
 }
 
-/// Resolve the fallback template for one axis: the parent's explicit tracks
-/// covered by the item's placement, and the line names covering that slice.
+/// Resolve the fallback for one axis: the parent's tracks covered by the
+/// item's placement, and the line names covering that slice.
 fn resolve_axis(
-    parent_template: &GridTemplateComponent,
+    parent: &SubgridAxisTemplate,
     subgrid_names: &LineNameList<Integer>,
     placement: (&GridLine, &GridLine),
 ) -> Option<SubgridAxisTemplate> {
-    let parent_tracks = match parent_template {
-        style::values::generics::grid::GenericGridTemplateComponent::TrackList(list)
-            if !list.has_auto_repeat() =>
-        {
-            list
-        },
-        // A subgrid of a subgrid, a masonry parent, or an auto-repeating
-        // parent cannot be sliced here.
-        _ => return None,
-    };
-
-    // Expand fixed <track-repeat> groups so slices can start and end inside
-    // them. Names only stay aligned with the values while none are expanded
-    // in place, so those lists keep the parent's name groups and the others
-    // fall back to unnamed lines.
-    let mut tracks = Vec::new();
-    let mut names = Some(parent_tracks.line_names.clone());
-    for value in parent_tracks.values.iter() {
-        match value {
-            TrackListValue::TrackSize(_) => tracks.push(value.clone()),
-            TrackListValue::TrackRepeat(repeat) => match repeat.count {
-                RepeatCount::Number(count) => {
-                    names = None;
-                    for _ in 0..count.max(0) {
-                        for size in repeat.track_sizes.iter() {
-                            tracks.push(TrackListValue::TrackSize(size.clone()));
-                        }
-                    }
-                },
-                RepeatCount::AutoFill | RepeatCount::AutoFit => return None,
-            },
-        }
-    }
-
+    let tracks = &parent.tracks;
     let track_count = tracks.len();
     if track_count == 0 {
         return None;
     }
     let occurrences = |ident: &style::Atom| -> Vec<usize> {
-        names
-            .as_deref()
-            .map(|names| {
-                names
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, set)| set.iter().any(|name| name.0 == *ident))
-                    .map(|(index, _)| index)
-                    .collect()
-            })
-            .unwrap_or_default()
+        parent
+            .line_names
+            .iter()
+            .enumerate()
+            .filter(|(_, set)| set.iter().any(|name| name.0 == *ident))
+            .map(|(index, _)| index)
+            .collect()
     };
 
     let start = resolve_line(placement.0, track_count, &occurrences);
@@ -164,18 +208,15 @@ fn resolve_axis(
     let (start_index, count) = span_and_offset(start, end, track_count);
 
     let tracks = tracks[start_index..start_index + count].to_vec();
-    let line_names = match names {
-        Some(names) => names[start_index..start_index + count + 1].to_vec().into(),
-        None => (0..count + 1)
-            .map(|_| OwnedSlice::from(Vec::new()))
-            .collect::<Vec<_>>()
-            .into(),
-    };
-    let line_names = subgrid_line_names(subgrid_names, count)
-        .map(OwnedSlice::from)
-        .unwrap_or(line_names);
+    let mut line_names = parent.line_names[start_index..start_index + count + 1].to_vec();
+    if let Some(own_names) = subgrid_line_names(subgrid_names, count) {
+        line_names = own_names;
+    }
 
-    Some(SubgridAxisTemplate { tracks, line_names })
+    Some(SubgridAxisTemplate {
+        tracks,
+        line_names: line_names.into(),
+    })
 }
 
 /// Resolve one grid placement line of the item's span against the parent's
@@ -269,6 +310,13 @@ fn subgrid_line_names(
     groups.resize(count + 1, OwnedSlice::from(Vec::new()));
     groups.truncate(count + 1);
     Some(groups)
+}
+
+fn unnamed_line_names(count: usize) -> OwnedSlice<OwnedSlice<CustomIdent>> {
+    (0..count)
+        .map(|_| OwnedSlice::from(Vec::new()))
+        .collect::<Vec<_>>()
+        .into()
 }
 
 #[cfg(test)]
