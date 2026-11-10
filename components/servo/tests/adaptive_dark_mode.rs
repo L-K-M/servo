@@ -777,6 +777,7 @@ fn test_adaptive_dark_mode() {
         for (case, head) in [
             ("metadata dark", "<meta name=color-scheme content=dark>"),
             ("CSS dark", "<style>:root{color-scheme:dark}</style>"),
+            ("CSS normal", "<style>:root{color-scheme:normal}</style>"),
             (
                 "metadata light dark",
                 "<meta name=color-scheme content='light dark'>",
