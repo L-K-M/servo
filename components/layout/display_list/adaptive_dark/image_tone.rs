@@ -41,12 +41,15 @@ pub(crate) enum ImageTone {
 }
 
 /// The tones of a document's images, by image key. Reading an image's pixels takes a
-/// while and a display list is built often, so each image is read once.
+/// while and a display list is built often, so each image is read once. That is sound
+/// because a key's pixels change only for an animated image, which is kept unread.
 #[derive(Default)]
 pub(crate) struct ImageTones(RwLock<FxHashMap<ImageKey, ImageTone>>);
 
 impl ImageTones {
-    /// Forgetting every tone now and then keeps a long-lived document's map small.
+    /// A long-lived document's map stays this small: each new image beyond it replaces
+    /// another one, which is read again if it is still shown. Forgetting them all at once
+    /// would read every image of a page with more images than this for every display list.
     const MAX_IMAGES: usize = 4096;
 
     /// The tone of `image`, which WebRender knows as `image_key`.
@@ -57,8 +60,10 @@ impl ImageTones {
 
         let tone = ImageTone::of(image);
         let mut tones = self.0.write();
-        if tones.len() >= Self::MAX_IMAGES {
-            tones.clear();
+        if tones.len() >= Self::MAX_IMAGES &&
+            let Some(replaced) = tones.keys().next().copied()
+        {
+            tones.remove(&replaced);
         }
         tones.insert(image_key, tone);
         tone
@@ -612,6 +617,31 @@ mod tests {
         assert_eq!(ImageTone::of(&half_black_image(1)), ImageTone::DarkOnClear);
         // Its other frames may show something else, and it has one tone for all of them.
         assert_eq!(ImageTone::of(&half_black_image(2)), ImageTone::Keep);
+    }
+
+    #[test]
+    fn the_cache_replaces_one_image_for_each_new_one_beyond_its_limit() {
+        let tones = ImageTones::default();
+        let image = half_black_image(1);
+        let key = |index: usize| ImageKey::new(webrender_api::IdNamespace(1), index as u32);
+        let known_of_the_first = |tones: &ImageTones| {
+            let tones = tones.0.read();
+            (0..ImageTones::MAX_IMAGES)
+                .filter(|index| tones.contains_key(&key(*index)))
+                .count()
+        };
+
+        for index in 0..ImageTones::MAX_IMAGES {
+            assert_eq!(tones.tone(key(index), &image), ImageTone::DarkOnClear);
+        }
+        assert_eq!(known_of_the_first(&tones), ImageTones::MAX_IMAGES);
+
+        // Ten more images replace ten at most, not all of them.
+        for index in 0..10 {
+            tones.tone(key(ImageTones::MAX_IMAGES + index), &image);
+        }
+        assert_eq!(tones.0.read().len(), ImageTones::MAX_IMAGES);
+        assert!(known_of_the_first(&tones) >= ImageTones::MAX_IMAGES - 10);
     }
 
     #[test]
