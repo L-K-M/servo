@@ -195,13 +195,7 @@ impl Painter {
         ));
 
         rendering_context.prepare_for_rendering();
-        let clear_color = servo_config::pref!(shell_background_color_rgba);
-        let clear_color = ColorF::new(
-            clear_color[0] as f32,
-            clear_color[1] as f32,
-            clear_color[2] as f32,
-            clear_color[3] as f32,
-        );
+        let clear_color = shell_background_color();
 
         // Use same texture upload method as Gecko with ANGLE:
         // https://searchfox.org/mozilla-central/source/gfx/webrender_bindings/src/bindings.rs#1215-1219
@@ -429,6 +423,9 @@ impl Painter {
                 // Paint the scene.
                 self.clear_background();
                 if let Some(renderer) = self.webrender_renderer.as_mut() {
+                    // The embedder can change the shell's background color at any time, and
+                    // WebRender clears to the color it has before it draws a frame.
+                    renderer.set_clear_color(shell_background_color());
                     let size = self.rendering_context.size2d().to_i32();
                     // A failed render leaves the previous frame on screen; make it visible.
                     if let Err(errors) = renderer.render(size, 0 /* buffer_age */) {
@@ -452,13 +449,9 @@ impl Painter {
         // Always clear the entire RenderingContext, regardless of how many WebViews there are
         // or where they are positioned. This is so WebView actually clears even before the
         // first WebView is ready.
-        let color = servo_config::pref!(shell_background_color_rgba);
-        self.webrender_gl.clear_color(
-            color[0] as f32,
-            color[1] as f32,
-            color[2] as f32,
-            color[3] as f32,
-        );
+        let color = shell_background_color();
+        self.webrender_gl
+            .clear_color(color.r, color.g, color.b, color.a);
         self.webrender_gl.clear(gleam::gl::COLOR_BUFFER_BIT);
     }
 
@@ -1583,6 +1576,18 @@ impl Painter {
             .map(|renderer| renderer.scroll_trees_memory_usage(ops))
             .sum::<usize>()
     }
+}
+
+/// The color the shell shows where no page has painted: the `shell_background_color_rgba`
+/// preference, which the embedder can change while Servo runs.
+fn shell_background_color() -> ColorF {
+    let color = pref!(shell_background_color_rgba);
+    ColorF::new(
+        color[0] as f32,
+        color[1] as f32,
+        color[2] as f32,
+        color[3] as f32,
+    )
 }
 
 /// A struct that is reponsible for delaying frame requests until all new canvas images

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
-use servo::{JSValue, LoadStatus, Theme, WebView, WebViewBuilder};
+use servo::{JSValue, LoadStatus, PrefValue, Theme, WebView, WebViewBuilder};
 use url::Url;
 
 use crate::common::{ServoTest, WebViewDelegateImpl, evaluate_javascript};
@@ -265,6 +265,18 @@ impl Harness {
             painted.describe()
         );
         assert_eq!(painted.image, [255, 255, 255], "{case}: <canvas>");
+    }
+
+    /// Sets the color the shell shows where no page paints.
+    fn set_shell_background(&self, color: [f64; 4]) {
+        self.servo_test
+            .servo()
+            .set_preference("shell_background_color_rgba", PrefValue::from(color));
+    }
+
+    fn assert_canvas(&self, case: &str, color: [u8; 3]) {
+        let painted = self.painted_when(|painted| painted.canvas == color);
+        assert_eq!(painted.canvas, color, "{case}");
     }
 
     fn assert_adapted(&self, case: &str) {
@@ -678,4 +690,14 @@ fn test_adaptive_dark_mode() {
     harness.assert_adapted("before turning off");
     harness.webview.set_adaptive_dark_mode(false);
     harness.assert_authored_light("turned off");
+
+    // The shell's background color is the embedder's. It shows where no page paints, such
+    // as a document without a root element, and follows the preference while Servo runs.
+    harness.set_shell_background([0.0, 0.0, 1.0, 1.0]);
+    harness.load(page(""));
+    harness.evaluate("document.documentElement.remove()");
+    harness.assert_canvas("blue shell", [0, 0, 255]);
+    harness.set_shell_background([1.0, 0.0, 0.0, 1.0]);
+    harness.assert_canvas("red shell", [255, 0, 0]);
+    harness.set_shell_background([1.0, 1.0, 1.0, 1.0]);
 }
