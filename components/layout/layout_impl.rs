@@ -85,7 +85,9 @@ use webrender_api::units::{DevicePixel, LayoutVector2D};
 
 use crate::accessibility::{AccessibilityContext, AccessibilityDamageMap, AccessibilityTree};
 use crate::context::{CachedImageOrError, ImageResolver, LayoutContext};
-use crate::display_list::{DisplayListBuilder, HitTest, PaintTimingHandler, StackingContextTree};
+use crate::display_list::{
+    DisplayListBuilder, HitTest, ImageTones, PaintTimingHandler, StackingContextTree,
+};
 use crate::dom::NodeExt;
 use crate::query::{
     BoxAreaInclusion, find_character_offset_in_fragment_descendants, get_the_text_steps,
@@ -209,6 +211,10 @@ pub struct LayoutThread {
     // for `background-image` or `content` properties) to either the final resolved
     // image data, or an error if the image cache failed to load/decode the image.
     resolved_images_cache: Arc<RwLock<HashMap<ServoUrl, CachedImageOrError>>>,
+
+    /// What adaptive dark mode knows about the pixels of this document's images, kept
+    /// between display lists.
+    image_tones: Arc<ImageTones>,
 
     /// The executors for paint worklets.
     registered_painters: RegisteredPaintersImpl,
@@ -935,6 +941,7 @@ impl LayoutThread {
             paint_api: config.paint_api,
             stylist: Stylist::new(device, QuirksMode::NoQuirks),
             resolved_images_cache: Default::default(),
+            image_tones: Default::default(),
             debug: opts::get().debug.clone(),
             previously_highlighted_dom_node: Cell::new(None),
             paint_timing_handler: Default::default(),
@@ -1141,6 +1148,7 @@ impl LayoutThread {
             origin: reflow_request.origin.clone(),
             image_cache: self.image_cache.clone(),
             resolved_images_cache: self.resolved_images_cache.clone(),
+            image_tones: self.image_tones.clone(),
             pending_images: Mutex::default(),
             pending_rasterization_images: Mutex::default(),
             pending_svg_elements_for_serialization: Mutex::default(),

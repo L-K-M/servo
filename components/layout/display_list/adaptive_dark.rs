@@ -6,7 +6,7 @@
 //! colors while its styles stay as authored.
 //!
 //! Only colors on their way into the display list change. Scripts keep reading the
-//! authored colors from computed styles; images, video, canvas and inline SVG keep theirs.
+//! authored colors from computed styles; photos, video and canvas keep their pixels.
 //! Pages and elements that declare dark support (`color-scheme: dark` or `light dark`) or
 //! forbid any change (`color-scheme: light only`) are painted as authored: for a page, its
 //! root or body declares it. An element that declares it keeps its backgrounds, and its
@@ -35,7 +35,11 @@
 //! - An inline `<svg>` is rasterized with its colors, so a dark icon drawn in the text
 //!   color would vanish on a darkened backdrop. One whose `color` is darker than the
 //!   authored backdrop gets its lightness inverted, keeping hue, like the text around it.
-//!   Images, video and `<canvas>` keep their pixels.
+//! - An image (in an `<img>`, or a background image that does not fill its area, such as an
+//!   icon) is judged by its pixels, see [`ImageTone`]: a dark logo or icon on a
+//!   transparent background and a black and white logo on a light one get their lightness
+//!   inverted where the backdrop got dark. Photos, colorful artwork, video and `<canvas>`
+//!   keep their pixels.
 //!
 //! Lightness is OKLab's: perceptually even, with hue kept in its `a` and `b` axes.
 
@@ -55,6 +59,12 @@ use webrender_api::{ColorF, FilterOp, GradientStop};
 
 use super::background::get_cyclic;
 
+mod image_tone;
+mod painted_areas;
+
+pub(crate) use image_tone::{ImageTone, ImageTones};
+pub(crate) use painted_areas::PaintedAreas;
+
 /// The OKLab lightness that white backgrounds become. It matches the dark surface of a
 /// typical dark theme without being black.
 const DARKEST_BACKGROUND_LIGHTNESS: f32 = 0.21;
@@ -72,6 +82,11 @@ pub(crate) const MIN_TEXT_CONTRAST: f32 = 4.5;
 /// The minimum contrast of focus outlines (WCAG 2 non-text contrast).
 pub(crate) const MIN_OUTLINE_CONTRAST: f32 = 3.0;
 
+/// Text with less contrast than this against its authored backdrop could not be read
+/// there. It was drawn for something the backdrop does not know about, such as a picture
+/// positioned behind it, and keeps its color.
+const UNREADABLE_CONTRAST: f32 = 1.25;
+
 /// Borders keep their authored contrast, however low.
 pub(crate) const MIN_BORDER_CONTRAST: f32 = 1.0;
 
@@ -81,6 +96,10 @@ const DEFAULT_CANVAS: Rgb = Rgb([1.0, 1.0, 1.0]);
 /// Colors this close (in sRGB components) count as the same, so a backdrop that a
 /// darkening left (nearly) unchanged leaves its foregrounds alone.
 const SAME_COLOR_TOLERANCE: f32 = 1.0 / 255.0;
+
+/// A backdrop with a WCAG luminance below this is dark: light artwork shows better on it
+/// than dark artwork does. White and black contrast equally with a luminance of 0.179.
+const DARK_BACKDROP_LUMINANCE: f32 = 0.18;
 
 /// A layer more transparent than this does not change the backdrop.
 const MIN_BACKDROP_ALPHA: f32 = 0.05;
@@ -244,9 +263,15 @@ fn darken_background(color: Rgb) -> Rgb {
 
 /// The color to paint for an opaque foreground `color` that was authored over `authored`
 /// and is now painted over `painted`: the same hue, at the lightness that restores its
-/// authored contrast, at least `min_contrast`, as far as `painted` allows.
+/// authored contrast, at least `min_contrast`, as far as `painted` allows. Text that had
+/// next to no contrast keeps its color, see [`UNREADABLE_CONTRAST`].
 fn adapt_foreground(color: Rgb, authored: Rgb, painted: Rgb, min_contrast: f32) -> Rgb {
-    let target = contrast(color, authored).max(min_contrast);
+    let authored_contrast = contrast(color, authored);
+    if min_contrast >= MIN_TEXT_CONTRAST && authored_contrast < UNREADABLE_CONTRAST {
+        return color;
+    }
+
+    let target = authored_contrast.max(min_contrast);
     let painted_luminance = painted.luminance();
     let lab = color.to_oklab();
 
@@ -435,6 +460,14 @@ impl Backdrop {
         }
     }
 
+    /// This backdrop with an image painted over it that kept its pixels.
+    pub(crate) fn under_image(self) -> Self {
+        Self {
+            over_image: true,
+            ..self
+        }
+    }
+
     /// Whether foregrounds over this backdrop keep their authored colors.
     fn keeps_foregrounds(&self) -> bool {
         self.over_image || self.painted.is_close_to(self.authored)
@@ -565,6 +598,39 @@ impl AdaptiveDarkPainter {
         }
         let color = Rgb::from_color_f(rgba(style.get_inherited_text().clone_color()));
         color.luminance() < backdrop.authored.luminance()
+    }
+
+    /// Whether to paint an image over `backdrop` with [`inverted_lightness_filter`]: its
+    /// `tone` says that it is drawn for a light backdrop, which got dark. `tone` reads the
+    /// image's pixels, so it is asked for last.
+    pub(crate) fn inverts_image(
+        &self,
+        backdrop: &Backdrop,
+        tone: impl FnOnce() -> ImageTone,
+    ) -> bool {
+        !backdrop.keeps_foregrounds() &&
+            backdrop.painted.luminance() < DARK_BACKDROP_LUMINANCE &&
+            tone() != ImageTone::Keep
+    }
+
+    /// Like [`Self::inverts_image`], for the image of background layer `index` of an
+    /// element with `style`, where `backdrop` is behind the element. An image that fills
+    /// its area keeps its pixels, as the text over it keeps its colors.
+    pub(crate) fn inverts_background_image(
+        &self,
+        style: &ComputedValues,
+        index: usize,
+        backdrop: &Backdrop,
+        tone: impl FnOnce() -> ImageTone,
+    ) -> bool {
+        let fills = style
+            .get_background()
+            .background_image
+            .0
+            .get(index)
+            .is_none_or(|image| fills_background_area(style, index, image));
+        // The image is painted over the element's own background color.
+        !fills && self.inverts_image(&backdrop.behind(style), tone)
     }
 
     /// The color to paint for a foreground `color` over `backdrop`. This does not depend on
@@ -744,6 +810,25 @@ mod tests {
         let painted = darken_background(white);
         let text = adapt_foreground(hex(0xaaaaaa), white, painted, MIN_TEXT_CONTRAST);
         assert!(contrast(text, painted) >= MIN_TEXT_CONTRAST - 0.05);
+    }
+
+    #[test]
+    fn text_that_was_unreadable_on_its_backdrop_keeps_its_color() {
+        let white = hex(0xffffff);
+        let painted = darken_background(white);
+        // White text on a white page sits on a picture the backdrop does not know about.
+        for value in [0xffffff, 0xf4f4f4] {
+            let text = adapt_foreground(hex(value), white, painted, MIN_TEXT_CONTRAST);
+            assert_eq!(text, hex(value), "{value:06x}");
+        }
+
+        // Faint text that could be read is still dimmed, to stay faint.
+        let faint = adapt_foreground(hex(0xbbbbbb), white, painted, MIN_TEXT_CONTRAST);
+        assert!(lightness(faint) < lightness(hex(0xbbbbbb)), "{faint:?}");
+
+        // A border in its background's color stays hidden.
+        let border = adapt_foreground(white, white, painted, MIN_BORDER_CONTRAST);
+        assert!(contrast(border, painted) < 1.1, "{border:?}");
     }
 
     #[test]

@@ -12,6 +12,7 @@ use euclid::{Point2D, Rect, Size2D};
 use fonts::{FontMetrics, ShapedTextSlice};
 use layout_api::BoxAreaType;
 use malloc_size_of_derive::MallocSizeOf;
+use pixels::RasterImage;
 use servo_arc::Arc as ServoArc;
 use servo_base::id::PipelineId;
 use servo_base::print_tree::PrintTree;
@@ -132,6 +133,10 @@ pub(crate) struct ImageFragment {
     pub selected: Arc<AtomicBool>,
     /// Whether this image is an inline `<svg>` element, rasterized with its colors.
     pub is_inline_svg: bool,
+    /// The pixels of an image resource, which adaptive dark mode judges it by. Video,
+    /// canvas and inline `<svg>` have none.
+    #[ignore_malloc_size_of = "Shared with the image cache"]
+    pub pixels: Option<Arc<RasterImage>>,
 }
 
 #[derive(MallocSizeOf)]

@@ -534,13 +534,15 @@ impl ReplacedContents {
                         object_fit_size.width.scale_by(scale.0).to_px(),
                         object_fit_size.height.scale_by(scale.0).to_px(),
                     );
-                    layout_context.image_resolver.image_key_from_cached_image(
-                        image,
-                        size,
-                        self.base_fragment_info.tag.map(|tag| tag.node),
-                    )
+                    layout_context
+                        .image_resolver
+                        .image_key_and_pixels_from_cached_image(
+                            image,
+                            size,
+                            self.base_fragment_info.tag.map(|tag| tag.node),
+                        )
                 })
-                .map(|image_key| {
+                .map(|(image_key, pixels)| {
                     Fragment::Image(Arc::new(ImageFragment {
                         base,
                         style: style.clone().into(),
@@ -553,6 +555,7 @@ impl ReplacedContents {
                         natural_height: self.natural_size.height,
                         selected: self.selected.clone(),
                         is_inline_svg: false,
+                        pixels: Some(pixels),
                     }))
                 })
                 .into_iter()
@@ -570,6 +573,7 @@ impl ReplacedContents {
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
                     is_inline_svg: false,
+                    pixels: None,
                 }))]
             },
             ReplacedContentKind::IFrame(iframe) => {
@@ -618,6 +622,7 @@ impl ReplacedContents {
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
                     is_inline_svg: false,
+                    pixels: None,
                 }))]
             },
             ReplacedContentKind::SVGElement {
@@ -676,6 +681,7 @@ impl ReplacedContents {
                             natural_height: self.natural_size.height,
                             selected: self.selected.clone(),
                             is_inline_svg: true,
+                            pixels: None,
                         }))
                     })
                     .into_iter()
