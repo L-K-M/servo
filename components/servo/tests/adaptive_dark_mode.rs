@@ -302,7 +302,10 @@ fn test_adaptive_dark_mode() {
     // Off by default.
     harness.load(page(""));
     harness.assert_authored_light("default");
-    harness.load(page(&format!("<input type=radio checked style='{IMAGE_STYLE}'>")));
+    // The bullet of a checked radio button is black whatever the page's color for inputs.
+    harness.load(page(&format!(
+        "<input type=radio checked style='{IMAGE_STYLE};color:white'>"
+    )));
     let has_black_bullet = |painted: &Painted| luminance(painted.pixel(BULLET_POINT)) < 0.01;
     let painted = harness.painted_when(has_black_bullet);
     assert!(
@@ -650,7 +653,9 @@ fn test_adaptive_dark_mode() {
 
     // The bullet of a checked radio button is a mark like text: it turns light on the
     // darkened control.
-    harness.load(page(&format!("<input type=radio checked style='{IMAGE_STYLE}'>")));
+    harness.load(page(&format!(
+        "<input type=radio checked style='{IMAGE_STYLE}'>"
+    )));
     let has_light_bullet = |painted: &Painted| luminance(painted.pixel(BULLET_POINT)) > 0.5;
     let painted = harness.painted_when(has_light_bullet);
     assert!(

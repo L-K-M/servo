@@ -389,12 +389,13 @@ input[type="radio"]::after {
   border-radius: 50%;
 }
 
-/* The bullet is all border, in the text color like the check mark of a checkbox: a mark is
-   a foreground, which stays visible where the control's background is painted in another
-   color (a dark color scheme, adaptive dark mode). */
+/* The bullet is all border, in the color of text in a field: a mark is a foreground, which
+   stays visible where the control's background is painted in another color (a dark color
+   scheme, adaptive dark mode). Not currentColor: a page's text color for its inputs, which
+   may be light or transparent, is not meant for the bullet. */
 input[type="radio"]:checked::after {
   box-sizing: border-box;
-  border: 4px solid currentColor;
+  border: 4px solid FieldText;
 }
 
 input[type="radio"]:checked:disabled::after {
