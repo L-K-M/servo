@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
-use servo::{JSValue, LoadStatus, WebView, WebViewBuilder};
+use servo::{JSValue, LoadStatus, Theme, WebView, WebViewBuilder};
 use url::Url;
 
 use crate::common::{ServoTest, WebViewDelegateImpl, evaluate_javascript};
@@ -306,6 +306,14 @@ fn test_adaptive_dark_mode() {
         [255, 255, 255],
         "opted-out element"
     );
+
+    // Under a dark theme, as in an embedder with a dark appearance, the root's light
+    // color-scheme hint does not opt pages out, but an opt-out still applies.
+    harness.webview.notify_theme_change(Theme::Dark);
+    harness.load(page(""));
+    harness.assert_adapted("unstyled page under a dark theme");
+    harness.load(page("<meta name=color-scheme content='light only'>"));
+    harness.assert_authored_light("metadata light only under a dark theme");
 
     // Turning it off repaints the current page as authored.
     harness.load(page(""));
