@@ -27,6 +27,31 @@
     display: grid;
     grid-template-rows: subgrid;
   }
+  #nparent {
+    display: grid;
+    grid-template-columns: [s] 100px [m] 100px [e];
+    width: 200px;
+  }
+  #nmid {
+    grid-column: s / e;
+    display: grid;
+    grid-template-columns: subgrid;
+  }
+  #ninner {
+    grid-column: s / e;
+    display: grid;
+    grid-template-columns: subgrid;
+  }
+  #dparent {
+    display: grid;
+    grid-template-columns: 50px 50px;
+    width: 100px;
+  }
+  #dsub {
+    grid-column: 1 / span 2;
+    display: grid;
+    grid-template-columns: subgrid;
+  }
 </style>
 <div id="parent">
   <div id="sub">
@@ -39,6 +64,19 @@
   <div id="rsub">
     <div id="tall" style="grid-row: 1; width: 10px; height: 300px"></div>
     <div id="probe-row" style="grid-row: 2; width: 10px; height: 10px"></div>
+  </div>
+</div>
+<div id="nparent">
+  <div id="nmid">
+    <div id="ninner">
+      <div id="wide-nested" style="grid-column: s; width: 350px; height: 20px; white-space: nowrap">wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww</div>
+      <div id="probe-nested" style="grid-column: 2; width: 20px; height: 20px"></div>
+    </div>
+  </div>
+</div>
+<div id="dparent">
+  <div id="dsub">
+    <div id="probe-restyle" style="grid-column: 2; width: 20px; height: 20px"></div>
   </div>
 </div>
 <script>
@@ -67,5 +105,26 @@ test(t => {
     "a child on row line 2 sits after the parent's first 50px track, " +
     "not after a content-sized track");
 }, "subgrid children place against the parent's row tracks");
+
+test(t => {
+  const inner = document.getElementById("ninner");
+  const probe = document.getElementById("probe-nested");
+  assert_approx_equals(
+    probe.offsetLeft - inner.offsetLeft, 100, 1,
+    "a grandchild subgrid covers the grandparent's tracks, two levels down");
+}, "a subgrid nested inside a subgrid uses the outer grid's tracks");
+
+test(t => {
+  const parent = document.getElementById("dparent");
+  const sub = document.getElementById("dsub");
+  const probe = document.getElementById("probe-restyle");
+  assert_approx_equals(
+    probe.offsetLeft - sub.offsetLeft, 50, 1,
+    "before the restyle the probe follows the first 50px track");
+  parent.style.gridTemplateColumns = "80px 80px";
+  assert_approx_equals(
+    probe.offsetLeft - sub.offsetLeft, 80, 1,
+    "after the restyle the probe follows the first 80px track");
+}, "a restyle of the parent grid re-resolves the subgrid tracks");
 </script>
 </body>
