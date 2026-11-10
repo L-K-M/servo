@@ -42,6 +42,7 @@ use style::values::computed::{
 use style::values::generics::NonNegative;
 use style::values::generics::color::ColorOrAuto;
 use style::values::generics::rect::Rect as StyleRect;
+use style::values::specified::color::ColorSchemeFlags;
 use style::values::specified::text::TextDecorationLine;
 use style_traits::{CSSPixel as StyloCSSPixel, DevicePixel as StyloDevicePixel};
 use webrender_api::units::{
@@ -112,6 +113,11 @@ struct PaintedArea {
     is_kept_image: bool,
 }
 
+/// The `Canvas` system color of a dark color scheme, as Stylo computes it for Servo. Stylo
+/// does not export its system colors; an embedder test compares the two.
+static DARK_CANVAS: LazyLock<AbsoluteColor> =
+    LazyLock::new(|| AbsoluteColor::srgb_legacy(30, 30, 30, 1.0));
+
 pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
     fragment_tree: &'a FragmentTree,
@@ -178,6 +184,10 @@ pub(crate) struct DisplayListBuilder<'a> {
 
     /// The [`PaintedArea`]s so far, in paint order. See [`Self::backdrop_at`].
     painted_areas: Vec<PaintedArea>,
+
+    /// Whether the preferred color scheme is dark, which decides the color scheme of
+    /// elements that support both or neither.
+    prefers_dark_color_scheme: bool,
 }
 
 struct PendingCaret {
@@ -239,6 +249,7 @@ impl DisplayListBuilder<'_> {
         frame_focused: bool,
         adaptive_dark_mode: bool,
         is_top_level: bool,
+        prefers_dark_color_scheme: bool,
     ) -> BuiltDisplayList {
         // Build the rest of the display list which inclues all of the WebRender primitives.
         let paint_info = &mut stacking_context_tree.paint_info;
@@ -299,6 +310,7 @@ impl DisplayListBuilder<'_> {
                 .map(|_| AdaptiveDarkPainter::default()),
             is_top_level,
             painted_areas: Vec::new(),
+            prefers_dark_color_scheme,
         };
 
         // Clear any caret color from previous display list constructions.
@@ -509,6 +521,42 @@ impl DisplayListBuilder<'_> {
                 .map(|body| body.style().clone())
                 .unwrap_or_else(|| root_style.clone()),
         )
+    }
+
+    /// The color to paint under a top-level canvas painted from `canvas_style`, or `None`
+    /// when its own color covers it: the `Canvas` system color of the color scheme of the
+    /// root, whose style is `root_style`, as adaptive dark mode paints it.
+    fn default_canvas_color(
+        &self,
+        root_style: &ComputedValues,
+        canvas_style: &ComputedValues,
+    ) -> Option<wr::ColorF> {
+        let background_color =
+            canvas_style.resolve_color(&canvas_style.get_background().background_color);
+        if background_color.alpha >= 1.0 {
+            return None;
+        }
+
+        let authored = match self.uses_dark_color_scheme(root_style) {
+            true => rgba(*DARK_CANVAS),
+            false => rgba(AbsoluteColor::WHITE),
+        };
+        Some(match &self.adaptive_dark {
+            Some(painter) => painter.canvas_underlay(canvas_style, authored),
+            None => authored,
+        })
+    }
+
+    /// Whether an element with `style` uses a dark color scheme, by the rule that picks
+    /// its system colors in Stylo: the one of light and dark that it supports, or else the
+    /// preferred one.
+    fn uses_dark_color_scheme(&self, style: &ComputedValues) -> bool {
+        let schemes = style.get_inherited_ui().color_scheme.bits;
+        let supports_dark = schemes.contains(ColorSchemeFlags::DARK);
+        if supports_dark != schemes.contains(ColorSchemeFlags::LIGHT) {
+            return supports_dark;
+        }
+        self.prefers_dark_color_scheme
     }
 
     fn pipeline_id(&self) -> wr::PipelineId {
@@ -1222,18 +1270,17 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             }
         };
 
-        // The shell's white would show through a canvas that is not opaque, so adaptive dark
-        // mode paints the darkened default canvas under it, as `Backdrop::for_canvas` assumes.
-        // A frame's canvas stays transparent over its parent's page.
-        let underlay = self
-            .adaptive_dark
-            .as_ref()
-            .filter(|_| self.is_top_level)
-            .and_then(|painter| painter.canvas_underlay(&source_style));
-        if let Some(underlay) = underlay {
-            let painting_area = self.canvas_painting_area();
-            let common = self.common_properties(state, painting_area, &source_style);
-            self.wr().push_rect(&common, painting_area, underlay);
+        // Under a canvas that is not opaque goes the default canvas of the root's color
+        // scheme. The shell's background color cannot stand in for it: it is one color for
+        // every page, and the embedder may pick it for another scheme. A frame's canvas stays
+        // transparent over its parent's page.
+        if self.is_top_level {
+            let default_canvas = self.default_canvas_color(fragment.style(), &source_style);
+            if let Some(default_canvas) = default_canvas {
+                let painting_area = self.canvas_painting_area();
+                let common = self.common_properties(state, painting_area, &source_style);
+                self.wr().push_rect(&common, painting_area, default_canvas);
+            }
         }
 
         // This can happen if the root fragment does not have a `<body>` child (either because it is

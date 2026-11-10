@@ -194,6 +194,12 @@ impl Painted {
         self.canvas == [255, 255, 255] && luminance(self.ink) < 0.01
     }
 
+    /// Whether the page shows the default colors of a dark color scheme: Stylo's `Canvas`
+    /// and `CanvasText` system colors.
+    fn is_dark_scheme(&self) -> bool {
+        self.canvas == [30, 30, 30] && self.ink == [232, 232, 232]
+    }
+
     fn is_adapted(&self) -> bool {
         luminance(self.canvas) < 0.03 &&
             luminance(self.ink) > luminance(self.canvas) &&
@@ -265,6 +271,11 @@ impl Harness {
             painted.describe()
         );
         assert_eq!(painted.image, [255, 255, 255], "{case}: <canvas>");
+    }
+
+    fn assert_dark_scheme(&self, case: &str) {
+        let painted = self.painted_when(Painted::is_dark_scheme);
+        assert!(painted.is_dark_scheme(), "{case}: {}", painted.describe());
     }
 
     /// Sets the color the shell shows where no page paints.
@@ -691,10 +702,51 @@ fn test_adaptive_dark_mode() {
     harness.webview.set_adaptive_dark_mode(false);
     harness.assert_authored_light("turned off");
 
-    // The shell's background color is the embedder's. It shows where no page paints, such
-    // as a document without a root element, and follows the preference while Servo runs.
+    // A page that uses a dark color scheme and sets no colors has that scheme's canvas
+    // under its light default text, not the shell's white. The theme is still dark, so a
+    // page whose CSS supports both schemes uses the dark one. Adaptive dark mode leaves
+    // such pages alone.
+    for adaptive_dark_mode in [false, true] {
+        harness.webview.set_adaptive_dark_mode(adaptive_dark_mode);
+        for (case, head) in [
+            ("metadata dark", "<meta name=color-scheme content=dark>"),
+            ("CSS dark", "<style>:root{color-scheme:dark}</style>"),
+            (
+                "CSS light dark",
+                "<style>:root{color-scheme:light dark}</style>",
+            ),
+        ] {
+            harness.load(page(head));
+            harness.assert_dark_scheme(&format!("{case}, adaptive dark mode {adaptive_dark_mode}"));
+        }
+    }
+    harness.webview.set_adaptive_dark_mode(false);
+
+    // That canvas is the `Canvas` system color, as an element paints it.
+    harness.load(page(
+        "<style>:root{color-scheme:dark}</style><div style='position:fixed;left:300px;\
+         top:300px;width:50px;height:50px;background:Canvas'></div>",
+    ));
+    let painted = harness.painted_when(Painted::is_dark_scheme);
+    assert!(painted.is_dark_scheme(), "{}", painted.describe());
+    assert_eq!(painted.pixel(KEPT_POINT), painted.canvas, "Canvas");
+
+    // Under a light theme, a page that supports only the dark scheme is still dark.
+    harness.webview.notify_theme_change(Theme::Light);
+    harness.load(page("<style>:root{color-scheme:dark}</style>"));
+    harness.assert_dark_scheme("CSS dark under a light theme");
+
+    // The shell's background color is the embedder's. It does not show through a page
+    // that sets no colors, light or darkened.
     harness.set_shell_background([0.0, 0.0, 1.0, 1.0]);
     harness.load(page(""));
+    harness.assert_authored_light("over a blue shell");
+    harness.webview.set_adaptive_dark_mode(true);
+    harness.assert_adapted("darkened over a blue shell");
+    harness.webview.set_adaptive_dark_mode(false);
+
+    // It shows where no page paints, such as a document without a root element, and
+    // follows the preference while Servo runs.
     harness.evaluate("document.documentElement.remove()");
     harness.assert_canvas("blue shell", [0, 0, 255]);
     harness.set_shell_background([1.0, 0.0, 0.0, 1.0]);

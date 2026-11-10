@@ -1659,6 +1659,7 @@ impl LayoutThread {
             reflow_request.frame_focused,
             self.adaptive_dark_mode,
             !self.is_iframe,
+            self.device().color_scheme() == PrefersColorScheme::Dark,
         );
 
         stacking_context_tree.paint_info.paint_timing_info = reflow_request.paint_timing_info;
