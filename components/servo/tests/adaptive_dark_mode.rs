@@ -57,6 +57,8 @@ const BESIDE_ARTWORK_POINT: (u32, u32) = (330, 300);
 
 /// Inside the glyph of the caption that the caption case puts over its image.
 const CAPTION_POINT: (u32, u32) = (260, 270);
+/// Inside a glyph of 40px at 370, 250: right of an element at [`IMAGE_STYLE`].
+const BESIDE_PICTURE_POINT: (u32, u32) = (380, 270);
 
 /// The middle of an element at [`IMAGE_STYLE`], where a radio button has its bullet.
 const BULLET_POINT: (u32, u32) = (300, 300);
@@ -560,8 +562,10 @@ fn test_adaptive_dark_mode() {
         ),
         ("dark picture", image(DARK_PICTURE_PNG), 0.0..=0.05),
         ("half dark image", image(&half_dark), 0.0..=0.0),
+        // The same image and box as the icon above: declared to repeat, it is a
+        // texture, whatever the sizes are.
         (
-            "dark background image that fills its area",
+            "repeated dark background image",
             background_image(&dark_svg, "repeat"),
             0.0..=0.0,
         ),
@@ -614,12 +618,16 @@ fn test_adaptive_dark_mode() {
          &#x2588;</span>",
         image(&svg("<rect width='100' height='100' fill='red'/>"))
     )));
-    let is_white = |painted: &Painted| painted.pixel(CAPTION_POINT) == [255, 255, 255];
+    let is_white = |painted: &Painted| {
+        painted.pixel(CAPTION_POINT) == [255, 255, 255] &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [255, 0, 0]
+    };
     let painted = harness.painted_when(is_white);
     assert!(
         is_white(&painted),
-        "white text over a picture: {:?}, {}",
+        "white text over a picture: {:?} beside {:?}, {}",
         painted.pixel(CAPTION_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
         painted.describe()
     );
 
@@ -670,6 +678,64 @@ fn test_adaptive_dark_mode() {
         has_light_text_in_dark_box(&painted),
         "white box over a picture: text {:?} in {:?}, {}",
         painted.pixel(CAPTION_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // An opaque picture is such a backdrop as a background image too, where it does not
+    // count as filling the background: at a size of its own, under text positioned over
+    // it, and as a strip repeated along one axis, under the element's own text.
+    for (case, body) in [
+        (
+            "black text over a background picture",
+            format!(
+                "<div style='position:fixed;left:240px;top:240px;width:140px;height:140px;\
+                 background:url({LIGHT_PICTURE_PNG}) 0 0/140px 140px no-repeat'></div>\
+                 <span style='position:fixed;left:250px;top:250px;font-size:40px;\
+                 color:black'>&#x2588;</span>"
+            ),
+        ),
+        (
+            "black text on a repeated background strip",
+            format!(
+                "<div style='position:fixed;left:240px;top:240px;width:140px;height:140px;\
+                 background:url({LIGHT_PICTURE_PNG}) 0 0/20px 140px repeat-x;color:black;\
+                 font-size:40px;line-height:1;padding:10px;box-sizing:border-box'>\
+                 &#x2588;</div>"
+            ),
+        ),
+    ] {
+        harness.load(page(&body));
+        let is_black_on_picture = |painted: &Painted| {
+            painted.pixel(CAPTION_POINT) == [0, 0, 0] &&
+                painted.pixel(BESIDE_ARTWORK_POINT) == [220, 220, 220]
+        };
+        let painted = harness.painted_when(is_black_on_picture);
+        assert!(
+            is_black_on_picture(&painted),
+            "{case}: {:?} beside {:?}, {}",
+            painted.pixel(CAPTION_POINT),
+            painted.pixel(BESIDE_ARTWORK_POINT),
+            painted.describe()
+        );
+    }
+
+    // Only the part of a background picture that shows in its element is one: text beside
+    // the element, where the rest of a larger picture would lie, is over the page.
+    harness.load(page(&format!(
+        "<div style='{IMAGE_STYLE};background:url({LIGHT_PICTURE_PNG}) -150px -150px/400px 400px \
+         no-repeat'></div><span style='position:fixed;left:370px;top:250px;font-size:40px;\
+         color:black'>&#x2588;</span>"
+    )));
+    let has_light_text_beside = |painted: &Painted| {
+        luminance(painted.pixel(BESIDE_PICTURE_POINT)) > 0.5 &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [220, 220, 220]
+    };
+    let painted = harness.painted_when(has_light_text_beside);
+    assert!(
+        has_light_text_beside(&painted),
+        "text beside a clipped background picture: {:?} beside {:?}, {}",
+        painted.pixel(BESIDE_PICTURE_POINT),
         painted.pixel(BESIDE_ARTWORK_POINT),
         painted.describe()
     );

@@ -60,8 +60,10 @@ use webrender_api::{ColorF, FilterOp, GradientStop};
 use super::background::get_cyclic;
 
 mod image_tone;
+mod painted_areas;
 
 pub(crate) use image_tone::{ImageTone, ImageTones};
+pub(crate) use painted_areas::PaintedAreas;
 
 /// The OKLab lightness that white backgrounds become. It matches the dark surface of a
 /// typical dark theme without being black.
