@@ -3457,6 +3457,21 @@ impl Window {
         self.webview_state.theme.get()
     }
 
+    pub(crate) fn webview_adaptive_dark_mode(&self) -> bool {
+        self.webview_state.adaptive_dark_mode.get()
+    }
+
+    /// Tell layout whether to paint this document in adaptive dark mode: when the `WebView`
+    /// asks for it and the document's `<meta name="color-scheme">` does not opt out. A
+    /// change only rebuilds the display list.
+    pub(crate) fn refresh_adaptive_dark_mode(&self) {
+        let enabled = self.webview_adaptive_dark_mode() &&
+            !self
+                .Document()
+                .color_scheme_metadata_opts_out_of_adaptive_dark_mode();
+        self.layout_mut().set_adaptive_dark_mode(enabled);
+    }
+
     pub(crate) fn refresh_theme(&self) {
         // The theme is chosen in this order of precedence:
         //  1. The devtools theme override

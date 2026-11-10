@@ -139,6 +139,9 @@ pub struct LayoutThread {
     /// Is the current reflow of an iframe, as opposed to a root window?
     is_iframe: bool,
 
+    /// Whether display lists paint a light document with dark colors.
+    adaptive_dark_mode: bool,
+
     /// The channel on which messages can be sent to the time profiler.
     time_profiler_chan: profile_time::ProfilerChan,
 
@@ -278,6 +281,14 @@ impl Layout for LayoutThread {
 
         device.set_color_scheme(theme);
         self.device_has_changed = true;
+        true
+    }
+
+    fn set_adaptive_dark_mode(&mut self, enabled: bool) -> bool {
+        if std::mem::replace(&mut self.adaptive_dark_mode, enabled) == enabled {
+            return false;
+        }
+        self.need_new_display_list.set(true);
         true
     }
 
@@ -904,6 +915,7 @@ impl LayoutThread {
             webview_id: config.webview_id,
             url: config.url,
             is_iframe: config.is_iframe,
+            adaptive_dark_mode: config.adaptive_dark_mode,
             time_profiler_chan: config.time_profiler_chan,
             embedder_chan: config.embedder_chan.clone(),
             registered_painters: RegisteredPaintersImpl(Default::default()),
@@ -1637,6 +1649,8 @@ impl LayoutThread {
             paint_timing_handler,
             reflow_statistics,
             reflow_request.frame_focused,
+            self.adaptive_dark_mode,
+            !self.is_iframe,
         );
 
         stacking_context_tree.paint_info.paint_timing_info = reflow_request.paint_timing_info;

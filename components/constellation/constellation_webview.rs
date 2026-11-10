@@ -80,6 +80,10 @@ pub(crate) struct ConstellationWebView {
     /// `ScriptThread`s so that they know how to render the contents of a particular `WebView.
     theme: Theme,
 
+    /// Whether this [`ConstellationWebView`] paints light pages with dark colors. Like the
+    /// theme, this is communicated to all `ScriptThread`s.
+    adaptive_dark_mode: bool,
+
     /// Whether or not this entire [`ConstellationWebView`] is hidden. `WebView`s that
     /// are hidden will be throttled.
     hidden: bool,
@@ -123,6 +127,7 @@ impl ConstellationWebView {
             ongoing_history_traversal_request: None,
             pending_viewport_details: Default::default(),
             theme: Theme::Light,
+            adaptive_dark_mode: false,
             hidden: false,
             has_system_focus: true,
             accessibility_active: false,
@@ -141,6 +146,17 @@ impl ConstellationWebView {
         self.theme
     }
 
+    /// Set whether this [`ConstellationWebView`] paints light pages with dark colors,
+    /// returning true if that changed.
+    pub(crate) fn set_adaptive_dark_mode(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.adaptive_dark_mode, enabled) != enabled
+    }
+
+    /// Whether this [`ConstellationWebView`] paints light pages with dark colors.
+    pub(crate) fn adaptive_dark_mode(&self) -> bool {
+        self.adaptive_dark_mode
+    }
+
     /// Whether or not the [`ConstellationWebView`] is hidden.
     pub(crate) fn hidden(&self) -> bool {
         self.hidden
@@ -153,6 +169,7 @@ impl ConstellationWebView {
             id: self.webview_id,
             theme: Cell::new(self.theme),
             has_system_focus: Cell::new(self.has_system_focus),
+            adaptive_dark_mode: Cell::new(self.adaptive_dark_mode),
         }
     }
 

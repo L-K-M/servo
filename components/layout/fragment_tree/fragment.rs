@@ -130,6 +130,8 @@ pub(crate) struct ImageFragment {
     /// Whether or not this image is selected.
     #[conditional_malloc_size_of]
     pub selected: Arc<AtomicBool>,
+    /// Whether this image is an inline `<svg>` element, rasterized with its colors.
+    pub is_inline_svg: bool,
 }
 
 #[derive(MallocSizeOf)]

@@ -9,6 +9,7 @@ use app_units::Au;
 use servo_base::id::ScrollTreeNodeId;
 use style::values::computed::TextDecorationLine;
 
+use crate::display_list::adaptive_dark::Backdrop;
 use crate::display_list::{
     ClipId, FragmentTextDecoration, StackingContext, StackingContextFragments,
 };
@@ -26,12 +27,16 @@ pub(crate) struct PaintTraversal<'a, Handler: PaintTraversalHandler> {
 
 impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
     pub(crate) fn traverse(root_stacking_context: &StackingContext, handler: &'a mut Handler) {
+        let initial_state = TraversalState {
+            backdrop: handler.canvas_backdrop(),
+            ..Default::default()
+        };
         Self {
             handler,
             outlines: Vec::new(),
             floats: Vec::new(),
         }
-        .traverse_stacking_context(&TraversalState::default(), root_stacking_context);
+        .traverse_stacking_context(&initial_state, root_stacking_context);
     }
 
     /// <https://drafts.csswg.org/css-position-4/#paint-a-stacking-context>
@@ -545,6 +550,10 @@ pub(crate) trait PaintTraversalHandler {
     }
 
     fn visit_box_for_root_background(&mut self, _state: &TraversalState) {}
+    /// What adaptive dark mode paints on the canvas, if it paints this document.
+    fn canvas_backdrop(&self) -> Option<Backdrop> {
+        None
+    }
     /// Carets paint above a container's in-flow glyphs but below later positioned contexts.
     fn begin_caret_group(&mut self) {}
     fn finish_caret_group(&mut self) {}
@@ -568,6 +577,8 @@ pub(crate) struct TraversalState {
     /// Used for text LCP candidate grouping — all text fragments within
     /// a single element are unioned before computing effective visual size.
     pub containing_element_tag: Option<Tag>,
+    /// What is painted behind content here, when adaptive dark mode paints the document.
+    pub backdrop: Option<Backdrop>,
 }
 
 impl TraversalState {
@@ -617,6 +628,7 @@ impl TraversalState {
             clip_id: box_fragment.generated_clip_id().unwrap_or(self.clip_id),
             text_decorations,
             containing_element_tag: box_fragment.base.tag.or(self.containing_element_tag),
+            backdrop: self.backdrop.map(|backdrop| backdrop.behind(style)),
         }
     }
 
@@ -637,6 +649,7 @@ impl TraversalState {
             clip_id: self.clip_id,
             text_decorations: self.text_decorations.clone(),
             containing_element_tag: self.containing_element_tag,
+            backdrop: self.backdrop,
         }
     }
 
@@ -647,6 +660,8 @@ impl TraversalState {
             clip_id: stacking_context.clip_id,
             text_decorations: stacking_context.text_decorations.clone(),
             containing_element_tag: self.containing_element_tag,
+            // Approximate: a positioned box paints over its stacking context's backdrop.
+            backdrop: self.backdrop,
         }
     }
 }
