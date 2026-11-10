@@ -2234,6 +2234,17 @@ impl<'a> BuilderForBoxFragment<'a> {
                         );
                         if inverts_lightness {
                             builder.push_inverted_lightness(state);
+                        } else if pixels.is_opaque &&
+                            layer.common.spatial_id == builder.spatial_id(state.spatial_id)
+                        {
+                            // A picture or a texture behind the element's content, even
+                            // where it does not count as filling the background: a strip
+                            // repeated along one axis, or a photo at a size of its own.
+                            // Only its part inside the element shows.
+                            let shown = layer.bounds.intersection(&layer.common.clip_rect);
+                            if let Some(shown) = shown {
+                                builder.note_kept_image(state, shown);
+                            }
                         }
 
                         if layer.repeat {
