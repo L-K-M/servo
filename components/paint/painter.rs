@@ -1579,7 +1579,8 @@ impl Painter {
 }
 
 /// The color the shell shows where no page has painted: the `shell_background_color_rgba`
-/// preference, which the embedder can change while Servo runs.
+/// preference, which the embedder can change while Servo runs. A change shows in the next
+/// frame; setting the preference does not ask for one.
 fn shell_background_color() -> ColorF {
     let color = pref!(shell_background_color_rgba);
     ColorF::new(
