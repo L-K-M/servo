@@ -151,6 +151,10 @@ pub(crate) struct ServoParser {
     aborted: Cell<bool>,
     /// <https://html.spec.whatwg.org/multipage/#stop-parsing>
     stopped: Cell<bool>,
+    /// How many tokenize feeds are running right now. A document.write() feed
+    /// holds its input outside the parser's queues, so document.close() during a
+    /// feed must defer its end-of-input handling to the outermost feed.
+    feed_depth: Cell<usize>,
     /// <https://html.spec.whatwg.org/multipage/#script-created-parser>
     script_created_parser: bool,
     /// A decoder exclusively for input to the prefetch tokenizer.
@@ -413,7 +417,14 @@ impl ServoParser {
     }
 
     pub(crate) fn can_write(&self) -> bool {
-        self.script_created_parser || self.script_nesting_level.get() > 0
+        // Once the parser has stopped or aborted, its tree builder has been
+        // drained (html5ever's end() pops every open element), so feeding it
+        // more tokens panics in current_node(). A document.write() at that
+        // point has an undefined insertion point and must run the document
+        // open steps instead of writing to this parser.
+        !self.stopped.get() &&
+            !self.aborted.get() &&
+            (self.script_created_parser || self.script_nesting_level.get() > 0)
     }
 
     /// Steps 6-8 of <https://html.spec.whatwg.org/multipage/#document.write()>
@@ -447,9 +458,11 @@ impl ServoParser {
             iframe: TimerMetadataFrameType::RootWindow,
             incremental: TimerMetadataReflowType::FirstReflow,
         };
+        self.feed_depth.set(self.feed_depth.get() + 1);
         self.tokenize(cx, |cx, tokenizer| {
             tokenizer.feed(cx, &input, profiler_chan.clone(), profiler_metadata.clone())
         });
+        self.feed_depth.set(self.feed_depth.get() - 1);
 
         if self.suspended.get() {
             // Parser got suspended, insert remaining input at end of
@@ -462,6 +475,12 @@ impl ServoParser {
         }
 
         assert!(input.is_empty());
+
+        // A document.close() during the feed above asked for the end of input;
+        // run it now that everything it inserted has been consumed.
+        if self.last_chunk_received.get() && self.feed_depth.get() == 0 {
+            self.parse_sync(cx);
+        }
     }
 
     /// Steps 4-6 of <https://html.spec.whatwg.org/multipage/#dom-document-close>
@@ -472,7 +491,16 @@ impl ServoParser {
         self.last_chunk_received.set(true);
 
         // Step 5. If this's pending parsing-blocking script is not null, then return.
-        if self.suspended.get() {
+        // Also return while a document.write() feed is running (its input is not in
+        // the parser's queues yet, and ending the parser here would drain the tree
+        // builder under that feed; the outermost write() runs the tokenizer to this
+        // EOF once the inserted input has been consumed), and once the parser has
+        // stopped or aborted.
+        if self.suspended.get() ||
+            self.feed_depth.get() > 0 ||
+            self.stopped.get() ||
+            self.aborted.get()
+        {
             return;
         }
 
@@ -539,6 +567,7 @@ impl ServoParser {
             script_nesting_level: Default::default(),
             aborted: Default::default(),
             stopped: Default::default(),
+            feed_depth: Default::default(),
             script_created_parser: kind == ParserKind::ScriptCreated,
             prefetch_decoder: RefCell::new(LossyDecoder::new_encoding_rs(
                 encoding_hint_from_content_type.unwrap_or(UTF_8),
@@ -662,6 +691,7 @@ impl ServoParser {
             iframe: TimerMetadataFrameType::RootWindow,
             incremental: TimerMetadataReflowType::FirstReflow,
         };
+        self.feed_depth.set(self.feed_depth.get() + 1);
         self.tokenize(cx, |cx, tokenizer| {
             tokenizer.feed(
                 cx,
@@ -670,6 +700,7 @@ impl ServoParser {
                 profiler_metadata.clone(),
             )
         });
+        self.feed_depth.set(self.feed_depth.get() - 1);
 
         if self.suspended.get() {
             return;
@@ -774,7 +805,16 @@ impl ServoParser {
         self.document
             .update_the_current_document_readiness(cx, DocumentReadyState::Interactive);
         // Step 4. Pop all the nodes off the stack of open elements.
-        self.document.set_current_parser(None);
+        // A script that ran while the tokenizer was ending may have replaced
+        // this parser through the document open steps; leave that registration
+        // alone.
+        if self
+            .document
+            .get_current_parser()
+            .is_some_and(|parser| std::ptr::eq(&*parser, self))
+        {
+            self.document.set_current_parser(None);
+        }
         // Step 5. While the list of scripts that will execute when the document has finished parsing is not empty:
         self.document.start_the_end_loading_phase();
         let url = self.tokenizer.url().clone();
