@@ -115,7 +115,8 @@ impl taffy::LayoutPartialTree for TaffyContainerContext<'_> {
         Self: 'a;
 
     fn get_core_container_style(&self, _node_id: taffy::NodeId) -> Self::CoreContainerStyle<'_> {
-        TaffyStyloStyle::new(self.style, false /* is_replaced */).with_subgrid(self.subgrid_templates)
+        TaffyStyloStyle::new(self.style, false /* is_replaced */)
+            .with_subgrid(self.subgrid_templates)
     }
 
     fn set_unrounded_layout(&mut self, node_id: taffy::NodeId, layout: &taffy::Layout) {
@@ -281,7 +282,8 @@ impl taffy::LayoutGridContainer for TaffyContainerContext<'_> {
         &self,
         _node_id: taffy::prelude::NodeId,
     ) -> Self::GridContainerStyle<'_> {
-        TaffyStyloStyle::new(self.style, false /* is_replaced */).with_subgrid(self.subgrid_templates)
+        TaffyStyloStyle::new(self.style, false /* is_replaced */)
+            .with_subgrid(self.subgrid_templates)
     }
 
     fn get_grid_child_style(

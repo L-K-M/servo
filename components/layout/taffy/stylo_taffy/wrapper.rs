@@ -265,8 +265,9 @@ fn track_value_to_taffy(
 }
 
 type AxisTemplateTrackFn<'a> =
-    fn(&'a TrackListValue<LengthPercentage, i32>) ->
-        taffy::GenericGridTemplateComponent<Atom, RepetitionWrapper<'a>>;
+    fn(
+        &'a TrackListValue<LengthPercentage, i32>,
+    ) -> taffy::GenericGridTemplateComponent<Atom, RepetitionWrapper<'a>>;
 
 /// The template track list of one axis: the explicit track list, or the
 /// resolved fallback slice for a `subgrid` axis.
@@ -286,8 +287,11 @@ fn axis_template_tracks<'a>(
         stylo::GenericGridTemplateComponent::TrackList(list) => {
             Some(list.values.iter().map(track_value_to_taffy))
         },
-        stylo::GenericGridTemplateComponent::Subgrid(_) => subgrid_axis
-            .map(|axis| axis.tracks().iter().map(track_value_to_taffy as AxisTemplateTrackFn<'a>)),
+        stylo::GenericGridTemplateComponent::Subgrid(_) => subgrid_axis.map(|axis| {
+            axis.tracks()
+                .iter()
+                .map(track_value_to_taffy as AxisTemplateTrackFn<'a>)
+        }),
         stylo::GenericGridTemplateComponent::Masonry => None,
     }
 }
@@ -352,7 +356,8 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyS
     fn grid_template_columns(&self) -> Option<Self::TemplateTrackList<'_>> {
         axis_template_tracks(
             &self.style.get_position().grid_template_columns,
-            self.subgrid.and_then(|templates| templates.columns.as_ref()),
+            self.subgrid
+                .and_then(|templates| templates.columns.as_ref()),
         )
     }
 
@@ -408,7 +413,8 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyS
     fn grid_template_column_names(&self) -> Option<Self::TemplateLineNames<'_>> {
         axis_template_names(
             &self.style.get_position().grid_template_columns,
-            self.subgrid.and_then(|templates| templates.columns.as_ref()),
+            self.subgrid
+                .and_then(|templates| templates.columns.as_ref()),
         )
     }
 

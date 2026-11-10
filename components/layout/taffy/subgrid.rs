@@ -21,10 +21,10 @@
 
 use malloc_size_of_derive::MallocSizeOf;
 use style::OwnedSlice;
-use stylo_atoms::atom;
 use style::values::CustomIdent;
 use style::values::computed::{GridLine, GridTemplateComponent, Integer, LengthPercentage};
 use style::values::generics::grid::{LineNameList, LineNameListValue, RepeatCount, TrackListValue};
+use stylo_atoms::atom;
 
 /// The resolved template for one axis of a subgrid item.
 #[derive(Debug, MallocSizeOf)]
@@ -175,10 +175,7 @@ fn resolve_axis(
         .map(OwnedSlice::from)
         .unwrap_or(line_names);
 
-    Some(SubgridAxisTemplate {
-        tracks,
-        line_names,
-    })
+    Some(SubgridAxisTemplate { tracks, line_names })
 }
 
 /// Resolve one grid placement line of the item's span against the parent's
@@ -206,7 +203,10 @@ fn resolve_line(
                 .unwrap_or(*matches.last().unwrap())
         } else {
             let from_end = matches.len() as i64 + line.line_num as i64;
-            matches.get(from_end.max(0) as usize).copied().unwrap_or(matches[0])
+            matches
+                .get(from_end.max(0) as usize)
+                .copied()
+                .unwrap_or(matches[0])
         };
         return LineResolution::Index(index);
     }
