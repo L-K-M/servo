@@ -12,10 +12,12 @@
 //! - how much of the image is transparent,
 //! - how much of its opaque part is dark or light,
 //! - whether that part uses only a few flat colors, as drawn artwork does and photos do
-//!   not.
+//!   not,
+//! - whether its dark marks may be a code for a scanner.
 //!
 //! Anything unclear is kept: a dark logo that stays dark is a smaller problem than a photo
-//! shown as its negative.
+//! shown as its negative or a code that no longer scans. An animated image is kept too:
+//! its later frames may show something else than its first.
 
 use parking_lot::RwLock;
 use pixels::{PixelFormat, RasterImage};
@@ -104,8 +106,17 @@ const MAX_CLEAR_SHARE: f32 = 0.02;
 const MIN_LIGHT_GROUND_SHARE: f32 = 0.6;
 
 /// [`ImageTone::DarkOnLight`]: the dark marks take this share of the image. More is no
-/// longer a few marks: a bar code or a QR code, which a scanner may not read inverted.
+/// longer a few marks.
 const MARKS_SHARE: std::ops::RangeInclusive<f32> = 0.005..=0.2;
+
+/// [`ImageTone::DarkOnLight`]: marks may be a code for a scanner, which may not read it
+/// inverted, when at least this share of the box around them is dark and at least
+/// [`CODE_BUSYNESS`] of the neighboring samples along its rows or along its columns
+/// differ. A bar code or a QR code is about half dark and changes at every other module;
+/// its quiet zone, however large, is outside that box. Simple shapes have few such
+/// changes and thin strokes little ink. Bold lettering can pass for a code and is kept.
+const CODE_DENSITY: f32 = 0.25;
+const CODE_BUSYNESS: f32 = 0.15;
 
 /// [`ImageTone::DarkOnLight`]: at least this share of the image is either light or dark;
 /// the rest is the blur between them.
@@ -122,8 +133,11 @@ const MIN_LIGHT_EDGE_SHARE: f32 = 0.9;
 const MAX_LOGO_PIXELS: u64 = 512 * 512;
 
 impl ImageTone {
-    /// The tone of the first frame of `image`.
+    /// The tone of `image`.
     pub(crate) fn of(image: &RasterImage) -> Self {
+        if image.should_animate() {
+            return Self::Keep;
+        }
         let Some(frame) = image.frame(0) else {
             return Self::Keep;
         };
@@ -174,12 +188,10 @@ fn classify(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Ima
     }
 
     let (columns, rows) = (width.min(GRID), height.min(GRID));
-    // The pixel in the middle of grid cell `index` of `cells` along `length` pixels.
-    let position = |index: u32, cells: u32, length: u32| {
-        ((2 * u64::from(index) + 1) * u64::from(length) / (2 * u64::from(cells))) as u32
-    };
 
     let mut clear = 0_u32;
+    // The grid cells that hold the dark samples: first and last column, first and last row.
+    let mut marks: Option<[u32; 4]> = None;
     // Shares of the opaque part, each sample weighted by its alpha.
     let (mut opaque, mut dark, mut light, mut colorful) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
     let mut colors: FxHashMap<u16, f32> = FxHashMap::default();
@@ -202,6 +214,13 @@ fn classify(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Ima
             opaque += weight;
             if lab.lightness < DARK_LIGHTNESS {
                 dark += weight;
+                let [left, right, top, bottom] = marks.unwrap_or([column, column, row, row]);
+                marks = Some([
+                    left.min(column),
+                    right.max(column),
+                    top.min(row),
+                    bottom.max(row),
+                ]);
             }
             if lab.lightness > LIGHT_LIGHTNESS {
                 light += weight;
@@ -253,10 +272,64 @@ fn classify(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Ima
         colorful / opaque <= MAX_COLORFUL_SHARE &&
         light_edge as f32 >= MIN_LIGHT_EDGE_SHARE * edge as f32
     {
-        return ImageTone::DarkOnLight;
+        // The pixels of the grid cells that hold the marks.
+        let may_be_code = marks.is_some_and(|[left, right, top, bottom]| {
+            let pixels = |cell: u32, cells: u32, length: u32| {
+                (u64::from(cell) * u64::from(length) / u64::from(cells)) as u32
+            };
+            let (x, y) = (pixels(left, columns, width), pixels(top, rows, height));
+            let marks_width = pixels(right + 1, columns, width) - x;
+            let marks_height = pixels(bottom + 1, rows, height) - y;
+            may_be_code(marks_width, marks_height, |column, row| {
+                pixel(x + column, y + row)
+            })
+        });
+        if !may_be_code {
+            return ImageTone::DarkOnLight;
+        }
     }
 
     ImageTone::Keep
+}
+
+/// The pixel in the middle of grid cell `index` of `cells` along `length` pixels.
+fn position(index: u32, cells: u32, length: u32) -> u32 {
+    ((2 * u64::from(index) + 1) * u64::from(length) / (2 * u64::from(cells))) as u32
+}
+
+/// Whether the dark marks in an area of `width` by `height` pixels that they span may be
+/// a code for a scanner: see [`CODE_DENSITY`]. The area is sampled on a grid of its own,
+/// so that a code shows its modules whatever part of the image it takes.
+fn may_be_code(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> bool {
+    if width == 0 || height == 0 {
+        return false;
+    }
+
+    let (columns, rows) = (width.min(GRID), height.min(GRID));
+    let mut dark = 0_u32;
+    let (mut row_changes, mut column_changes) = (0_u32, 0_u32);
+    // Whether the sample above the current one was dark.
+    let mut above = [false; GRID as usize];
+    for row in 0..rows {
+        let y = position(row, rows, height);
+        let mut before = false;
+        for column in 0..columns {
+            let [r, g, b, a] = pixel(position(column, columns, width), y);
+            let color = Rgb([r, g, b].map(|component| f32::from(component) / 255.0));
+            let is_dark = a >= TRANSPARENT_ALPHA && color.to_oklab().lightness < DARK_LIGHTNESS;
+            dark += u32::from(is_dark);
+            row_changes += u32::from(column > 0 && is_dark != before);
+            column_changes += u32::from(row > 0 && is_dark != above[column as usize]);
+            before = is_dark;
+            above[column as usize] = is_dark;
+        }
+    }
+
+    let share = |part: u32, whole: u32| part as f32 / whole.max(1) as f32;
+    let density = share(dark, columns * rows);
+    let busyness =
+        share(row_changes, rows * (columns - 1)).max(share(column_changes, columns * (rows - 1)));
+    density >= CODE_DENSITY && busyness >= CODE_BUSYNESS
 }
 
 #[cfg(test)]
@@ -408,11 +481,137 @@ mod tests {
         );
     }
 
+    /// Whether module `(x, y)` of a code is dark: about every other one, without a pattern.
+    fn module_is_dark(x: u32, y: u32) -> bool {
+        let mut hash = x.wrapping_mul(0x9e37_79b1) ^ y.wrapping_mul(0x85eb_ca6b);
+        hash = (hash ^ (hash >> 16)).wrapping_mul(0x7feb_352d);
+        hash = (hash ^ (hash >> 15)).wrapping_mul(0x846c_a68b);
+        (hash ^ (hash >> 16)) & 1 == 1
+    }
+
+    /// A matrix code such as a QR code, `modules` modules a side, in the middle of a white
+    /// image `size` pixels a side. It takes `fill` of the side; the rest is its quiet zone.
+    fn matrix_code(size: u32, modules: u32, fill: f32) -> impl Fn(u32, u32) -> [u8; 4] {
+        let side = (size as f32 * fill) as u32;
+        let start = (size - side) / 2;
+        move |x, y| {
+            let in_code = (start..start + side).contains(&x) && (start..start + side).contains(&y);
+            let module = |position: u32| (position - start) * modules / side;
+            if in_code && module_is_dark(module(x), module(y)) {
+                BLACK
+            } else {
+                WHITE
+            }
+        }
+    }
+
+    /// A bar code of `modules` modules across the middle of a white image of `width` by
+    /// `height` pixels. Its bars take `fill` of the width and half of the height.
+    fn bar_code(width: u32, height: u32, modules: u32, fill: f32) -> impl Fn(u32, u32) -> [u8; 4] {
+        let length = (width as f32 * fill) as u32;
+        let start = (width - length) / 2;
+        move |x, y| {
+            let in_code =
+                (start..start + length).contains(&x) && (height / 4..height * 3 / 4).contains(&y);
+            if in_code && module_is_dark((x - start) * modules / length, 0) {
+                BLACK
+            } else {
+                WHITE
+            }
+        }
+    }
+
+    #[test]
+    fn codes_for_a_scanner_are_kept() {
+        // Whatever its quiet zone leaves of the image, and however many modules it has.
+        for fill in [0.35, 0.49, 0.59, 0.8, 1.0] {
+            for modules in [21, 33, 57, 97] {
+                for size in [160, 300, 512] {
+                    assert_eq!(
+                        classify(size, size, matrix_code(size, modules, fill)),
+                        ImageTone::Keep,
+                        "matrix code of {modules} modules, {fill} of {size} pixels"
+                    );
+                }
+            }
+            for modules in [46, 95, 143] {
+                for (width, height) in [(300, 120), (512, 300), (240, 240)] {
+                    assert_eq!(
+                        classify(width, height, bar_code(width, height, modules, fill)),
+                        ImageTone::Keep,
+                        "bar code of {modules} modules, {fill} of {width} by {height} pixels"
+                    );
+                }
+            }
+        }
+        // On its side.
+        let upright = bar_code(512, 300, 95, 0.6);
+        assert_eq!(classify(300, 512, |x, y| upright(y, x)), ImageTone::Keep);
+    }
+
+    #[test]
+    fn simple_marks_are_not_taken_for_a_code() {
+        // A ring and a bar, as a logo: dense where they are, but with few edges.
+        let logo = |x: u32, y: u32| {
+            let (dx, dy) = (x as f32 - 60.0, y as f32 - 60.0);
+            let in_ring = (30.0..42.0).contains(&dx.hypot(dy));
+            let in_bar = (120..210).contains(&x) && (48..72).contains(&y);
+            if in_ring || in_bar { BLACK } else { WHITE }
+        };
+        assert_eq!(classify(240, 120, logo), ImageTone::DarkOnLight);
+        // Thin strokes, as handwriting or a line drawing has: many edges, but little ink.
+        let strokes = |x: u32, y: u32| {
+            let in_margin = !(20..220).contains(&x) || !(20..100).contains(&y);
+            let on_stroke = (x + 2 * y) % 24 < 3 || (3 * x + 200 - y) % 40 < 3;
+            if on_stroke && !in_margin {
+                BLACK
+            } else {
+                WHITE
+            }
+        };
+        assert_eq!(classify(240, 120, strokes), ImageTone::DarkOnLight);
+    }
+
     #[test]
     fn premultiplied_colors_are_read_as_straight_ones() {
         assert_eq!(unpremultiply([64, 32, 0, 128]), [127, 63, 0, 128]);
         assert_eq!(unpremultiply([0, 0, 0, 0]), [0, 0, 0, 0]);
         assert_eq!(unpremultiply([10, 20, 30, 255]), [10, 20, 30, 255]);
+    }
+
+    /// An image of 8 by 8 pixels with `frames` equal frames: black on the left half,
+    /// transparent on the right.
+    fn half_black_image(frames: usize) -> RasterImage {
+        let frame: Vec<u8> = (0..64)
+            .flat_map(|index| if index % 8 < 4 { BLACK } else { CLEAR })
+            .collect();
+        RasterImage {
+            metadata: pixels::ImageMetadata {
+                width: 8,
+                height: 8,
+            },
+            format: PixelFormat::RGBA8,
+            id: None,
+            cors_status: pixels::CorsStatus::Safe,
+            bytes: std::sync::Arc::new(frame.repeat(frames)),
+            frames: (0..frames)
+                .map(|index| pixels::ImageFrame {
+                    delay: None,
+                    byte_range: index * frame.len()..(index + 1) * frame.len(),
+                    width: 8,
+                    height: 8,
+                })
+                .collect(),
+            is_opaque: false,
+            loop_count: None,
+        }
+    }
+
+    #[test]
+    fn an_animated_image_is_kept() {
+        assert_eq!(ImageTone::of(&half_black_image(1)), ImageTone::DarkOnClear);
+        // Its other frames may show something else, and it has one tone for all of them.
+        assert_eq!(ImageTone::of(&half_black_image(2)), ImageTone::Keep);
     }
 
     #[test]
