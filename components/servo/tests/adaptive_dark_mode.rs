@@ -40,6 +40,12 @@ const IMAGE_POINT: (u32, u32) = (450, 450);
 const KEPT_POINT: (u32, u32) = (325, 325);
 /// The area the glyph is drawn in.
 const GLYPH_AREA: (u32, u32, u32, u32) = (10, 10, 200, 200);
+/// Inside the border of the element that opts out in the element case.
+const KEPT_BORDER_POINT: (u32, u32) = (302, 325);
+/// Inside the card in the gradient case, away from its glyph.
+const CARD_POINT: (u32, u32) = (340, 340);
+/// The area the card's glyph is drawn in.
+const CARD_GLYPH_AREA: (u32, u32, u32, u32) = (250, 250, 300, 300);
 
 /// A new URL for a page with `head` and [`PLAIN_BODY`].
 fn page(head: &str) -> Url {
@@ -102,6 +108,24 @@ impl Painted {
         [pixel[0], pixel[1], pixel[2]]
     }
 
+    /// The largest contrast between a pixel in `area` and `background`.
+    fn max_contrast(
+        &self,
+        (left, top, right, bottom): (u32, u32, u32, u32),
+        background: [u8; 3],
+    ) -> f32 {
+        (left..right)
+            .flat_map(|x| (top..bottom).map(move |y| (x, y)))
+            .map(|point| contrast(self.pixel(point), background))
+            .fold(0.0, f32::max)
+    }
+
+    /// Whether the card of the gradient case is dark, with readable text.
+    fn has_readable_dark_card(&self) -> bool {
+        let card = self.pixel(CARD_POINT);
+        luminance(card) < 0.03 && self.max_contrast(CARD_GLYPH_AREA, card) >= 4.5
+    }
+
     fn is_authored_light(&self) -> bool {
         self.canvas == [255, 255, 255] && luminance(self.ink) < 0.01
     }
@@ -122,16 +146,14 @@ impl Painted {
 
 struct Harness {
     servo_test: ServoTest,
-    delegate: Rc<WebViewDelegateImpl>,
     webview: WebView,
 }
 
 impl Harness {
     fn new() -> Self {
         let servo_test = ServoTest::new();
-        let delegate = Rc::new(WebViewDelegateImpl::default());
         let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
-            .delegate(delegate.clone())
+            .delegate(Rc::new(WebViewDelegateImpl::default()))
             .url(Url::parse("about:blank").unwrap())
             .build();
         let blank = webview.clone();
@@ -141,7 +163,6 @@ impl Harness {
         });
         Self {
             servo_test,
-            delegate,
             webview,
         }
     }
@@ -273,6 +294,14 @@ fn test_adaptive_dark_mode() {
             "metadata light dark",
             "<meta name=color-scheme content='light dark'>",
         ),
+        (
+            "CSS body light only",
+            "<style>body{color-scheme:light only}</style>",
+        ),
+        (
+            "CSS body light dark",
+            "<style>body{color-scheme:light dark}</style>",
+        ),
     ] {
         harness.load(page(head));
         harness.assert_authored_light(case);
@@ -295,17 +324,80 @@ fn test_adaptive_dark_mode() {
     harness.evaluate("document.querySelector('meta').remove()");
     harness.assert_adapted("metadata removed");
 
-    // An element that opts out keeps its colors inside a darkened page.
+    // An element that opts out keeps its colors, border included, inside a darkened page.
     harness.load(page(
         "<style>#keep{position:fixed;left:300px;top:300px;width:50px;height:50px;\
-         background:white;color-scheme:only light}</style><div id=keep></div>",
+         background:white;border:5px solid black;color-scheme:only light}</style>\
+         <div id=keep></div>",
     ));
     harness.assert_adapted("page around an opted-out element");
+    let painted = harness.painted();
     assert_eq!(
-        harness.painted().pixel(KEPT_POINT),
+        painted.pixel(KEPT_POINT),
         [255, 255, 255],
         "opted-out element"
     );
+    assert_eq!(
+        painted.pixel(KEPT_BORDER_POINT),
+        [0, 0, 0],
+        "opted-out element's border"
+    );
+
+    // A border outside a box's background (`background-clip: padding-box`) is painted over
+    // what is behind the box: here a dark page that kept its color, so the border keeps
+    // its color too.
+    harness.load(page(
+        "<style>html{background:#111}#box{position:fixed;left:300px;top:300px;width:50px;\
+         height:50px;background:white;background-clip:padding-box;border:5px solid #444}\
+         </style><div id=box></div>",
+    ));
+    let painted = harness.painted_when(|painted| luminance(painted.pixel(KEPT_POINT)) < 0.03);
+    assert_eq!(
+        painted.pixel(KEPT_BORDER_POINT),
+        [0x44, 0x44, 0x44],
+        "border outside a padding-box background, over a dark page"
+    );
+
+    // Text that opts out but paints no background of its own follows what is painted
+    // behind it, which got darker.
+    harness.load(page("<style>span{color-scheme:only light}</style>"));
+    harness.assert_adapted("opted-out text without a background");
+
+    // A light gradient on a dark page gets darker like a background color, and the text
+    // over it lighter.
+    harness.load(page(
+        "<style>html{background:#202124}#card{position:fixed;left:250px;top:250px;\
+         width:100px;height:100px;font-size:40px;background:linear-gradient(white,white)}\
+         </style><div id=card>&#x2588;</div>",
+    ));
+    let painted = harness.painted_when(Painted::has_readable_dark_card);
+    assert!(
+        painted.has_readable_dark_card(),
+        "text over a light gradient: card {:?}, text contrast {}",
+        painted.pixel(CARD_POINT),
+        painted.max_contrast(CARD_GLYPH_AREA, painted.pixel(CARD_POINT))
+    );
+
+    // The shell's white does not show through a translucent canvas or one with only a
+    // small image.
+    for (case, head) in [
+        (
+            "faint translucent background",
+            "<style>body{background:rgba(0,0,0,0.03)}</style>",
+        ),
+        (
+            "half transparent white background",
+            "<style>body{background:rgba(255,255,255,0.5)}</style>",
+        ),
+        (
+            "small background image",
+            "<style>body{background:url(data:image/gif;base64,\
+             R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7) no-repeat}</style>",
+        ),
+    ] {
+        harness.load(page(head));
+        harness.assert_adapted(case);
+    }
 
     // Under a dark theme, as in an embedder with a dark appearance, the root's light
     // color-scheme hint does not opt pages out, but an opt-out still applies.

@@ -267,11 +267,16 @@ impl DisplayListBuilder<'_> {
             shell_background_color,
             frame_focused,
             pending_carets: Vec::new(),
-            // A root that declares dark support or `only` keeps the whole document as authored.
+            // A root or body that declares dark support or `only` keeps the whole document as
+            // authored. The body's background can paint the canvas, and the content is in it.
             adaptive_dark: fragment_tree
                 .root_box_fragment()
                 .filter(|root| {
-                    adaptive_dark_mode && !adaptive_dark::opts_out(root.with_style().style())
+                    adaptive_dark_mode &&
+                        !adaptive_dark::opts_out(root.with_style().style()) &&
+                        !fragment_tree
+                            .body_fragment()
+                            .is_some_and(|body| adaptive_dark::opts_out(&body.style()))
                 })
                 .map(|_| AdaptiveDarkPainter::default()),
             is_top_level,
@@ -333,26 +338,21 @@ impl DisplayListBuilder<'_> {
         mut stops: Vec<wr::GradientStop>,
     ) -> Vec<wr::GradientStop> {
         if let Some(painter) = &self.adaptive_dark {
-            for stop in &mut stops {
-                stop.color = painter.background_rgba(style, stop.color);
-            }
+            painter.gradient_stops(style, &mut stops);
         }
         stops
     }
 
-    /// The color to paint for a foreground `color` of an element with `style`, such as
-    /// text or a border, given what `state` paints behind it.
+    /// The color to paint for a foreground `color`, such as text or a border, over
+    /// `backdrop`, what is painted behind it.
     fn foreground_color(
         &self,
-        state: &TraversalState,
-        style: &ComputedValues,
+        backdrop: Option<&Backdrop>,
         color: AbsoluteColor,
         min_contrast: f32,
     ) -> wr::ColorF {
-        match (&self.adaptive_dark, &state.backdrop) {
-            (Some(painter), Some(backdrop)) => {
-                painter.foreground(style, color, backdrop, min_contrast)
-            },
+        match (&self.adaptive_dark, backdrop) {
+            (Some(painter), Some(backdrop)) => painter.foreground(color, backdrop, min_contrast),
             _ => rgba(color),
         }
     }
@@ -1103,17 +1103,23 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             }
         };
 
+        // The shell's white would show through a canvas that is not opaque, so adaptive dark
+        // mode paints the darkened default canvas under it, as `Backdrop::for_canvas` assumes.
+        // A frame's canvas stays transparent over its parent's page.
+        let underlay = self
+            .adaptive_dark
+            .as_ref()
+            .filter(|_| self.is_top_level)
+            .and_then(|painter| painter.canvas_underlay(&source_style));
+        if let Some(underlay) = underlay {
+            let painting_area = self.canvas_painting_area();
+            let common = self.common_properties(state, painting_area, &source_style);
+            self.wr().push_rect(&common, painting_area, underlay);
+        }
+
         // This can happen if the root fragment does not have a `<body>` child (either because it is
         // `display: none` or `display: contents`) or if the `<body>`'s background is transparent.
         if source_style.background_is_transparent() {
-            // The shell's white would show through, so adaptive dark mode paints the canvas
-            // itself. A frame's canvas stays transparent over its parent's page.
-            if self.adaptive_dark.is_some() && self.is_top_level {
-                let painting_area = self.canvas_painting_area();
-                let common = self.common_properties(state, painting_area, &source_style);
-                self.wr()
-                    .push_rect(&common, painting_area, Backdrop::blank_canvas_color());
-            }
             return;
         }
 
@@ -1148,6 +1154,10 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
 
     fn canvas_backdrop(&self) -> Option<Backdrop> {
         self.adaptive_dark.as_ref()?;
+        // A frame paints no default canvas: its transparent areas show its parent's page.
+        // This assumes that page got darker there, as a light page in adaptive dark mode
+        // does. Over a parent that keeps its light colors, the frame's text can end up light
+        // on light.
         let canvas_style = self.canvas_background_style()?;
         Some(Backdrop::for_canvas(&canvas_style))
     }
@@ -1339,7 +1349,8 @@ impl Fragment {
             }
         }
 
-        let text_color = builder.foreground_color(state, &parent_style, color, MIN_TEXT_CONTRAST);
+        let text_color =
+            builder.foreground_color(state.backdrop.as_ref(), color, MIN_TEXT_CONTRAST);
         builder.wr().push_text(
             &common,
             glyph_bounds,
@@ -1440,8 +1451,7 @@ impl Fragment {
         };
 
         let decoration_color = builder.foreground_color(
-            state,
-            parent_style,
+            state.backdrop.as_ref(),
             text_decoration.color,
             MIN_TEXT_CONTRAST,
         );
@@ -1650,7 +1660,7 @@ impl Fragment {
             builder.common_properties(state, insertion_point_rect, &parent_style);
 
         let caret_color =
-            builder.foreground_color(state, parent_style, caret_color, MIN_TEXT_CONTRAST);
+            builder.foreground_color(state.backdrop.as_ref(), caret_color, MIN_TEXT_CONTRAST);
         let property_binding = if prefs::get().editing_caret_blink_time().is_some() {
             // It's okay to always use the same property binding key for this pipeline, as
             // there is currently only a single thing that animates in this way (the caret).
@@ -2166,20 +2176,24 @@ impl<'a> BuilderForBoxFragment<'a> {
         }
     }
 
+    /// What a border of this box is painted over: the box's own background where it
+    /// extends under the border, and what is behind the box.
+    fn border_backdrop(&self, state: &TraversalState) -> Option<Backdrop> {
+        state
+            .backdrop
+            .map(|backdrop| backdrop.behind_border(self.fragment.style()))
+    }
+
+    /// A border side painted over `backdrop`.
     fn build_border_side(
         &self,
         builder: &DisplayListBuilder,
-        state: &TraversalState,
+        backdrop: Option<&Backdrop>,
         style_color: BorderStyleColor,
         min_contrast: f32,
     ) -> wr::BorderSide {
         wr::BorderSide {
-            color: builder.foreground_color(
-                state,
-                self.fragment.style(),
-                style_color.color,
-                min_contrast,
-            ),
+            color: builder.foreground_color(backdrop, style_color.color, min_contrast),
             style: match style_color.style {
                 BorderStyle::None => wr::BorderStyle::None,
                 BorderStyle::Solid => wr::BorderStyle::Solid,
@@ -2217,6 +2231,7 @@ impl<'a> BuilderForBoxFragment<'a> {
         };
         let mut common =
             builder.common_properties(state, units::LayoutRect::default(), self.fragment.style());
+        let backdrop = self.border_backdrop(state);
         let radius = wr::BorderRadius::default();
         let mut column_sum = Au::zero();
         for (x, column_size) in table_info.track_sizes.x.iter().enumerate() {
@@ -2229,25 +2244,25 @@ impl<'a> BuilderForBoxFragment<'a> {
                 let details = wr::BorderDetails::Normal(wr::NormalBorder {
                     left: self.build_border_side(
                         builder,
-                        state,
+                        backdrop.as_ref(),
                         left_border.style_color.clone(),
                         MIN_BORDER_CONTRAST,
                     ),
                     right: self.build_border_side(
                         builder,
-                        state,
+                        backdrop.as_ref(),
                         right_border.style_color.clone(),
                         MIN_BORDER_CONTRAST,
                     ),
                     top: self.build_border_side(
                         builder,
-                        state,
+                        backdrop.as_ref(),
                         top_border.style_color.clone(),
                         MIN_BORDER_CONTRAST,
                     ),
                     bottom: self.build_border_side(
                         builder,
-                        state,
+                        backdrop.as_ref(),
                         bottom_border.style_color.clone(),
                         MIN_BORDER_CONTRAST,
                     ),
@@ -2315,11 +2330,23 @@ impl<'a> BuilderForBoxFragment<'a> {
 
         let current_color = style.get_inherited_text().clone_color();
         let style_color = BorderStyleColor::from_border(border, &current_color);
+        let backdrop = self.border_backdrop(state);
+        let backdrop = backdrop.as_ref();
         let details = wr::BorderDetails::Normal(wr::NormalBorder {
-            top: self.build_border_side(builder, state, style_color.top, MIN_BORDER_CONTRAST),
-            right: self.build_border_side(builder, state, style_color.right, MIN_BORDER_CONTRAST),
-            bottom: self.build_border_side(builder, state, style_color.bottom, MIN_BORDER_CONTRAST),
-            left: self.build_border_side(builder, state, style_color.left, MIN_BORDER_CONTRAST),
+            top: self.build_border_side(builder, backdrop, style_color.top, MIN_BORDER_CONTRAST),
+            right: self.build_border_side(
+                builder,
+                backdrop,
+                style_color.right,
+                MIN_BORDER_CONTRAST,
+            ),
+            bottom: self.build_border_side(
+                builder,
+                backdrop,
+                style_color.bottom,
+                MIN_BORDER_CONTRAST,
+            ),
+            left: self.build_border_side(builder, backdrop, style_color.left, MIN_BORDER_CONTRAST),
             radius: self.border_radius(),
             do_aa: true,
         });
@@ -2476,9 +2503,10 @@ impl<'a> BuilderForBoxFragment<'a> {
             OutlineStyle::Auto => BorderStyle::Solid,
             OutlineStyle::BorderStyle(s) => s,
         };
+        // An outline is painted outside the box, over what is behind it.
         let side = self.build_border_side(
             builder,
-            state,
+            state.backdrop.as_ref(),
             BorderStyleColor {
                 style: border_style,
                 color: style.resolve_color(&outline.outline_color),

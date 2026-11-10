@@ -395,8 +395,9 @@ pub trait Layout {
     fn set_theme(&mut self, theme: Theme) -> bool;
 
     /// Set whether this [`Layout`] paints a light document with dark colors (adaptive dark
-    /// mode). This only changes the display list, which is rebuilt at the next rendering
-    /// update. Returns `true` if the setting actually changed or `false` otherwise.
+    /// mode). This only changes the display list: a change marks it as needed, which makes
+    /// the document schedule a rendering update that rebuilds it. Returns `true` if the
+    /// setting actually changed or `false` otherwise.
     fn set_adaptive_dark_mode(&mut self, enabled: bool) -> bool;
 
     /// Set the [`ViewportDetails`] on this [`Layout`]'s [`Device`]. The caller should also

@@ -3832,17 +3832,15 @@ where
             user_content_manager_id,
         );
 
-        // Inherit the opener's theme, which is also what script does. This
-        // ensures that the two states are in sync.
-        let opener_theme = self
+        // Inherit the opener's theme and adaptive dark mode, which is also what script
+        // does. This ensures that the two states are in sync.
+        let (opener_theme, opener_adaptive_dark_mode) = self
             .webviews
             .get(&opener_webview_id)
-            .map_or(Theme::Light, |webview| webview.theme());
+            .map_or((Theme::Light, false), |webview| {
+                (webview.theme(), webview.adaptive_dark_mode())
+            });
         new_webview.set_theme(opener_theme);
-        let opener_adaptive_dark_mode = self
-            .webviews
-            .get(&opener_webview_id)
-            .is_some_and(|webview| webview.adaptive_dark_mode());
         new_webview.set_adaptive_dark_mode(opener_adaptive_dark_mode);
 
         new_webview.add_pending_change(SessionHistoryChange {

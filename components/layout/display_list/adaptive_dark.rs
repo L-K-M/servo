@@ -8,20 +8,28 @@
 //! Only colors on their way into the display list change. Scripts keep reading the
 //! authored colors from computed styles; images, video, canvas and inline SVG keep theirs.
 //! Pages and elements that declare dark support (`color-scheme: dark` or `light dark`) or
-//! forbid any change (`color-scheme: light only`) are painted as authored.
+//! forbid any change (`color-scheme: light only`) are painted as authored: for a page, its
+//! root or body declares it. An element that declares it keeps its backgrounds, and its
+//! foregrounds follow what is painted behind them like any other: if it paints no
+//! background of its own over a darkened one, its text still gets lighter, to stay readable.
 //!
 //! Colors change by role:
 //!
-//! - Backgrounds (background colors, gradient stops, shadows, the selection highlight):
-//!   a light color gets darker, keeping its hue, so white becomes a dark gray and pale
-//!   tints become deep ones. Mid and dark colors stay as they are. Lighter colors end
-//!   darker, so a slightly raised panel stays slightly distinct.
+//! - Backgrounds (background colors, gradient stops, including those of a `border-image`,
+//!   shadows, the selection highlight): a light color gets darker, keeping its hue, so
+//!   white becomes a dark gray and pale tints become deep ones. Mid and dark colors stay as
+//!   they are. Lighter colors end darker, so a slightly raised panel stays slightly
+//!   distinct.
 //! - Foregrounds (text, its decorations, the caret, borders and outlines) follow what is
-//!   painted behind them, the backdrop. Where the backdrop kept its color, so does the
-//!   foreground. Where it changed, the foreground keeps its hue and gets the lightness
-//!   that restores its authored contrast against the new backdrop, so black body text
-//!   becomes near-white and gray secondary text a dimmer gray, as written. Text and
-//!   carets get at least 4.5:1 (WCAG AA), outlines 3:1.
+//!   painted behind them, the backdrop: the background colors below them, and the average
+//!   color stop of gradients that fill a background. A border is over its box's own
+//!   background unless `background-clip` stops that short of it. The backdrop follows
+//!   ancestors only: a positioned element over a sibling's background is judged against
+//!   what is behind both. Where the backdrop kept its color,
+//!   so does the foreground. Where it changed, the foreground keeps its hue and gets the
+//!   lightness that restores its authored contrast against the new backdrop, so black
+//!   body text becomes near-white and gray secondary text a dimmer gray, as written. Text
+//!   and carets get at least 4.5:1 (WCAG AA), outlines 3:1.
 //! - Areas painted with a repeated or covering image (a texture, a photo) keep their
 //!   authored colors, and so does the text over them: the image's lightness is unknown.
 //! - An inline `<svg>` is rasterized with its colors, so a dark icon drawn in the text
@@ -35,12 +43,17 @@ use std::cell::RefCell;
 
 use rustc_hash::FxHashMap;
 use style::color::{AbsoluteColor, ColorSpace};
+use style::computed_values::background_clip::single_value::T as BackgroundClip;
 use style::properties::ComputedValues;
+use style::values::computed::Color;
 use style::values::computed::background::BackgroundSize;
-use style::values::computed::image::Image;
+use style::values::computed::image::{Gradient, Image};
+use style::values::generics::image::GradientItem;
 use style::values::specified::background::BackgroundRepeatKeyword;
 use style::values::specified::color::ColorSchemeFlags;
-use webrender_api::{ColorF, FilterOp};
+use webrender_api::{ColorF, FilterOp, GradientStop};
+
+use super::background::get_cyclic;
 
 /// The OKLab lightness that white backgrounds become. It matches the dark surface of a
 /// typical dark theme without being black.
@@ -292,7 +305,8 @@ pub(crate) struct Backdrop {
 
 impl Backdrop {
     /// The backdrop of a document whose canvas is painted from `canvas_style` (the root's or
-    /// the propagated body's background), or `None` if the document paints as authored.
+    /// the propagated body's background) over the darkened default canvas. At the top level,
+    /// [`AdaptiveDarkPainter::canvas_underlay`] paints that default canvas where needed.
     pub(crate) fn for_canvas(canvas_style: &ComputedValues) -> Self {
         let blank = Self {
             authored: DEFAULT_CANVAS,
@@ -308,9 +322,22 @@ impl Backdrop {
         ColorF::new(r, g, b, 1.0)
     }
 
-    /// The backdrop of the content of a box with `style`, painted over `self`.
-    pub(crate) fn behind(&self, style: &ComputedValues) -> Self {
+    /// The backdrop of a border of a box with `style`, painted over `self`: the box's
+    /// background when it extends under the border (`background-clip: border-box`, the
+    /// default), otherwise what is behind the box.
+    pub(crate) fn behind_border(&self, style: &ComputedValues) -> Self {
         let background = style.get_background();
+        // The background color is clipped like the bottom layer.
+        let bottom_layer = background.background_image.0.len().saturating_sub(1);
+        match get_cyclic(&background.background_clip.0, bottom_layer) {
+            BackgroundClip::BorderBox | BackgroundClip::BorderArea => self.behind(style),
+            BackgroundClip::PaddingBox | BackgroundClip::ContentBox => *self,
+        }
+    }
+
+    /// The backdrop of the content of a box with `style`, painted over `self`: its
+    /// background color, then the gradients that fill its background.
+    pub(crate) fn behind(&self, style: &ComputedValues) -> Self {
         if has_covering_image(style) {
             return Self {
                 over_image: true,
@@ -318,13 +345,31 @@ impl Backdrop {
             };
         }
 
-        let color = rgba(style.resolve_color(&background.background_color));
+        let background = style.get_background();
+        let keeps_colors = opts_out(style);
+        let mut backdrop = self.with_layer(
+            rgba(style.resolve_color(&background.background_color)),
+            keeps_colors,
+        );
+        // The first layer is painted last, on top.
+        for (index, image) in background.background_image.0.iter().enumerate().rev() {
+            if let Image::Gradient(gradient) = image &&
+                fills_background_area(style, index, image)
+            {
+                backdrop = backdrop.with_gradient(style, gradient, keeps_colors);
+            }
+        }
+        backdrop
+    }
+
+    /// This backdrop with a layer of `color` painted over it, as authored if `keeps_colors`.
+    fn with_layer(&self, color: ColorF, keeps_colors: bool) -> Self {
         if color.a < MIN_BACKDROP_ALPHA {
             return *self;
         }
 
         let authored_color = Rgb::from_color_f(color);
-        let painted_color = if opts_out(style) {
+        let painted_color = if keeps_colors {
             authored_color
         } else {
             darken_background(authored_color)
@@ -337,6 +382,59 @@ impl Backdrop {
         }
     }
 
+    /// This backdrop with `gradient` painted over it. What is behind a piece of text
+    /// depends on where it sits in the gradient, so this takes the average over the color
+    /// stops.
+    fn with_gradient(
+        &self,
+        style: &ComputedValues,
+        gradient: &Gradient,
+        keeps_colors: bool,
+    ) -> Self {
+        match gradient {
+            Gradient::Linear { items, .. } | Gradient::Radial { items, .. } => {
+                self.with_stops(style, items, keeps_colors)
+            },
+            Gradient::Conic { items, .. } => self.with_stops(style, items, keeps_colors),
+        }
+    }
+
+    fn with_stops<T>(
+        &self,
+        style: &ComputedValues,
+        items: &[GradientItem<Color, T>],
+        keeps_colors: bool,
+    ) -> Self {
+        let layers: Vec<Self> = items
+            .iter()
+            .filter_map(|item| match item {
+                GradientItem::SimpleColorStop(color) |
+                GradientItem::ComplexColorStop { color, .. } => {
+                    Some(self.with_layer(rgba(style.resolve_color(color)), keeps_colors))
+                },
+                GradientItem::InterpolationHint(_) => None,
+            })
+            .collect();
+        if layers.is_empty() {
+            return *self;
+        }
+
+        let average = |color: fn(&Self) -> Rgb| {
+            let mut sum = [0.0; 3];
+            for layer in &layers {
+                for (total, component) in sum.iter_mut().zip(color(layer).0) {
+                    *total += component;
+                }
+            }
+            Rgb(sum.map(|total| total / layers.len() as f32))
+        };
+        Self {
+            authored: average(|layer| layer.authored),
+            painted: average(|layer| layer.painted),
+            over_image: layers.iter().any(|layer| layer.over_image),
+        }
+    }
+
     /// Whether foregrounds over this backdrop keep their authored colors.
     fn keeps_foregrounds(&self) -> bool {
         self.over_image || self.painted.is_close_to(self.authored)
@@ -346,25 +444,35 @@ impl Backdrop {
 /// Whether one of `style`'s background layers is an image that repeats in both directions
 /// or covers its area, such as a texture or a photo.
 fn has_covering_image(style: &ComputedValues) -> bool {
-    let background = style.get_background();
-    background
+    style
+        .get_background()
         .background_image
         .0
         .iter()
         .enumerate()
         .any(|(index, image)| {
-            if !matches!(image, Image::Url(..) | Image::ImageSet(..)) {
-                return false;
-            }
-            let size = &background.background_size.0[index % background.background_size.0.len()];
-            if matches!(size, BackgroundSize::Cover) {
-                return true;
-            }
-            let repeat =
-                &background.background_repeat.0[index % background.background_repeat.0.len()];
-            repeat.0 != BackgroundRepeatKeyword::NoRepeat &&
-                repeat.1 != BackgroundRepeatKeyword::NoRepeat
+            matches!(image, Image::Url(..) | Image::ImageSet(..)) &&
+                fills_background_area(style, index, image)
         })
+}
+
+/// Whether `image`, the background layer `index` of `style`, fills the background area: it
+/// covers it or repeats in both directions. A gradient has no size of its own, so `auto` and
+/// `contain` stretch it over the area too.
+fn fills_background_area(style: &ComputedValues, index: usize, image: &Image) -> bool {
+    let background = style.get_background();
+    let size = &background.background_size.0[index % background.background_size.0.len()];
+    let stretched = match size {
+        BackgroundSize::Cover => true,
+        BackgroundSize::Contain => matches!(image, Image::Gradient(..)),
+        BackgroundSize::ExplicitSize { width, height } => {
+            matches!(image, Image::Gradient(..)) && width.is_auto() && height.is_auto()
+        },
+    };
+    let repeat = &background.background_repeat.0[index % background.background_repeat.0.len()];
+    stretched ||
+        (repeat.0 != BackgroundRepeatKeyword::NoRepeat &&
+            repeat.1 != BackgroundRepeatKeyword::NoRepeat)
 }
 
 fn rgba(color: AbsoluteColor) -> ColorF {
@@ -416,6 +524,30 @@ impl AdaptiveDarkPainter {
         self.background(style, color)
     }
 
+    /// Adapts the color `stops` of a gradient of an element with `style`. Under a repeated
+    /// or covering image they stay as authored, like the background color.
+    pub(crate) fn gradient_stops(&self, style: &ComputedValues, stops: &mut [GradientStop]) {
+        if has_covering_image(style) {
+            return;
+        }
+        for stop in stops {
+            stop.color = self.background_rgba(style, stop.color);
+        }
+    }
+
+    /// The color to paint under a top-level canvas painted from `canvas_style`, if any: the
+    /// darkened default canvas, so that the white the embedder clears to does not show
+    /// through a canvas color that is not opaque. An image that covers the canvas keeps the
+    /// authored white, like the text over it.
+    pub(crate) fn canvas_underlay(&self, canvas_style: &ComputedValues) -> Option<ColorF> {
+        let color =
+            rgba(canvas_style.resolve_color(&canvas_style.get_background().background_color));
+        if color.a >= 1.0 || has_covering_image(canvas_style) {
+            return None;
+        }
+        Some(Backdrop::blank_canvas_color())
+    }
+
     /// Like [`Self::background`], for a color already converted for WebRender.
     pub(crate) fn background_rgba(&self, style: &ComputedValues, color: ColorF) -> ColorF {
         if opts_out(style) || color.a == 0.0 {
@@ -428,24 +560,24 @@ impl AdaptiveDarkPainter {
     /// Whether to paint an inline `<svg>` of an element with `style` over `backdrop` with
     /// [`inverted_lightness_filter`]: it is drawn for a light backdrop that got darker.
     pub(crate) fn inverts_inline_svg(&self, style: &ComputedValues, backdrop: &Backdrop) -> bool {
-        if opts_out(style) || backdrop.keeps_foregrounds() {
+        if backdrop.keeps_foregrounds() {
             return false;
         }
         let color = Rgb::from_color_f(rgba(style.get_inherited_text().clone_color()));
         color.luminance() < backdrop.authored.luminance()
     }
 
-    /// The color to paint for the foreground `color` of an element with `style` over
-    /// `backdrop`.
+    /// The color to paint for a foreground `color` over `backdrop`. This does not depend on
+    /// whether the element opts out: one that paints its own background keeps its colors
+    /// through the backdrop, and one that does not needs readable text over a darkened one.
     pub(crate) fn foreground(
         &self,
-        style: &ComputedValues,
         color: AbsoluteColor,
         backdrop: &Backdrop,
         min_contrast: f32,
     ) -> ColorF {
         let color = rgba(color);
-        if opts_out(style) || backdrop.keeps_foregrounds() || color.a < 1.0 / 255.0 {
+        if backdrop.keeps_foregrounds() || color.a < 1.0 / 255.0 {
             return color;
         }
 
@@ -706,7 +838,7 @@ mod tests {
             color: [0, 0, 0, 138], // rgba(0, 0, 0, 0.54)
             authored: [255, 255, 255],
             painted: darken_background(DEFAULT_CANVAS).0.map(quantize),
-            min_contrast_tenths: 45,
+            min_contrast_tenths: (MIN_TEXT_CONTRAST * 10.0).round() as u8,
         };
         let result = adapt_foreground_key(key);
         assert_eq!(quantize(result.a), 138);
