@@ -2732,6 +2732,7 @@ impl Window {
         // Send new document and relevant styles to layout.
         let reflow = ReflowRequest {
             document: document.upcast::<Node>().to_trusted_node_address(),
+            is_initial_about_blank: document.is_initial_about_blank(),
             epoch: document.current_rendering_epoch(),
             restyle,
             viewport_details: self.viewport_details.get(),

@@ -174,6 +174,9 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// Whether this document is a top-level one, whose canvas has nothing painted beneath it.
     is_top_level: bool,
 
+    /// Initial about:blank frames stay transparent even when their scheme differs.
+    is_initial_about_blank: bool,
+
     /// The used scheme of this frame's embedding element, if known.
     embedding_color_scheme: Option<Theme>,
 
@@ -248,6 +251,7 @@ impl DisplayListBuilder<'_> {
         frame_focused: bool,
         adaptive_dark_mode: bool,
         is_top_level: bool,
+        is_initial_about_blank: bool,
         prefers_dark_color_scheme: bool,
         embedding_color_scheme: Option<Theme>,
         iframe_sizes: &mut layout_api::IFrameSizes,
@@ -310,6 +314,7 @@ impl DisplayListBuilder<'_> {
                 })
                 .map(|_| AdaptiveDarkPainter::default()),
             is_top_level,
+            is_initial_about_blank,
             embedding_color_scheme,
             iframe_sizes,
             painted_areas: PaintedAreas::default(),
@@ -1281,7 +1286,9 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             (scheme == Theme::Dark) !=
                 fragment.style().uses_dark_color_scheme(self.prefers_dark_color_scheme)
         });
-        if self.is_top_level || scheme_mismatch {
+        // An initial about:blank is not an authored light page. Keep its canvas
+        // transparent rather than flashing a white frame over a dark embedder.
+        if self.is_top_level || (scheme_mismatch && !self.is_initial_about_blank) {
             let default_canvas = self.default_canvas_color(fragment.style(), &source_style);
             if let Some(default_canvas) = default_canvas {
                 let painting_area = self.canvas_painting_area();

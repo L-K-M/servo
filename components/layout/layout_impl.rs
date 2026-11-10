@@ -1676,6 +1676,7 @@ impl LayoutThread {
             reflow_request.frame_focused,
             self.adaptive_dark_mode,
             !self.is_iframe,
+            reflow_request.is_initial_about_blank,
             self.device().color_scheme() == PrefersColorScheme::Dark,
             self.embedding_color_scheme,
             iframe_sizes,

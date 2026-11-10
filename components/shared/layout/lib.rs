@@ -843,6 +843,8 @@ pub struct ReflowRequestRestyle {
 pub struct ReflowRequest {
     /// The document node.
     pub document: TrustedNodeAddress,
+    /// Whether this is the initial, not-yet-navigated about:blank document.
+    pub is_initial_about_blank: bool,
     /// The current layout [`Epoch`] managed by the script thread.
     pub epoch: Epoch,
     /// If a restyle is necessary, all of the informatio needed to do that restyle.

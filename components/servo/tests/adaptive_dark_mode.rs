@@ -899,6 +899,13 @@ fn test_adaptive_dark_mode() {
     );
     assert_frame_color("matching schemes become transparent again", [80, 0, 0]);
 
+    // An initial about:blank frame must not flash a white backplate over a dark page.
+    harness.load(page(&format!(
+        "<style>:root{{color-scheme:dark;background:rgb(80,0,0)}}</style>\
+         <iframe style='{IMAGE_STYLE};border:0'></iframe>"
+    )));
+    assert_frame_color("initial about:blank stays transparent", [80, 0, 0]);
+
     // The shell's background color is the embedder's. It does not show through a page
     // that sets no colors, light or darkened.
     harness.set_shell_background([0.0, 0.0, 1.0, 1.0]);
