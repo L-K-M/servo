@@ -26,7 +26,7 @@ async_test(t => {
       document.body.textContent.includes("rest of the ad markup"),
       "content after the script is parsed after the document is closed");
     t.done();
-  }));
+  }), { once: true });
 }, "a script inside document.write() content may call document.close()");
 </script>
 </body>

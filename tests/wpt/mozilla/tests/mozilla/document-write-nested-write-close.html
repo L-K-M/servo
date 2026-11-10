@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>document.close() inside a nested document.write() defers to the outermost write</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-document-close">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#document.write()">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body><p>host page</p>
+<script>
+async_test(t => {
+  window.addEventListener("load", t.step_func(() => {
+    // The closing script runs at write() nesting depth 2: only the outermost
+    // write() may run the deferred end of input, and trailing outer content
+    // must still be parsed before it.
+    var openScript = "<scr" + "ipt>";
+    var closeScript = "</scr" + "ipt>";
+    document.write(
+      "<p>outer before</p>" + openScript +
+      "document.write('<p>inner</p>' + openScript + 'document.close();' + closeScript + 'inner tail');" +
+      closeScript + "<p>outer after</p>");
+    assert_true(
+      document.body.textContent.includes("inner"),
+      "nested write content is parsed");
+    assert_true(
+      document.body.textContent.includes("inner tail"),
+      "content after the nested closing script is kept");
+    assert_true(
+      document.body.textContent.includes("outer after"),
+      "trailing outer content is parsed before the deferred close runs");
+    t.done();
+  }), { once: true });
+}, "document.close() inside a nested document.write() defers to the outermost write");
+</script>
+</body>

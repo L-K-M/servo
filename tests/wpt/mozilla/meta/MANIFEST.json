@@ -14533,7 +14533,14 @@
      ]
     ],
     "document-write-nested-close.html": [
-     "e3f3c7967ba9b6b6d087eac6cdf665ca30477af1",
+     "1778b0312e382ec9c07498948fa37b2acad85e9d",
+     [
+      null,
+      {}
+     ]
+    ],
+    "document-write-nested-write-close.html": [
+     "0b248d5eef02f7718800acee3e3f8b85f11cd227",
      [
       null,
       {}
