@@ -7,6 +7,16 @@
 <script src="/resources/testharnessreport.js"></script>
 <body><p>host page</p>
 <script>
+// The assertions read the text outside <script> elements: a written
+// script's own source is textContent too, and string literals in it would
+// make an includes() check pass even if the written content were dropped.
+function visibleText() {
+  return [...document.body.childNodes]
+    .filter((n) => n.nodeType !== Node.ELEMENT_NODE || n.localName !== "script")
+    .map((n) => n.textContent)
+    .join("");
+}
+
 async_test(t => {
   window.addEventListener("load", t.step_func(() => {
     // A late document.write() runs the document open steps and feeds a
@@ -20,10 +30,10 @@ async_test(t => {
       "/scr" +
       "ipt>rest of the ad markup");
     assert_true(
-      document.body.textContent.includes("ad unit"),
+      visibleText().includes("ad unit"),
       "content before the script is kept");
     assert_true(
-      document.body.textContent.includes("rest of the ad markup"),
+      visibleText().includes("rest of the ad markup"),
       "content after the script is parsed after the document is closed");
     t.done();
   }), { once: true });

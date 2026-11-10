@@ -7,25 +7,35 @@
 <script src="/resources/testharnessreport.js"></script>
 <body><p>host page</p>
 <script>
+// The assertions read the text outside <script> elements: the written
+// script's own source is textContent too, and its string literals would
+// make an includes() check pass even if the nested write were dropped.
+function visibleText() {
+  return [...document.body.childNodes]
+    .filter((n) => n.nodeType !== Node.ELEMENT_NODE || n.localName !== "script")
+    .map((n) => n.textContent)
+    .join("");
+}
+
 async_test(t => {
   window.addEventListener("load", t.step_func(() => {
     // The closing script runs at write() nesting depth 2: only the outermost
     // write() may run the deferred end of input, and trailing outer content
-    // must still be parsed before it.
-    var openScript = "<scr" + "ipt>";
-    var closeScript = "</scr" + "ipt>";
+    // must still be parsed before it. The written script builds its nested
+    // write from string concatenation so its source carries no script end
+    // tag and needs no host variables.
     document.write(
-      "<p>outer before</p>" + openScript +
-      "document.write('<p>inner</p>' + openScript + 'document.close();' + closeScript + 'inner tail');" +
-      closeScript + "<p>outer after</p>");
+      "<p>outer before</p><scr" + "ipt>" +
+      "document.write('<p>inner body</p><scr' + 'ipt>document.close();</scr' + 'ipt>inner tail');" +
+      "</scr" + "ipt><p>outer after</p>");
     assert_true(
-      document.body.textContent.includes("inner"),
+      visibleText().includes("inner body"),
       "nested write content is parsed");
     assert_true(
-      document.body.textContent.includes("inner tail"),
+      visibleText().includes("inner tail"),
       "content after the nested closing script is kept");
     assert_true(
-      document.body.textContent.includes("outer after"),
+      visibleText().includes("outer after"),
       "trailing outer content is parsed before the deferred close runs");
     t.done();
   }), { once: true });
