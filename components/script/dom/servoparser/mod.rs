@@ -477,8 +477,17 @@ impl ServoParser {
         assert!(input.is_empty());
 
         // A document.close() during the feed above asked for the end of input;
-        // run it now that everything it inserted has been consumed.
-        if self.last_chunk_received.get() && self.feed_depth.get() == 0 {
+        // run it now that everything it inserted has been consumed. A script in
+        // the feed may have stopped or replaced this parser in the meantime:
+        // the end steps must not run for a dead parser.
+        if self.last_chunk_received.get() &&
+            self.feed_depth.get() == 0 &&
+            !self.stopped.get() &&
+            !self.aborted.get() &&
+            self.document
+                .get_current_parser()
+                .is_some_and(|parser| std::ptr::eq(&*parser, self))
+        {
             self.parse_sync(cx);
         }
     }
