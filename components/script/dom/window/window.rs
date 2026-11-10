@@ -3514,8 +3514,18 @@ impl Window {
             return;
         }
 
+        // The embedding element's scheme shares this update path, but changing it alone
+        // must repaint without exposing a spurious DOM resize event.
+        let appearance_only = ViewportDetails {
+            embedding_color_scheme: event.embedding_color_scheme,
+            ..self.viewport_details()
+        } == event;
+
         // Apply the new viewport, since the new size needs to be observable immediately.
         self.set_viewport_details(event);
+        if appearance_only {
+            return;
+        }
 
         // Whenever we receive a new resize event we forget about all the ones that came before
         // it, to avoid unnecessary relayouts

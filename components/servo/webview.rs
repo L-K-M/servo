@@ -288,6 +288,7 @@ impl WebView {
             hidpi_scale_factor: Scale::new(inner.hidpi_scale_factor.0),
             device_size,
             max_layout_viewport_expansion,
+            embedding_color_scheme: None,
         }
     }
 

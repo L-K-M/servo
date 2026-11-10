@@ -144,6 +144,9 @@ pub struct LayoutThread {
     /// Whether display lists paint a light document with dark colors.
     adaptive_dark_mode: bool,
 
+    /// The iframe element's used scheme, or `None` for a top-level viewport.
+    embedding_color_scheme: Option<Theme>,
+
     /// The channel on which messages can be sent to the time profiler.
     time_profiler_chan: profile_time::ProfilerChan,
 
@@ -299,6 +302,13 @@ impl Layout for LayoutThread {
     }
 
     fn set_viewport_details(&mut self, viewport_details: ViewportDetails) -> bool {
+        let scheme_changed = std::mem::replace(
+            &mut self.embedding_color_scheme,
+            viewport_details.embedding_color_scheme,
+        ) != viewport_details.embedding_color_scheme;
+        if scheme_changed {
+            self.need_new_display_list.set(true);
+        }
         let expansion_changed = std::mem::replace(
             &mut self.max_layout_viewport_expansion,
             viewport_details.max_layout_viewport_expansion,
@@ -315,7 +325,7 @@ impl Layout for LayoutThread {
             device.device_pixel_ratio() == device_pixel_ratio &&
             device.device_size() == device_size
         {
-            return expansion_changed;
+            return expansion_changed || scheme_changed;
         }
 
         device.set_viewport_size(viewport_details.size);
@@ -922,6 +932,7 @@ impl LayoutThread {
             url: config.url,
             is_iframe: config.is_iframe,
             adaptive_dark_mode: config.adaptive_dark_mode,
+            embedding_color_scheme: config.viewport_details.embedding_color_scheme,
             time_profiler_chan: config.time_profiler_chan,
             embedder_chan: config.embedder_chan.clone(),
             registered_painters: RegisteredPaintersImpl(Default::default()),
@@ -1160,7 +1171,7 @@ impl LayoutThread {
         let mut accessibility_damage =
             to_accessibility_damage_map(std::mem::take(&mut reflow_request.accessibility_damage));
 
-        let (mut reflow_phases_run, iframe_sizes, changed_web_fonts) = self
+        let (mut reflow_phases_run, mut iframe_sizes, changed_web_fonts) = self
             .restyle_and_build_trees(
                 &mut reflow_request,
                 document,
@@ -1172,7 +1183,12 @@ impl LayoutThread {
         if self.build_stacking_context_tree_for_reflow(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltStackingContextTree);
         }
-        if self.build_display_list(&reflow_request, &image_resolver, &mut reflow_statistics) {
+        if self.build_display_list(
+            &reflow_request,
+            &image_resolver,
+            &mut reflow_statistics,
+            &mut iframe_sizes,
+        ) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltDisplayList);
         }
         if self.handle_update_scroll_node_request(&reflow_request) {
@@ -1606,6 +1622,7 @@ impl LayoutThread {
         reflow_request: &ReflowRequest,
         image_resolver: &Arc<ImageResolver>,
         reflow_statistics: &mut ReflowStatistics,
+        iframe_sizes: &mut IFrameSizes,
     ) -> bool {
         if !ReflowPhases::necessary(&reflow_request.reflow_goal)
             .contains(ReflowPhases::DisplayListConstruction)
@@ -1660,6 +1677,8 @@ impl LayoutThread {
             self.adaptive_dark_mode,
             !self.is_iframe,
             self.device().color_scheme() == PrefersColorScheme::Dark,
+            self.embedding_color_scheme,
+            iframe_sizes,
         );
 
         stacking_context_tree.paint_info.paint_timing_info = reflow_request.paint_timing_info;

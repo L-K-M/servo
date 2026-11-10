@@ -857,6 +857,48 @@ fn test_adaptive_dark_mode() {
     harness.load(page("<meta name=color-scheme content='only dark'>"));
     harness.assert_dark_scheme("metadata only dark under a light theme");
 
+    // Paint-only style repairs must reach the inner fragment of a replaced element.
+    // The black/clear edge is at x=290 when the ten-pixel image is scaled to 100px.
+    // Auto blends its neighboring pixels; pixelated keeps the pixel on the left black.
+    const IMAGE_EDGE: (u32, u32) = (289, 300);
+    let has_blended_edge = |painted: &Painted| {
+        let lightness = luminance(painted.pixel(IMAGE_EDGE));
+        lightness > 0.01 && lightness < 0.99
+    };
+    harness.load(page(&image(DARK_ON_CLEAR_PNG)));
+    let painted = harness.painted_when(has_blended_edge);
+    assert!(has_blended_edge(&painted), "auto image edge: {:?}", painted.pixel(IMAGE_EDGE));
+    harness.evaluate("document.querySelector('img').style.imageRendering='pixelated'");
+    let painted = harness.painted_when(|painted| painted.pixel(IMAGE_EDGE) == [0, 0, 0]);
+    assert_eq!(painted.pixel(IMAGE_EDGE), [0, 0, 0], "pixelated without layout");
+    harness.evaluate("document.querySelector('img').style.imageRendering='auto'");
+    let painted = harness.painted_when(has_blended_edge);
+    assert!(has_blended_edge(&painted), "auto image edge restored");
+
+    // A matching frame is transparent. A different scheme on the embedding element
+    // gives the child an opaque default canvas, including after a style-only change.
+    harness.load(page(&format!(
+        "<style>:root{{color-scheme:light;background:rgb(80,0,0)}}</style>\
+         <iframe style='{IMAGE_STYLE};border:0' srcdoc='<!doctype html>\
+         <style>:root{{color-scheme:light}}</style>'></iframe>"
+    )));
+    let assert_frame_color = |case: &str, expected: [u8; 3]| {
+        let painted = harness.painted_when(|painted| painted.pixel(KEPT_POINT) == expected);
+        assert_eq!(painted.pixel(KEPT_POINT), expected, "{case}");
+    };
+    assert_frame_color("matching schemes are transparent", [80, 0, 0]);
+    harness.evaluate(
+        "window.frameResizes=0;document.querySelector('iframe').contentWindow.onresize=\
+         ()=>window.frameResizes++",
+    );
+    harness.evaluate("document.querySelector('iframe').style.colorScheme='dark'");
+    assert_frame_color("mismatched schemes get a light backplate", [255, 255, 255]);
+    assert_eq!(harness.evaluate("frameResizes"), JSValue::Number(0.0));
+    harness.evaluate(
+        "document.querySelector('iframe').contentDocument.documentElement.style.colorScheme='dark'",
+    );
+    assert_frame_color("matching schemes become transparent again", [80, 0, 0]);
+
     // The shell's background color is the embedder's. It does not show through a page
     // that sets no colors, light or darkened.
     harness.set_shell_background([0.0, 0.0, 1.0, 1.0]);

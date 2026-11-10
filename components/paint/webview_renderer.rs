@@ -1428,6 +1428,7 @@ impl WebViewRenderer {
             size: layout_viewport,
             device_size: self.screen_size,
             max_layout_viewport_expansion,
+            embedding_color_scheme: None,
         };
         // The constellation passes these to every pipeline of the browsing context, pending
         // ones included, so the same details need not be sent again.
