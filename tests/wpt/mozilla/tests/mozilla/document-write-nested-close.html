@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>document.close() inside document.write() content does not panic the parser</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-document-close">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#document.write()">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body><p>host page</p>
+<script>
+async_test(t => {
+  window.addEventListener("load", t.step_func(() => {
+    // A late document.write() runs the document open steps and feeds a
+    // script-created parser. Its content contains a script that closes the
+    // document and more content after that script. Closing the document from
+    // inside the feed used to drain the parser's open elements under the feed,
+    // and the content after the script panicked in the tree builder.
+    document.write(
+      "<p>ad unit</p><scr" +
+      "ipt>document.close();document.close();<" +
+      "/scr" +
+      "ipt>rest of the ad markup");
+    assert_true(
+      document.body.textContent.includes("ad unit"),
+      "content before the script is kept");
+    assert_true(
+      document.body.textContent.includes("rest of the ad markup"),
+      "content after the script is parsed after the document is closed");
+    t.done();
+  }));
+}, "a script inside document.write() content may call document.close()");
+</script>
+</body>
