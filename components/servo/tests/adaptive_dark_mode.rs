@@ -71,6 +71,10 @@ const DARK_PICTURE_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA
     AAAASUlEQVR42m3OMREAMQACwZRIQAIS8G8sufofZra7giPpGkFxvpMJENQrCAGCZgUlQNCuQOaD+WA+eH0gQFCvIAQI\
     mhWUAEH7Dx4hginhq6osBAAAAABJRU5ErkJggg==";
 
+/// A PNG of 8 by 8 opaque pixels, all `rgb(220, 220, 220)`: a light picture.
+const LIGHT_PICTURE_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSnc\
+    AAAAD0lEQVR42mO4gwMwDC0JAHiIpQFQusoIAAAAAElFTkSuQmCC";
+
 /// The URL of an SVG image of 100 by 100 pixels with `shapes`. Their colors need names:
 /// `#` would end the URL.
 fn svg(shapes: &str) -> String {
@@ -590,6 +594,57 @@ fn test_adaptive_dark_mode() {
         is_white(&painted),
         "white text over a picture: {:?}, {}",
         painted.pixel(CAPTION_POINT),
+        painted.describe()
+    );
+
+    // What lies over an opaque picture that kept its pixels was drawn for the picture:
+    // dark text and a dark icon keep their colors over a light one.
+    let picture = format!(
+        "<img style='position:fixed;left:240px;top:240px;width:140px;height:140px' \
+         src='{LIGHT_PICTURE_PNG}'>"
+    );
+    harness.load(page(&format!(
+        "{picture}<span style='position:fixed;left:250px;top:250px;font-size:40px;\
+         color:black'>&#x2588;</span>"
+    )));
+    let is_black = |painted: &Painted| painted.pixel(CAPTION_POINT) == [0, 0, 0];
+    let painted = harness.painted_when(is_black);
+    assert!(
+        is_black(&painted),
+        "black text over a light picture: {:?}, {}",
+        painted.pixel(CAPTION_POINT),
+        painted.describe()
+    );
+    harness.load(page(&format!("{picture}{}", image(&svg(DARK_ARTWORK)))));
+    let has_dark_artwork = |painted: &Painted| {
+        luminance(painted.pixel(ARTWORK_POINT)) < 0.01 &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [220, 220, 220]
+    };
+    let painted = harness.painted_when(has_dark_artwork);
+    assert!(
+        has_dark_artwork(&painted),
+        "dark icon over a light picture: {:?} beside {:?}, {}",
+        painted.pixel(ARTWORK_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // A box with a background of its own hides the picture under it: the box turns dark
+    // like the page, and its text light.
+    harness.load(page(&format!(
+        "{picture}<div style='{IMAGE_STYLE};background:white;color:black;font-size:40px;\
+         line-height:1'>&#x2588;</div>"
+    )));
+    let has_light_text_in_dark_box = |painted: &Painted| {
+        luminance(painted.pixel(CAPTION_POINT)) > 0.5 &&
+            luminance(painted.pixel(BESIDE_ARTWORK_POINT)) < 0.03
+    };
+    let painted = harness.painted_when(has_light_text_in_dark_box);
+    assert!(
+        has_light_text_in_dark_box(&painted),
+        "white box over a picture: text {:?} in {:?}, {}",
+        painted.pixel(CAPTION_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
         painted.describe()
     );
 

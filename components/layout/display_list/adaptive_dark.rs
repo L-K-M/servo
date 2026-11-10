@@ -458,6 +458,14 @@ impl Backdrop {
         }
     }
 
+    /// This backdrop with an image painted over it that kept its pixels.
+    pub(crate) fn under_image(self) -> Self {
+        Self {
+            over_image: true,
+            ..self
+        }
+    }
+
     /// Whether foregrounds over this backdrop keep their authored colors.
     fn keeps_foregrounds(&self) -> bool {
         self.over_image || self.painted.is_close_to(self.authored)

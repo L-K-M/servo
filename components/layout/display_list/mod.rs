@@ -99,6 +99,19 @@ const INSERTION_POINT_LOGICAL_WIDTH: Au = Au(AU_PER_PX);
 static UNFOCUSED_SELECTION_COLOR: LazyLock<AbsoluteColor> =
     LazyLock::new(|| AbsoluteColor::srgb_legacy(200, 200, 200, 1.0));
 
+/// A background color with at least this alpha hides what is painted under it, for
+/// [`PaintedArea`].
+const COVERING_ALPHA: f32 = 0.5;
+
+/// An area that adaptive dark mode remembers while it paints: an opaque image that kept
+/// its pixels, or a background painted over such an image later. What is painted over
+/// the image was drawn for it, not for the page behind both.
+struct PaintedArea {
+    spatial_id: ScrollTreeNodeId,
+    rect: LayoutRect,
+    is_kept_image: bool,
+}
+
 pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
     fragment_tree: &'a FragmentTree,
@@ -162,6 +175,9 @@ pub(crate) struct DisplayListBuilder<'a> {
 
     /// Whether this document is a top-level one, whose canvas has nothing painted beneath it.
     is_top_level: bool,
+
+    /// The [`PaintedArea`]s so far, in paint order. See [`Self::backdrop_at`].
+    painted_areas: Vec<PaintedArea>,
 }
 
 struct PendingCaret {
@@ -282,6 +298,7 @@ impl DisplayListBuilder<'_> {
                 })
                 .map(|_| AdaptiveDarkPainter::default()),
             is_top_level,
+            painted_areas: Vec::new(),
         };
 
         // Clear any caret color from previous display list constructions.
@@ -357,6 +374,54 @@ impl DisplayListBuilder<'_> {
             (Some(painter), Some(backdrop)) => painter.foreground(color, backdrop, min_contrast),
             _ => rgba(color),
         }
+    }
+
+    /// Remembers that an opaque image kept its pixels in `rect`.
+    fn note_kept_image(&mut self, state: &TraversalState, rect: LayoutRect) {
+        if self.adaptive_dark.is_some() {
+            self.painted_areas.push(PaintedArea {
+                spatial_id: state.spatial_id,
+                rect,
+                is_kept_image: true,
+            });
+        }
+    }
+
+    /// Remembers that a background color that hides what is under it was painted in
+    /// `rect`, if that is over an image that kept its pixels.
+    fn note_covering_background(&mut self, state: &TraversalState, rect: LayoutRect) {
+        let covers_kept_image = self.painted_areas.iter().any(|area| {
+            area.is_kept_image && area.spatial_id == state.spatial_id && area.rect.intersects(&rect)
+        });
+        if covers_kept_image {
+            self.painted_areas.push(PaintedArea {
+                spatial_id: state.spatial_id,
+                rect,
+                is_kept_image: false,
+            });
+        }
+    }
+
+    /// What is painted behind content in `rect`: the backdrop of `state`, which follows
+    /// the backgrounds of the content's ancestors, with an image over it when the middle
+    /// of `rect` lies on an opaque image that kept its pixels and no background was painted
+    /// there since. Such content, as a label or an icon positioned over a photo, was drawn
+    /// for the image.
+    ///
+    /// Only areas that scroll with the content are compared, and gradients and rounded
+    /// corners are not considered.
+    fn backdrop_at(&self, state: &TraversalState, rect: &LayoutRect) -> Option<Backdrop> {
+        let backdrop = state.backdrop?;
+        let middle = rect.center();
+        let topmost = self
+            .painted_areas
+            .iter()
+            .rev()
+            .find(|area| area.spatial_id == state.spatial_id && area.rect.contains(middle));
+        Some(match topmost {
+            Some(area) if area.is_kept_image => backdrop.under_image(),
+            _ => backdrop,
+        })
     }
 
     /// Whether adaptive dark mode paints the `pixels` of the image `image_key` with
@@ -1028,18 +1093,25 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         let common = self.common_properties(state, clip, &style);
 
         if let Some(image_key) = fragment.image_key {
+            let backdrop = self.backdrop_at(state, &rect);
             let inverts_lightness = if fragment.is_inline_svg {
-                match (&self.adaptive_dark, &state.backdrop) {
+                match (&self.adaptive_dark, &backdrop) {
                     (Some(painter), Some(backdrop)) => painter.inverts_inline_svg(&style, backdrop),
                     _ => false,
                 }
             } else {
                 fragment.pixels.as_ref().is_some_and(|pixels| {
-                    self.inverts_image_lightness(state.backdrop.as_ref(), image_key, pixels)
+                    self.inverts_image_lightness(backdrop.as_ref(), image_key, pixels)
                 })
             };
             if inverts_lightness {
                 self.push_inverted_lightness(state);
+            } else if fragment
+                .pixels
+                .as_ref()
+                .is_some_and(|pixels| pixels.is_opaque)
+            {
+                self.note_kept_image(state, rect);
             }
             self.wr().push_image(
                 &common,
@@ -1396,8 +1468,8 @@ impl Fragment {
             }
         }
 
-        let text_color =
-            builder.foreground_color(state.backdrop.as_ref(), color, MIN_TEXT_CONTRAST);
+        let backdrop = builder.backdrop_at(state, &rect.to_webrender());
+        let text_color = builder.foreground_color(backdrop.as_ref(), color, MIN_TEXT_CONTRAST);
         builder.wr().push_text(
             &common,
             glyph_bounds,
@@ -1964,6 +2036,9 @@ impl<'a> BuilderForBoxFragment<'a> {
             let common = painter.common_properties(self, builder, state, layer_index, bounds);
             let color = builder.background_layer_color(painter.style, background_color);
             builder.wr().push_rect(&common, bounds, color);
+            if background_color.alpha >= COVERING_ALPHA {
+                builder.note_covering_background(state, bounds);
+            }
 
             // From <https://www.w3.org/TR/paint-timing/#sec-terminology>:
             // First paint ... includes non-default background paint and the enclosing box of an iframe.
@@ -2169,8 +2244,9 @@ impl<'a> BuilderForBoxFragment<'a> {
                             push_stacking_context(builder, layer.blend_mode, Default::default());
                         }
                         // An icon drawn for a light page, on a page that got dark.
+                        let backdrop = builder.backdrop_at(state, &layer.bounds);
                         let inverts_lightness = builder.inverts_background_image_lightness(
-                            state.backdrop.as_ref(),
+                            backdrop.as_ref(),
                             style,
                             index,
                             image_key,
