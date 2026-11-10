@@ -280,6 +280,10 @@ impl ImageResolver {
 
     /// Resolve a cached image to a WebRender [`ImageKey`] and the pixels it stands for: a
     /// raster image's own, or those of a vector image rasterized at `size`.
+    ///
+    /// Returns `None` while the image has no key, and for a vector image that has no
+    /// `node` to rasterize it for or is not rasterized yet. The caller then paints no
+    /// image, as with [`Self::image_key_from_cached_image`].
     pub(crate) fn image_key_and_pixels_from_cached_image(
         &self,
         image: &CachedImage,

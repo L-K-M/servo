@@ -1085,6 +1085,8 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
                 })
             };
             if inverts_lightness {
+                // Not remembered: inverted, an opaque image is as dark as the backdrop it
+                // was judged against, so what lies over it is painted as over that backdrop.
                 self.push_inverted_lightness(state);
             } else if fragment
                 .pixels
