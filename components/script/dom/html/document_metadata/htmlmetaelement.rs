@@ -21,7 +21,7 @@ use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::document::Document;
+use crate::dom::document::{Document, MetadataColorSchemes};
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::html::htmlelement::HTMLElement;
@@ -199,9 +199,9 @@ impl HTMLMetaElement {
             .find_map(|content| ColorSchemeMetadata::parse(&content));
 
         // TODO: Allow for more different themes than the ones that embedders can set
-        doc.set_theme(metadata.and_then(|metadata| metadata.theme), cx.no_gc());
-        doc.set_color_scheme_metadata_supports_light_and_dark(
-            metadata.is_some_and(|metadata| metadata.supports_light_and_dark),
+        doc.set_theme(metadata.and_then(|metadata| metadata.theme));
+        doc.set_metadata_color_schemes(
+            metadata.map_or_else(Default::default, |metadata| metadata.schemes),
             cx.no_gc(),
         );
         doc.set_color_scheme_metadata_opts_out_of_adaptive_dark_mode(
@@ -421,10 +421,11 @@ impl<T: AsRef<str>> IsColorSchemeValue for Option<T> {
 /// What a valid `<meta name="color-scheme">` content tells the engine.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ColorSchemeMetadata {
-    /// The theme for a page that supports exactly one color scheme.
+    /// The theme of a page whose metadata is exactly `light` or `dark`, which its
+    /// `prefers-color-scheme` follows.
     theme: Option<Theme>,
-    /// Whether the page declares both light and dark support.
-    supports_light_and_dark: bool,
+    /// Which of light and dark the page names, for its default colors.
+    schemes: MetadataColorSchemes,
     /// Whether the page declares dark support or `only`, which keeps adaptive dark mode
     /// from painting it.
     opts_out_of_adaptive_dark_mode: bool,
@@ -451,7 +452,7 @@ impl ColorSchemeMetadata {
         {
             return Some(Self {
                 theme: None,
-                supports_light_and_dark: false,
+                schemes: MetadataColorSchemes::Light,
                 opts_out_of_adaptive_dark_mode: false,
             });
         }
@@ -479,9 +480,14 @@ impl ColorSchemeMetadata {
             _ => None,
         };
         let names = |name: &str| keywords.iter().any(|keyword| is(keyword, name));
+        let schemes = match (names("light"), names("dark")) {
+            (true, true) => MetadataColorSchemes::LightAndDark,
+            (false, true) => MetadataColorSchemes::Dark,
+            _ => MetadataColorSchemes::Light,
+        };
         Some(Self {
             theme,
-            supports_light_and_dark: names("light") && names("dark"),
+            schemes,
             opts_out_of_adaptive_dark_mode: names("dark") || names("only"),
         })
     }

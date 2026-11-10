@@ -723,6 +723,19 @@ fn test_adaptive_dark_mode() {
                 "CSS light dark",
                 "<style>:root{color-scheme:light dark}</style>",
             ),
+            // Dark and not light, whatever else the metadata names.
+            (
+                "metadata only dark",
+                "<meta name=color-scheme content='only dark'>",
+            ),
+            (
+                "metadata dark only",
+                "<meta name=color-scheme content='dark only'>",
+            ),
+            (
+                "metadata dark and a custom scheme",
+                "<meta name=color-scheme content='dark sepia'>",
+            ),
         ] {
             harness.load(page(head));
             harness.assert_dark_scheme(&format!("{case}, adaptive dark mode {adaptive_dark_mode}"));
@@ -755,6 +768,8 @@ fn test_adaptive_dark_mode() {
     harness.assert_authored_light("metadata light dark under a light theme");
     harness.load(page("<style>:root{color-scheme:dark}</style>"));
     harness.assert_dark_scheme("CSS dark under a light theme");
+    harness.load(page("<meta name=color-scheme content='only dark'>"));
+    harness.assert_dark_scheme("metadata only dark under a light theme");
 
     // The shell's background color is the embedder's. It does not show through a page
     // that sets no colors, light or darkened.
