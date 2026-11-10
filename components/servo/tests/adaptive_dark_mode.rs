@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
-use servo::{JSValue, LoadStatus, Theme, WebView, WebViewBuilder};
+use servo::{JSValue, LoadStatus, PrefValue, Theme, WebView, WebViewBuilder};
 use url::Url;
 
 use crate::common::{ServoTest, WebViewDelegateImpl, evaluate_javascript};
@@ -196,6 +196,12 @@ impl Painted {
         self.canvas == [255, 255, 255] && luminance(self.ink) < 0.01
     }
 
+    /// Whether the page shows the default colors of a dark color scheme: Stylo's `Canvas`
+    /// and `CanvasText` system colors.
+    fn is_dark_scheme(&self) -> bool {
+        self.canvas == [30, 30, 30] && self.ink == [232, 232, 232]
+    }
+
     fn is_adapted(&self) -> bool {
         luminance(self.canvas) < 0.03 &&
             luminance(self.ink) > luminance(self.canvas) &&
@@ -267,6 +273,23 @@ impl Harness {
             painted.describe()
         );
         assert_eq!(painted.image, [255, 255, 255], "{case}: <canvas>");
+    }
+
+    fn assert_dark_scheme(&self, case: &str) {
+        let painted = self.painted_when(Painted::is_dark_scheme);
+        assert!(painted.is_dark_scheme(), "{case}: {}", painted.describe());
+    }
+
+    /// Sets the color the shell shows where no page paints.
+    fn set_shell_background(&self, color: [f64; 4]) {
+        self.servo_test
+            .servo()
+            .set_preference("shell_background_color_rgba", PrefValue::from(color));
+    }
+
+    fn assert_canvas(&self, case: &str, color: [u8; 3]) {
+        let painted = self.painted_when(|painted| painted.canvas == color);
+        assert_eq!(painted.canvas, color, "{case}");
     }
 
     fn assert_adapted(&self, case: &str) {
@@ -744,4 +767,159 @@ fn test_adaptive_dark_mode() {
     harness.assert_adapted("before turning off");
     harness.webview.set_adaptive_dark_mode(false);
     harness.assert_authored_light("turned off");
+
+    // A page that uses a dark color scheme and sets no colors has that scheme's canvas
+    // under its light default text, not the shell's white. The theme is still dark, so a
+    // page that supports both schemes uses the dark one. Adaptive dark mode leaves such
+    // pages alone.
+    for adaptive_dark_mode in [false, true] {
+        harness.webview.set_adaptive_dark_mode(adaptive_dark_mode);
+        for (case, head) in [
+            ("metadata dark", "<meta name=color-scheme content=dark>"),
+            ("CSS dark", "<style>:root{color-scheme:dark}</style>"),
+            ("CSS normal", "<style>:root{color-scheme:normal}</style>"),
+            (
+                "metadata light dark",
+                "<meta name=color-scheme content='light dark'>",
+            ),
+            (
+                "metadata dark light",
+                "<meta name=color-scheme content='dark light'>",
+            ),
+            (
+                "CSS light dark",
+                "<style>:root{color-scheme:light dark}</style>",
+            ),
+            // Dark and not light, whatever else the metadata names.
+            (
+                "metadata only dark",
+                "<meta name=color-scheme content='only dark'>",
+            ),
+            (
+                "metadata dark only",
+                "<meta name=color-scheme content='dark only'>",
+            ),
+            (
+                "metadata dark and a custom scheme",
+                "<meta name=color-scheme content='dark sepia'>",
+            ),
+        ] {
+            harness.load(page(head));
+            harness.assert_dark_scheme(&format!("{case}, adaptive dark mode {adaptive_dark_mode}"));
+        }
+    }
+    harness.webview.set_adaptive_dark_mode(false);
+
+    // A root that names neither scheme follows the preferred one, as its system colors do
+    // in Stylo: the canvas must not stay white under their light text.
+    harness.load(page("<style>:root{color-scheme:normal}</style>"));
+    harness.assert_dark_scheme("CSS normal under a dark theme");
+
+    // That canvas is the `Canvas` system color, as an element paints it.
+    harness.load(page(
+        "<style>:root{color-scheme:dark}</style><div style='position:fixed;left:300px;\
+         top:300px;width:50px;height:50px;background:Canvas'></div>",
+    ));
+    let painted = harness.painted_when(Painted::is_dark_scheme);
+    assert!(painted.is_dark_scheme(), "{}", painted.describe());
+    assert_eq!(painted.pixel(KEPT_POINT), painted.canvas, "Canvas");
+
+    // Metadata that starts to declare both schemes switches a painted page, and removing
+    // it switches the page back.
+    harness.load(page("<meta name=color-scheme content=light>"));
+    harness.assert_authored_light("metadata light");
+    harness.evaluate("document.querySelector('meta').content = 'light dark'");
+    harness.assert_dark_scheme("metadata changed to light dark");
+    harness.evaluate("document.querySelector('meta').remove()");
+    harness.assert_authored_light("metadata removed");
+
+    // The first metadata with a valid value counts, and only that one.
+    harness.load(page(
+        "<meta name=color-scheme content='light dark'><meta name=color-scheme content=light>",
+    ));
+    harness.assert_dark_scheme("the first of two metadata");
+    harness.load(page(
+        "<meta name=color-scheme content=only><meta name=color-scheme content='light dark'>",
+    ));
+    harness.assert_dark_scheme("metadata after an invalid one");
+    harness.load(page(
+        "<meta name=color-scheme content=light><meta name=color-scheme content='light dark'>",
+    ));
+    harness.assert_authored_light("metadata after a valid one");
+
+    // Under a light theme, a page that supports both schemes is light, and a page that
+    // supports only the dark one is still dark.
+    harness.webview.notify_theme_change(Theme::Light);
+    harness.load(page("<meta name=color-scheme content='light dark'>"));
+    harness.assert_authored_light("metadata light dark under a light theme");
+    harness.load(page("<style>:root{color-scheme:dark}</style>"));
+    harness.assert_dark_scheme("CSS dark under a light theme");
+    harness.load(page("<meta name=color-scheme content='only dark'>"));
+    harness.assert_dark_scheme("metadata only dark under a light theme");
+
+    // Paint-only style repairs must reach the inner fragment of a replaced element.
+    // The black/clear edge is at x=290 when the ten-pixel image is scaled to 100px.
+    // Auto blends its neighboring pixels; pixelated keeps the pixel on the left black.
+    const IMAGE_EDGE: (u32, u32) = (289, 300);
+    let has_blended_edge = |painted: &Painted| {
+        let lightness = luminance(painted.pixel(IMAGE_EDGE));
+        lightness > 0.01 && lightness < 0.99
+    };
+    harness.load(page(&image(DARK_ON_CLEAR_PNG)));
+    let painted = harness.painted_when(has_blended_edge);
+    assert!(has_blended_edge(&painted), "auto image edge: {:?}", painted.pixel(IMAGE_EDGE));
+    harness.evaluate("document.querySelector('img').style.imageRendering='pixelated'");
+    let painted = harness.painted_when(|painted| painted.pixel(IMAGE_EDGE) == [0, 0, 0]);
+    assert_eq!(painted.pixel(IMAGE_EDGE), [0, 0, 0], "pixelated without layout");
+    harness.evaluate("document.querySelector('img').style.imageRendering='auto'");
+    let painted = harness.painted_when(has_blended_edge);
+    assert!(has_blended_edge(&painted), "auto image edge restored");
+
+    // A matching frame is transparent. A different scheme on the embedding element
+    // gives the child an opaque default canvas, including after a style-only change.
+    harness.load(page(&format!(
+        "<style>:root{{color-scheme:light;background:rgb(80,0,0)}}</style>\
+         <iframe style='{IMAGE_STYLE};border:0' srcdoc='<!doctype html>\
+         <style>:root{{color-scheme:light}}</style>'></iframe>"
+    )));
+    let assert_frame_color = |case: &str, expected: [u8; 3]| {
+        let painted = harness.painted_when(|painted| painted.pixel(KEPT_POINT) == expected);
+        assert_eq!(painted.pixel(KEPT_POINT), expected, "{case}");
+    };
+    assert_frame_color("matching schemes are transparent", [80, 0, 0]);
+    harness.evaluate(
+        "window.frameResizes=0;document.querySelector('iframe').contentWindow.onresize=\
+         ()=>window.frameResizes++",
+    );
+    harness.evaluate("document.querySelector('iframe').style.colorScheme='dark'");
+    assert_frame_color("mismatched schemes get a light backplate", [255, 255, 255]);
+    assert_eq!(harness.evaluate("frameResizes"), JSValue::Number(0.0));
+    harness.evaluate(
+        "document.querySelector('iframe').contentDocument.documentElement.style.colorScheme='dark'",
+    );
+    assert_frame_color("matching schemes become transparent again", [80, 0, 0]);
+
+    // An initial about:blank frame must not flash a white backplate over a dark page.
+    harness.load(page(&format!(
+        "<style>:root{{color-scheme:dark;background:rgb(80,0,0)}}</style>\
+         <iframe style='{IMAGE_STYLE};border:0'></iframe>"
+    )));
+    assert_frame_color("initial about:blank stays transparent", [80, 0, 0]);
+
+    // The shell's background color is the embedder's. It does not show through a page
+    // that sets no colors, light or darkened.
+    harness.set_shell_background([0.0, 0.0, 1.0, 1.0]);
+    harness.load(page(""));
+    harness.assert_authored_light("over a blue shell");
+    harness.webview.set_adaptive_dark_mode(true);
+    harness.assert_adapted("darkened over a blue shell");
+    harness.webview.set_adaptive_dark_mode(false);
+
+    // It shows where no page paints, such as a document without a root element, and
+    // follows the preference while Servo runs.
+    harness.evaluate("document.documentElement.remove()");
+    harness.assert_canvas("blue shell", [0, 0, 255]);
+    harness.set_shell_background([1.0, 0.0, 0.0, 1.0]);
+    harness.assert_canvas("red shell", [255, 0, 0]);
+    harness.set_shell_background([1.0, 1.0, 1.0, 1.0]);
 }

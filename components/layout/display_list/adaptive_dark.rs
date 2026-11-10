@@ -341,12 +341,6 @@ impl Backdrop {
         blank.behind(canvas_style)
     }
 
-    /// The color to paint a canvas with no background of its own.
-    pub(crate) fn blank_canvas_color() -> ColorF {
-        let Rgb([r, g, b]) = darken_background(DEFAULT_CANVAS);
-        ColorF::new(r, g, b, 1.0)
-    }
-
     /// The backdrop of a border of a box with `style`, painted over `self`: the box's
     /// background when it extends under the border (`background-clip: border-box`, the
     /// default), otherwise what is behind the box.
@@ -568,17 +562,19 @@ impl AdaptiveDarkPainter {
         }
     }
 
-    /// The color to paint under a top-level canvas painted from `canvas_style`, if any: the
-    /// darkened default canvas, so that the white the embedder clears to does not show
-    /// through a canvas color that is not opaque. An image that covers the canvas keeps the
-    /// authored white, like the text over it.
-    pub(crate) fn canvas_underlay(&self, canvas_style: &ComputedValues) -> Option<ColorF> {
-        let color =
-            rgba(canvas_style.resolve_color(&canvas_style.get_background().background_color));
-        if color.a >= 1.0 || has_covering_image(canvas_style) {
-            return None;
+    /// The color to paint under a top-level canvas painted from `canvas_style` whose color
+    /// is not opaque, in place of `authored`, the default canvas. A light default canvas
+    /// darkens, as [`Backdrop::for_canvas`] assumes; a dark scheme's canvas stays dark.
+    /// An image that covers the canvas keeps the authored one, like the text over it.
+    pub(crate) fn canvas_underlay(
+        &self,
+        canvas_style: &ComputedValues,
+        authored: ColorF,
+    ) -> ColorF {
+        if has_covering_image(canvas_style) {
+            return authored;
         }
-        Some(Backdrop::blank_canvas_color())
+        self.background_rgba(canvas_style, authored)
     }
 
     /// Like [`Self::background`], for a color already converted for WebRender.

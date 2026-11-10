@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock};
 use app_units::{AU_PER_PX, Au};
 use clip::Clip;
 pub(crate) use clip::ClipId;
+use embedder_traits::{Theme, ViewportDetails};
 use euclid::{Box2D, Point2D, Rect, Scale, SideOffsets2D, Size2D, UnknownUnit, Vector2D};
 use fonts::{FontContext, ShapedTextSlice};
 use gradient::WebRenderGradient;
@@ -104,6 +105,11 @@ static UNFOCUSED_SELECTION_COLOR: LazyLock<AbsoluteColor> =
 /// [`PaintedAreas`].
 const COVERING_ALPHA: f32 = 0.5;
 
+/// The `Canvas` system color of a dark color scheme, as Stylo computes it for Servo. Stylo
+/// does not export its system colors; an embedder test compares the two.
+static DARK_CANVAS: LazyLock<AbsoluteColor> =
+    LazyLock::new(|| AbsoluteColor::srgb_legacy(30, 30, 30, 1.0));
+
 pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
     fragment_tree: &'a FragmentTree,
@@ -168,9 +174,22 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// Whether this document is a top-level one, whose canvas has nothing painted beneath it.
     is_top_level: bool,
 
+    /// Initial about:blank frames stay transparent even when their scheme differs.
+    is_initial_about_blank: bool,
+
+    /// The used scheme of this frame's embedding element, if known.
+    embedding_color_scheme: Option<Theme>,
+
+    /// Viewport updates, including scheme-only changes that did not run layout.
+    iframe_sizes: &'a mut layout_api::IFrameSizes,
+
     /// What adaptive dark mode painted so far that later content may lie over. See
     /// [`Self::backdrop_at`].
     painted_areas: PaintedAreas,
+
+    /// Whether the preferred color scheme is dark, which decides the color scheme of
+    /// elements that support both or neither.
+    prefers_dark_color_scheme: bool,
 }
 
 struct PendingCaret {
@@ -232,6 +251,10 @@ impl DisplayListBuilder<'_> {
         frame_focused: bool,
         adaptive_dark_mode: bool,
         is_top_level: bool,
+        is_initial_about_blank: bool,
+        prefers_dark_color_scheme: bool,
+        embedding_color_scheme: Option<Theme>,
+        iframe_sizes: &mut layout_api::IFrameSizes,
     ) -> BuiltDisplayList {
         // Build the rest of the display list which inclues all of the WebRender primitives.
         let paint_info = &mut stacking_context_tree.paint_info;
@@ -291,7 +314,11 @@ impl DisplayListBuilder<'_> {
                 })
                 .map(|_| AdaptiveDarkPainter::default()),
             is_top_level,
+            is_initial_about_blank,
+            embedding_color_scheme,
+            iframe_sizes,
             painted_areas: PaintedAreas::default(),
+            prefers_dark_color_scheme,
         };
 
         // Clear any caret color from previous display list constructions.
@@ -489,6 +516,30 @@ impl DisplayListBuilder<'_> {
                 .map(|body| body.style().clone())
                 .unwrap_or_else(|| root_style.clone()),
         )
+    }
+
+    /// The color to paint under a canvas painted from `canvas_style`, or `None`
+    /// when its own color covers it: the `Canvas` system color of the color scheme of the
+    /// root, whose style is `root_style`, as adaptive dark mode paints it.
+    fn default_canvas_color(
+        &self,
+        root_style: &ComputedValues,
+        canvas_style: &ComputedValues,
+    ) -> Option<wr::ColorF> {
+        let background_color =
+            canvas_style.resolve_color(&canvas_style.get_background().background_color);
+        if background_color.alpha >= 1.0 {
+            return None;
+        }
+
+        let authored = match root_style.uses_dark_color_scheme(self.prefers_dark_color_scheme) {
+            true => rgba(*DARK_CANVAS),
+            false => rgba(AbsoluteColor::WHITE),
+        };
+        Some(match &self.adaptive_dark {
+            Some(painter) => painter.canvas_underlay(canvas_style, authored),
+            None => authored,
+        })
     }
 
     fn pipeline_id(&self) -> wr::PipelineId {
@@ -1023,6 +1074,29 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         fragment.base.visit_fragment(self);
 
         let style = fragment.style.borrow();
+        // Changing color-scheme only repaints. Refresh the child's embedding scheme here
+        // as well as during layout, without making its viewport size change.
+        let size = fragment.base.rect().size;
+        self.iframe_sizes.insert(
+            fragment.browsing_context_id,
+            layout_api::IFrameSize {
+                browsing_context_id: fragment.browsing_context_id,
+                pipeline_id: fragment.pipeline_id,
+                viewport_details: ViewportDetails {
+                    size: Size2D::new(size.width.to_f32_px(), size.height.to_f32_px()),
+                    hidpi_scale_factor: Scale::new(self.device_pixel_ratio.0),
+                    device_size: self.paint_info.viewport_details.device_size,
+                    embedding_color_scheme: Some(if style.uses_dark_color_scheme(
+                        self.prefers_dark_color_scheme,
+                    ) {
+                        Theme::Dark
+                    } else {
+                        Theme::Light
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
         if style.get_inherited_box().visibility != Visibility::Visible {
             return;
         }
@@ -1204,18 +1278,23 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             }
         };
 
-        // The shell's white would show through a canvas that is not opaque, so adaptive dark
-        // mode paints the darkened default canvas under it, as `Backdrop::for_canvas` assumes.
-        // A frame's canvas stays transparent over its parent's page.
-        let underlay = self
-            .adaptive_dark
-            .as_ref()
-            .filter(|_| self.is_top_level)
-            .and_then(|painter| painter.canvas_underlay(&source_style));
-        if let Some(underlay) = underlay {
-            let painting_area = self.canvas_painting_area();
-            let common = self.common_properties(state, painting_area, &source_style);
-            self.wr().push_rect(&common, painting_area, underlay);
+        // Under a canvas that is not opaque goes the default canvas of the root's color
+        // scheme. The shell's background color cannot stand in for it: it is one color for
+        // every page, and the embedder may pick it for another scheme. A frame stays
+        // transparent only when its scheme matches its embedding element's scheme.
+        let scheme_mismatch = self.embedding_color_scheme.is_some_and(|scheme| {
+            (scheme == Theme::Dark) !=
+                fragment.style().uses_dark_color_scheme(self.prefers_dark_color_scheme)
+        });
+        // An initial about:blank is not an authored light page. Keep its canvas
+        // transparent rather than flashing a white frame over a dark embedder.
+        if self.is_top_level || (scheme_mismatch && !self.is_initial_about_blank) {
+            let default_canvas = self.default_canvas_color(fragment.style(), &source_style);
+            if let Some(default_canvas) = default_canvas {
+                let painting_area = self.canvas_painting_area();
+                let common = self.common_properties(state, painting_area, &source_style);
+                self.wr().push_rect(&common, painting_area, default_canvas);
+            }
         }
 
         // This can happen if the root fragment does not have a `<body>` child (either because it is
@@ -1255,8 +1334,9 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
 
     fn canvas_backdrop(&self) -> Option<Backdrop> {
         self.adaptive_dark.as_ref()?;
-        // A frame paints no default canvas: its transparent areas show its parent's page.
-        // This assumes that page got darker there, as a light page in adaptive dark mode
+        // A frame with the same scheme as its embedding element paints no default canvas:
+        // its transparent areas show its parent's page. This assumes that page got darker
+        // there, as a light page in adaptive dark mode
         // does. Over a parent that keeps its light colors, the frame's text can end up light
         // on light.
         let canvas_style = self.canvas_background_style()?;
