@@ -111,20 +111,52 @@ pub(crate) fn axis_source(
     match component {
         style::values::generics::grid::GenericGridTemplateComponent::TrackList(list) => {
             let mut tracks = Vec::new();
-            let mut names = Some(list.line_names.clone());
-            for value in list.values.iter() {
+            // Every expanded track contributes the line names that follow
+            // it; joins concatenate, so the name groups stay aligned with
+            // the expanded tracks across `<track-repeat>` groups.
+            let mut lines: Vec<Vec<CustomIdent>> = Vec::new();
+            lines.push(names_of(&list.line_names, 0));
+            for (index, value) in list.values.iter().enumerate() {
                 match value {
-                    TrackListValue::TrackSize(_) => tracks.push(value.clone()),
+                    TrackListValue::TrackSize(_) => {
+                        tracks.push(value.clone());
+                        lines.push(names_of(&list.line_names, index + 1));
+                    },
                     TrackListValue::TrackRepeat(repeat) => match repeat.count {
                         RepeatCount::Number(count) => {
-                            let repeated = count.max(0) as usize * repeat.track_sizes.len().max(1);
-                            if tracks.len() + repeated > MAX_EXPANDED_TRACKS {
+                            let count = count.max(0) as usize;
+                            let per_iteration = repeat.track_sizes.len();
+                            // Widen the math so a huge count cannot wrap
+                            // past the cap on 32-bit targets.
+                            let repeated = count as u64 * per_iteration.max(1) as u64;
+                            if tracks.len() as u64 + repeated > MAX_EXPANDED_TRACKS as u64 {
                                 return None;
                             }
-                            names = None;
-                            for _ in 0..count.max(0) {
-                                for size in repeat.track_sizes.iter() {
+                            if per_iteration == 0 {
+                                lines
+                                    .last_mut()
+                                    .unwrap()
+                                    .extend(names_of(&list.line_names, index + 1));
+                                continue;
+                            }
+                            for iteration in 0..count {
+                                let last_iteration = iteration + 1 == count;
+                                for (position, size) in repeat.track_sizes.iter().enumerate() {
+                                    let last_position = position + 1 == per_iteration;
+                                    // The first size of an iteration brings
+                                    // the repeat's opening names.
+                                    if position == 0 {
+                                        lines
+                                            .last_mut()
+                                            .unwrap()
+                                            .extend(names_of(&repeat.line_names, 0));
+                                    }
                                     tracks.push(TrackListValue::TrackSize(size.clone()));
+                                    let mut after = names_of(&repeat.line_names, position + 1);
+                                    if last_iteration && last_position {
+                                        after.extend(names_of(&list.line_names, index + 1));
+                                    }
+                                    lines.push(after);
                                 }
                             }
                         },
@@ -135,8 +167,14 @@ pub(crate) fn axis_source(
             if tracks.is_empty() {
                 return None;
             }
-            let line_names = names.unwrap_or_else(|| unnamed_line_names(tracks.len() + 1));
-            Some(Arc::new(SubgridAxisTemplate { tracks, line_names }))
+            Some(Arc::new(SubgridAxisTemplate {
+                tracks,
+                line_names: lines
+                    .into_iter()
+                    .map(OwnedSlice::from)
+                    .collect::<Vec<_>>()
+                    .into(),
+            }))
         },
         style::values::generics::grid::GenericGridTemplateComponent::Subgrid(_) => {
             own_fallback.cloned()
@@ -346,11 +384,8 @@ fn subgrid_line_names(
     Some(groups)
 }
 
-fn unnamed_line_names(count: usize) -> OwnedSlice<OwnedSlice<CustomIdent>> {
-    (0..count)
-        .map(|_| OwnedSlice::from(Vec::new()))
-        .collect::<Vec<_>>()
-        .into()
+fn names_of(names: &OwnedSlice<OwnedSlice<CustomIdent>>, index: usize) -> Vec<CustomIdent> {
+    names.get(index).map(|set| set.to_vec()).unwrap_or_default()
 }
 
 #[cfg(test)]
