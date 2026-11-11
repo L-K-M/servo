@@ -21,6 +21,7 @@
 //! parent names when they are plain name groups.
 
 use malloc_size_of_derive::MallocSizeOf;
+use servo_arc::Arc;
 use style::OwnedSlice;
 use style::values::CustomIdent;
 use style::values::computed::{GridLine, GridTemplateComponent, Integer, LengthPercentage};
@@ -34,7 +35,7 @@ use stylo_atoms::atom;
 const MAX_EXPANDED_TRACKS: usize = 10_000;
 
 /// One axis of grid tracks with the line names for their edges.
-#[derive(Clone, Debug, MallocSizeOf)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq)]
 pub(crate) struct SubgridAxisTemplate {
     // The stylo values use stylo's separate malloc trait; the layout tree is
     // rebuilt per layout pass, so they are not measured here.
@@ -46,6 +47,15 @@ pub(crate) struct SubgridAxisTemplate {
 
 impl SubgridAxisTemplate {
     pub(crate) fn tracks(&self) -> &[TrackListValue<LengthPercentage, Integer>] {
+        // Resolved tracks are always concrete: fixed repeats are expanded
+        // when the parent's list is read, and auto-repeating lists are not
+        // sliced at all. Taffy would re-expand any repeat against the wrong
+        // container.
+        debug_assert!(
+            self.tracks
+                .iter()
+                .all(|track| matches!(track, TrackListValue::TrackSize(_)))
+        );
         &self.tracks
     }
 
@@ -54,17 +64,25 @@ impl SubgridAxisTemplate {
     }
 }
 
-/// Fallback templates for a subgrid item. Each axis is `Some` only when it
-/// is `subgrid` and its slice could be resolved from the parent's tracks.
-#[derive(Debug, Default, MallocSizeOf)]
+/// Resolved subgrid data for a grid item: the slices its `subgrid` axes
+/// cover, and the parent axis data they resolve from. The parent data is
+/// kept for every grid item whose parent has resolvable tracks, so a
+/// restyle that gains or loses `subgrid` re-resolves against the parent's
+/// current tracks instead of keeping nothing or something stale.
+#[derive(Debug, Default, MallocSizeOf, PartialEq)]
 pub(crate) struct SubgridTemplates {
-    /// The slice of the parent's tracks this item spans.
-    pub columns: Option<SubgridAxisTemplate>,
-    pub rows: Option<SubgridAxisTemplate>,
-    /// The parent axis data the slices were resolved from, kept so a
-    /// restyle can re-resolve them against changed styles.
-    parent_columns: Option<SubgridAxisTemplate>,
-    parent_rows: Option<SubgridAxisTemplate>,
+    /// The slice of the parent's tracks this item spans on each `subgrid`
+    /// axis.
+    #[ignore_malloc_size_of = "shared tracks; measured with the parent's style"]
+    pub columns: Option<Arc<SubgridAxisTemplate>>,
+    #[ignore_malloc_size_of = "shared tracks; measured with the parent's style"]
+    pub rows: Option<Arc<SubgridAxisTemplate>>,
+    /// The parent axis data the slices resolve from, shared across the
+    /// parent's items.
+    #[ignore_malloc_size_of = "shared parent tracks; not measured per item"]
+    parent_columns: Option<Arc<SubgridAxisTemplate>>,
+    #[ignore_malloc_size_of = "shared parent tracks; not measured per item"]
+    parent_rows: Option<Arc<SubgridAxisTemplate>>,
 }
 
 impl SubgridTemplates {
@@ -88,8 +106,8 @@ impl SubgridTemplates {
 /// Returns `None` for `none`, `masonry` and auto-repeating lists.
 pub(crate) fn axis_source(
     component: &GridTemplateComponent,
-    own_fallback: Option<&SubgridAxisTemplate>,
-) -> Option<SubgridAxisTemplate> {
+    own_fallback: Option<&Arc<SubgridAxisTemplate>>,
+) -> Option<Arc<SubgridAxisTemplate>> {
     match component {
         style::values::generics::grid::GenericGridTemplateComponent::TrackList(list) => {
             let mut tracks = Vec::new();
@@ -118,7 +136,7 @@ pub(crate) fn axis_source(
                 return None;
             }
             let line_names = names.unwrap_or_else(|| unnamed_line_names(tracks.len() + 1));
-            Some(SubgridAxisTemplate { tracks, line_names })
+            Some(Arc::new(SubgridAxisTemplate { tracks, line_names }))
         },
         style::values::generics::grid::GenericGridTemplateComponent::Subgrid(_) => {
             own_fallback.cloned()
@@ -132,8 +150,8 @@ pub(crate) fn axis_source(
 /// exposes `parent_columns` and `parent_rows`. Returns `None` when no axis
 /// needs a fallback or none could be resolved.
 pub(crate) fn resolve_for_item(
-    parent_columns: Option<&SubgridAxisTemplate>,
-    parent_rows: Option<&SubgridAxisTemplate>,
+    parent_columns: Option<&Arc<SubgridAxisTemplate>>,
+    parent_rows: Option<&Arc<SubgridAxisTemplate>>,
     item: &style::properties::ComputedValues,
 ) -> Option<SubgridTemplates> {
     let position = item.get_position();
@@ -152,6 +170,7 @@ pub(crate) fn resolve_for_item(
                 names,
                 (&position.grid_column_start, &position.grid_column_end),
             )
+            .map(Arc::new)
         });
     }
     if let style::values::generics::grid::GenericGridTemplateComponent::Subgrid(names) =
@@ -163,10 +182,17 @@ pub(crate) fn resolve_for_item(
                 names,
                 (&position.grid_row_start, &position.grid_row_end),
             )
+            .map(Arc::new)
         });
     }
 
-    (templates.columns.is_some() || templates.rows.is_some()).then_some(templates)
+    // Keep the parent data for every item of a grid whose tracks resolve:
+    // a restyle that gains `subgrid` resolves against it later.
+    (parent_columns.is_some()
+        || parent_rows.is_some()
+        || templates.columns.is_some()
+        || templates.rows.is_some())
+    .then_some(templates)
 }
 
 /// A resolved grid line position in the parent's track list. Lines are

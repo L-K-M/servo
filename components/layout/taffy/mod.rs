@@ -102,12 +102,20 @@ impl TaffyContainer {
     /// parent grid, and re-resolve the children against it: subgrids nested
     /// inside this one resolve from its resolved tracks.
     pub(crate) fn set_subgrid_templates(&mut self, templates: Option<SubgridTemplates>) {
+        if self.subgrid_templates == templates {
+            // Child resolution depends only on our style and templates; if
+            // nothing changed, the cascade below would recompute the same
+            // results for the whole subtree.
+            return;
+        }
         self.subgrid_templates = templates;
         self.re_resolve_children();
     }
 
     /// The track and name data this grid exposes to its items.
-    fn axis_sources(&self) -> (Option<SubgridAxisTemplate>, Option<SubgridAxisTemplate>) {
+    fn axis_sources(
+        &self,
+    ) -> (Option<Arc<SubgridAxisTemplate>>, Option<Arc<SubgridAxisTemplate>>) {
         let position = self.style.get_position();
         let own = self.subgrid_templates.as_ref();
         (

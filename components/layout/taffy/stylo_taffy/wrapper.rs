@@ -273,7 +273,7 @@ type AxisTemplateTrackFn<'a> =
 /// resolved fallback slice for a `subgrid` axis.
 fn axis_template_tracks<'a>(
     component: &'a stylo::GenericGridTemplateComponent<LengthPercentage, i32>,
-    subgrid_axis: Option<&'a SubgridAxisTemplate>,
+    subgrid_axis: Option<&'a servo_arc::Arc<SubgridAxisTemplate>>,
 ) -> Option<
     core::iter::Map<
         core::slice::Iter<'a, TrackListValue<LengthPercentage, i32>>,
@@ -300,7 +300,7 @@ fn axis_template_tracks<'a>(
 /// the resolved fallback names for a `subgrid` axis.
 fn axis_template_names<'a>(
     component: &'a stylo::GenericGridTemplateComponent<LengthPercentage, i32>,
-    subgrid_axis: Option<&'a SubgridAxisTemplate>,
+    subgrid_axis: Option<&'a servo_arc::Arc<SubgridAxisTemplate>>,
 ) -> Option<StyloLineNameIter<'a>> {
     match component {
         stylo::GenericGridTemplateComponent::None => None,
