@@ -554,6 +554,8 @@ pub enum EmbedderMsg {
     ShowEmbedderControl(EmbedderControlId, DeviceIntRect, EmbedderControlRequest),
     /// Request to the embedder to hide a user interface control.
     HideEmbedderControl(EmbedderControlId),
+    /// A focused input method's collapsed UTF-16 caret, or unknown/noncollapsed.
+    InputMethodCaretChanged(EmbedderControlId, Option<u32>),
     /// Inform the embedding layer that a particular `InputEvent` was handled by Servo
     /// and the embedder can continue processing it, if necessary.
     InputEventsHandled(WebViewId, Vec<InputEventOutcome>),

@@ -19,6 +19,8 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::HTMLAnchorElementBinding::HTMLAnchorElementMethods;
 use script_bindings::codegen::GenericBindings::HTMLImageElementBinding::HTMLImageElementMethods;
+use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInputElementMethods;
+use script_bindings::codegen::GenericBindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
 use script_bindings::codegen::GenericBindings::HistoryBinding::HistoryMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::inheritance::Castable;
@@ -38,7 +40,7 @@ use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::{
     Element, HTMLAnchorElement, HTMLElement, HTMLImageElement, HTMLInputElement, HTMLSelectElement,
-    Window,
+    HTMLTextAreaElement, Window,
 };
 use crate::messaging::MainThreadScriptMsg;
 use crate::navigation::navigate;
@@ -78,6 +80,7 @@ pub(crate) struct DocumentEmbedderControls {
     user_interface_element_index: Cell<Epoch>,
     /// A map of visible user interface elements.
     visible_elements: DomRefCell<FxHashMap<NoTrace<Epoch>, ControlElement>>,
+    input_method_caret_queued: Cell<bool>,
 }
 
 impl DocumentEmbedderControls {
@@ -86,6 +89,7 @@ impl DocumentEmbedderControls {
             window: Dom::from_ref(window),
             user_interface_element_index: Default::default(),
             visible_elements: Default::default(),
+            input_method_caret_queued: Cell::new(false),
         }
     }
 
@@ -128,12 +132,73 @@ impl DocumentEmbedderControls {
                 DeviceIntRect::from_untyped(&rect.to_box2d())
             });
 
+        let is_input_method = matches!(&element, ControlElement::Ime(..));
         self.visible_elements
             .borrow_mut()
             .insert(id.index.into(), element);
 
         self.send_embedder_control_request(request, id, rect);
+        if is_input_method {
+            self.queue_input_method_caret();
+        }
         id
+    }
+
+    /// Read after focus/default editing and page listeners have settled. Coalesce changes in
+    /// one task; never execute page script or copy field contents to report a caret.
+    pub(crate) fn queue_input_method_caret(&self) {
+        if self.input_method_caret_queued.replace(true) {
+            return;
+        }
+        let window = Trusted::new(&*self.window);
+        self.window
+            .as_global_scope()
+            .task_manager()
+            .user_interaction_task_source()
+            .queue(task!(input_method_caret: move |_cx| {
+                let window = window.root();
+                let document = window.Document();
+                let controls = document.embedder_controls();
+                controls.input_method_caret_queued.set(false);
+                controls.send_input_method_caret();
+            }));
+    }
+
+    fn send_input_method_caret(&self) {
+        let document = self.window.Document();
+        let focused_area = document.focus_handler().focused_area();
+        let Some(focused) = focused_area.element() else {
+            return;
+        };
+        for (index, control) in self.visible_elements.borrow().iter() {
+            let ControlElement::Ime(element) = control else {
+                continue;
+            };
+            if *focused != *element.upcast::<Element>() {
+                continue;
+            }
+            let endpoints = if let Some(input) = element.downcast::<HTMLInputElement>() {
+                input.GetSelectionStart().zip(input.GetSelectionEnd())
+            } else if let Some(textarea) = element.downcast::<HTMLTextAreaElement>() {
+                textarea.GetSelectionStart().zip(textarea.GetSelectionEnd())
+            } else {
+                None
+            };
+            let caret = if element.is::<HTMLInputElement>() || element.is::<HTMLTextAreaElement>() {
+                endpoints.and_then(|(start, end)| (start == end).then_some(start))
+            } else {
+                document
+                    .selection()
+                    .and_then(|selection| selection.input_method_caret(element.upcast()))
+            };
+            let id = EmbedderControlId {
+                webview_id: self.window.webview_id(),
+                pipeline_id: self.window.pipeline_id(),
+                index: index.0,
+            };
+            self.window
+                .send_to_embedder(EmbedderMsg::InputMethodCaretChanged(id, caret));
+        }
     }
 
     fn send_embedder_control_request(
