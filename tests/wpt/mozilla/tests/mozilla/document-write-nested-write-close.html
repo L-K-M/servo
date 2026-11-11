@@ -37,6 +37,9 @@ async_test(t => {
     assert_true(
       visibleText().includes("outer after"),
       "trailing outer content is parsed before the deferred close runs");
+    assert_false(
+      visibleText().includes("host page"),
+      "the document open steps cleared the previous content");
     t.done();
   }), { once: true });
 }, "document.close() inside a nested document.write() defers to the outermost write");
