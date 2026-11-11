@@ -18,7 +18,6 @@ use app_units::Au;
 use cssparser::match_ignore_ascii_case;
 use devtools_traits::{AttrInfo, DomMutation, ScriptToDevtoolsControlMsg};
 use dom_struct::dom_struct;
-use embedder_traits::Theme;
 use euclid::Rect;
 use html5ever::serialize::TraversalScope;
 use html5ever::serialize::TraversalScope::{ChildrenOnly, IncludeNode};
@@ -118,7 +117,7 @@ use crate::dom::customelementregistry::{
     CallbackReaction, CustomElementDefinition, CustomElementReaction, CustomElementRegistry,
     CustomElementState, is_valid_custom_element_name,
 };
-use crate::dom::document::Document;
+use crate::dom::document::{Document, MetadataColorSchemes};
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::domrect::DOMRect;
 use crate::dom::domrectlist::DOMRectList;
@@ -1277,9 +1276,11 @@ impl<'dom> LayoutDom<'dom, Element> {
         // A dark preference alone must not give a light page dark-mode system colors.
         // Metadata opts in here; author CSS can override this presentational hint.
         let mut property_declaration_block = self.is_root().then(|| {
-            let scheme = match document.theme_for_layout() {
-                Some(Theme::Dark) => "color-scheme: dark",
-                _ => "color-scheme: light",
+            let scheme = match document.metadata_color_schemes_for_layout() {
+                MetadataColorSchemes::Dark => "color-scheme: dark",
+                // The page styles itself for both, so its defaults follow the preference.
+                MetadataColorSchemes::LightAndDark => "color-scheme: light dark",
+                MetadataColorSchemes::Light => "color-scheme: light",
             };
             parse_style_attribute(
                 scheme,

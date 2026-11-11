@@ -31,6 +31,7 @@ use style::values::generics::box_::Perspective;
 use style::values::generics::position::{GenericAspectRatio, PreferredRatio};
 use style::values::generics::transform::{GenericRotate, GenericScale, GenericTranslate};
 use style::values::specified::align::AlignFlags;
+use style::values::specified::color::ColorSchemeFlags;
 use style::values::specified::{Overflow, WillChangeBits, box_ as stylo};
 use unicode_bidi::Level;
 use webrender_api as wr;
@@ -304,6 +305,9 @@ pub(crate) struct OverflowDirection {
 }
 
 pub(crate) trait ComputedValuesExt {
+    /// The scheme Stylo uses for system colors: the sole supported scheme, or the preference
+    /// when the element supports both or neither.
+    fn uses_dark_color_scheme(&self, prefers_dark: bool) -> bool;
     fn physical_box_offsets(&self) -> PhysicalSides<LengthPercentageOrAuto<'_>>;
     fn box_offsets(&self, writing_mode: WritingMode) -> LogicalSides<LengthPercentageOrAuto<'_>>;
     fn box_size(
@@ -384,6 +388,15 @@ pub(crate) trait ComputedValuesExt {
 }
 
 impl ComputedValuesExt for ComputedValues {
+    fn uses_dark_color_scheme(&self, prefers_dark: bool) -> bool {
+        let schemes = self.get_inherited_ui().color_scheme.bits;
+        let supports_dark = schemes.contains(ColorSchemeFlags::DARK);
+        if supports_dark != schemes.contains(ColorSchemeFlags::LIGHT) {
+            return supports_dark;
+        }
+        prefers_dark
+    }
+
     fn physical_box_offsets(&self) -> PhysicalSides<LengthPercentageOrAuto<'_>> {
         fn convert(inset: &Inset) -> LengthPercentageOrAuto<'_> {
             match inset {

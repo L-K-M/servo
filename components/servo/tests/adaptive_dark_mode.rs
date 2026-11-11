@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
-use servo::{JSValue, LoadStatus, Theme, WebView, WebViewBuilder};
+use servo::{JSValue, LoadStatus, PrefValue, Theme, WebView, WebViewBuilder};
 use url::Url;
 
 use crate::common::{ServoTest, WebViewDelegateImpl, evaluate_javascript};
@@ -46,6 +46,62 @@ const KEPT_BORDER_POINT: (u32, u32) = (302, 325);
 const CARD_POINT: (u32, u32) = (340, 340);
 /// The area the card's glyph is drawn in.
 const CARD_GLYPH_AREA: (u32, u32, u32, u32) = (250, 250, 300, 300);
+
+/// Where the image of the image cases is: 100 by 100 pixels, clear of the glyph and the
+/// `<canvas>`.
+const IMAGE_STYLE: &str = "position:fixed;left:250px;top:250px;width:100px;height:100px";
+/// Inside the artwork on the left of those images.
+const ARTWORK_POINT: (u32, u32) = (265, 300);
+/// Inside those images, to the right of their artwork.
+const BESIDE_ARTWORK_POINT: (u32, u32) = (330, 300);
+
+/// Inside the glyph of the caption that the caption case puts over its image.
+const CAPTION_POINT: (u32, u32) = (260, 270);
+/// Inside a glyph of 40px at 370, 250: right of an element at [`IMAGE_STYLE`].
+const BESIDE_PICTURE_POINT: (u32, u32) = (380, 270);
+
+/// The middle of an element at [`IMAGE_STYLE`], where a radio button has its bullet.
+const BULLET_POINT: (u32, u32) = (300, 300);
+
+/// A PNG of 10 by 10 pixels: four black columns on the left, the rest transparent.
+const DARK_ON_CLEAR_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs\
+    +9AAAAFUlEQVR42mNgYGD4j4ZxglGFdFQIAI3dJ9mgfgNXAAAAAElFTkSuQmCC";
+
+/// A PNG of 8 by 8 pixels: 32 different dark colors on the left half, the rest transparent.
+/// So many colors make a picture, not a logo.
+const DARK_PICTURE_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76L\
+    AAAASUlEQVR42m3OMREAMQACwZRIQAIS8G8sufofZra7giPpGkFxvpMJENQrCAGCZgUlQNCuQOaD+WA+eH0gQFCvIAQI\
+    mhWUAEH7Dx4hginhq6osBAAAAABJRU5ErkJggg==";
+
+/// A PNG of 8 by 8 opaque pixels, all `rgb(220, 220, 220)`: a light picture.
+const LIGHT_PICTURE_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSnc\
+    AAAAD0lEQVR42mO4gwMwDC0JAHiIpQFQusoIAAAAAElFTkSuQmCC";
+
+/// The URL of an SVG image of 100 by 100 pixels with `shapes`. Their colors need names:
+/// `#` would end the URL.
+fn svg(shapes: &str) -> String {
+    format!(
+        "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'>\
+         {shapes}</svg>"
+    )
+}
+
+/// An `<img>` of `source` at [`IMAGE_STYLE`].
+fn image(source: &str) -> String {
+    format!("<img style='{IMAGE_STYLE}' src=\"{source}\">")
+}
+
+/// An element at [`IMAGE_STYLE`] with `source` as its background image, repeated as `repeat`
+/// says. The image's quotes would end a `style` attribute.
+fn background_image(source: &str, repeat: &str) -> String {
+    format!(
+        "<style>#icon{{{IMAGE_STYLE};background:url(\"{source}\") {repeat}}}</style>\
+         <div id=icon></div>"
+    )
+}
+
+/// Black artwork on the left of a transparent image.
+const DARK_ARTWORK: &str = "<rect width='40' height='100'/>";
 
 /// A new URL for a page with `head` and [`PLAIN_BODY`].
 fn page(head: &str) -> Url {
@@ -126,8 +182,24 @@ impl Painted {
         luminance(card) < 0.03 && self.max_contrast(CARD_GLYPH_AREA, card) >= 4.5
     }
 
+    /// Whether the artwork of the image case is light on a part that is as dark as the page.
+    fn has_light_artwork(&self) -> bool {
+        let beside = self.pixel(BESIDE_ARTWORK_POINT);
+        luminance(self.pixel(ARTWORK_POINT)) > 0.5 &&
+            beside
+                .iter()
+                .zip(self.canvas)
+                .all(|(a, b)| a.abs_diff(b) <= 2)
+    }
+
     fn is_authored_light(&self) -> bool {
         self.canvas == [255, 255, 255] && luminance(self.ink) < 0.01
+    }
+
+    /// Whether the page shows the default colors of a dark color scheme: Stylo's `Canvas`
+    /// and `CanvasText` system colors.
+    fn is_dark_scheme(&self) -> bool {
+        self.canvas == [30, 30, 30] && self.ink == [232, 232, 232]
     }
 
     fn is_adapted(&self) -> bool {
@@ -203,6 +275,23 @@ impl Harness {
         assert_eq!(painted.image, [255, 255, 255], "{case}: <canvas>");
     }
 
+    fn assert_dark_scheme(&self, case: &str) {
+        let painted = self.painted_when(Painted::is_dark_scheme);
+        assert!(painted.is_dark_scheme(), "{case}: {}", painted.describe());
+    }
+
+    /// Sets the color the shell shows where no page paints.
+    fn set_shell_background(&self, color: [f64; 4]) {
+        self.servo_test
+            .servo()
+            .set_preference("shell_background_color_rgba", PrefValue::from(color));
+    }
+
+    fn assert_canvas(&self, case: &str, color: [u8; 3]) {
+        let painted = self.painted_when(|painted| painted.canvas == color);
+        assert_eq!(painted.canvas, color, "{case}");
+    }
+
     fn assert_adapted(&self, case: &str) {
         let painted = self.painted_when(Painted::is_adapted);
         assert!(painted.is_adapted(), "{case}: {}", painted.describe());
@@ -238,6 +327,17 @@ fn test_adaptive_dark_mode() {
     // Off by default.
     harness.load(page(""));
     harness.assert_authored_light("default");
+    // The bullet of a checked radio button is black whatever the page's color for inputs.
+    harness.load(page(&format!(
+        "<input type=radio checked style='{IMAGE_STYLE};color:white'>"
+    )));
+    let has_black_bullet = |painted: &Painted| luminance(painted.pixel(BULLET_POINT)) < 0.01;
+    let painted = harness.painted_when(has_black_bullet);
+    assert!(
+        has_black_bullet(&painted),
+        "authored radio bullet: {:?}",
+        painted.pixel(BULLET_POINT)
+    );
 
     // On: the canvas turns dark, the text light, the <canvas> keeps its pixels, and
     // scripts read the authored colors.
@@ -399,6 +499,261 @@ fn test_adaptive_dark_mode() {
         harness.assert_adapted(case);
     }
 
+    // A dark logo on a transparent background would vanish on the darkened page: its
+    // lightness is inverted. So is that of a dark icon in a background that it does not fill.
+    let dark_svg = svg(DARK_ARTWORK);
+    for (case, markup) in [
+        ("dark SVG image", image(&dark_svg)),
+        ("dark PNG image", image(DARK_ON_CLEAR_PNG)),
+        (
+            "dark background icon",
+            background_image(&dark_svg, "no-repeat"),
+        ),
+    ] {
+        harness.load(page(&markup));
+        let painted = harness.painted_when(Painted::has_light_artwork);
+        assert!(
+            painted.has_light_artwork(),
+            "{case}: artwork {:?}, beside it {:?}, {}",
+            painted.pixel(ARTWORK_POINT),
+            painted.pixel(BESIDE_ARTWORK_POINT),
+            painted.describe()
+        );
+    }
+
+    // Scripts still read the image's own pixels.
+    harness.load(page(&image(DARK_ON_CLEAR_PNG)));
+    assert_eq!(
+        harness.evaluate(
+            "(() => { const context = document.createElement('canvas').getContext('2d');\
+             context.drawImage(document.querySelector('img'), 0, 0);\
+             return context.getImageData(1, 5, 1, 1).data.join() })()"
+        ),
+        JSValue::String("0,0,0,255".into())
+    );
+
+    // A black and white logo in a white box: the box turns into the page's dark too.
+    harness.load(page(&image(&svg(
+        "<rect width='100' height='100' fill='white'/><rect x='10' y='10' width='15' height='80'/>",
+    ))));
+    let painted = harness.painted_when(Painted::has_light_artwork);
+    assert!(
+        painted.has_light_artwork(),
+        "black and white logo: artwork {:?}, beside it {:?}, {}",
+        painted.pixel(ARTWORK_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // Images that show on a dark page, pictures, and images that may be codes for a
+    // scanner keep their pixels. `artwork` is the darkest and lightest their artwork may be.
+    let half_dark =
+        svg("<rect width='100' height='100' fill='white'/><rect width='50' height='100'/>");
+    for (case, markup, artwork) in [
+        (
+            "white SVG image",
+            image(&svg("<rect width='40' height='100' fill='white'/>")),
+            0.99..=1.0,
+        ),
+        (
+            "red SVG image",
+            image(&svg("<rect width='40' height='100' fill='red'/>")),
+            0.2..=0.22,
+        ),
+        ("dark picture", image(DARK_PICTURE_PNG), 0.0..=0.05),
+        ("half dark image", image(&half_dark), 0.0..=0.0),
+        // The same image and box as the icon above: declared to repeat, it is a
+        // texture, whatever the sizes are.
+        (
+            "repeated dark background image",
+            background_image(&dark_svg, "repeat"),
+            0.0..=0.0,
+        ),
+    ] {
+        harness.load(page(&markup));
+        // The image shows once its artwork differs from the page around it.
+        let painted =
+            harness.painted_when(|painted| painted.pixel(ARTWORK_POINT) != painted.canvas);
+        let painted_artwork = luminance(painted.pixel(ARTWORK_POINT));
+        assert!(
+            artwork.contains(&painted_artwork),
+            "{case}: artwork {:?}, {}",
+            painted.pixel(ARTWORK_POINT),
+            painted.describe()
+        );
+        assert!(painted.is_adapted(), "{case}: {}", painted.describe());
+    }
+
+    // A dark image on a page that is dark as authored, or in an element that keeps its
+    // light background, has the backdrop it was drawn for.
+    for (case, head) in [
+        (
+            "dark image on a dark page",
+            format!("<style>html{{background:#333}}</style>{}", image(&dark_svg)),
+        ),
+        (
+            "dark image in an opted-out element",
+            format!(
+                "<div style='{IMAGE_STYLE};color-scheme:light only;background:white'>\
+                 <img style='width:100px;height:100px' src=\"{dark_svg}\"></div>"
+            ),
+        ),
+    ] {
+        harness.load(page(&head));
+        let is_painted =
+            |painted: &Painted| painted.pixel(ARTWORK_POINT) != painted.pixel(BESIDE_ARTWORK_POINT);
+        let painted = harness.painted_when(is_painted);
+        assert_eq!(
+            painted.pixel(ARTWORK_POINT),
+            [0, 0, 0],
+            "{case}: {}",
+            painted.describe()
+        );
+    }
+
+    // White text positioned over a picture keeps its color: the page behind both got dark,
+    // but the text was never drawn for the page.
+    harness.load(page(&format!(
+        "{}<span style='position:fixed;left:250px;top:250px;font-size:40px;color:white'>\
+         &#x2588;</span>",
+        image(&svg("<rect width='100' height='100' fill='red'/>"))
+    )));
+    let is_white = |painted: &Painted| {
+        painted.pixel(CAPTION_POINT) == [255, 255, 255] &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [255, 0, 0]
+    };
+    let painted = harness.painted_when(is_white);
+    assert!(
+        is_white(&painted),
+        "white text over a picture: {:?} beside {:?}, {}",
+        painted.pixel(CAPTION_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // What lies over an opaque picture that kept its pixels was drawn for the picture:
+    // dark text and a dark icon keep their colors over a light one.
+    let picture = format!(
+        "<img style='position:fixed;left:240px;top:240px;width:140px;height:140px' \
+         src='{LIGHT_PICTURE_PNG}'>"
+    );
+    harness.load(page(&format!(
+        "{picture}<span style='position:fixed;left:250px;top:250px;font-size:40px;\
+         color:black'>&#x2588;</span>"
+    )));
+    let is_black = |painted: &Painted| painted.pixel(CAPTION_POINT) == [0, 0, 0];
+    let painted = harness.painted_when(is_black);
+    assert!(
+        is_black(&painted),
+        "black text over a light picture: {:?}, {}",
+        painted.pixel(CAPTION_POINT),
+        painted.describe()
+    );
+    harness.load(page(&format!("{picture}{}", image(&svg(DARK_ARTWORK)))));
+    let has_dark_artwork = |painted: &Painted| {
+        luminance(painted.pixel(ARTWORK_POINT)) < 0.01 &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [220, 220, 220]
+    };
+    let painted = harness.painted_when(has_dark_artwork);
+    assert!(
+        has_dark_artwork(&painted),
+        "dark icon over a light picture: {:?} beside {:?}, {}",
+        painted.pixel(ARTWORK_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // A box with a background of its own hides the picture under it: the box turns dark
+    // like the page, and its text light.
+    harness.load(page(&format!(
+        "{picture}<div style='{IMAGE_STYLE};background:white;color:black;font-size:40px;\
+         line-height:1'>&#x2588;</div>"
+    )));
+    let has_light_text_in_dark_box = |painted: &Painted| {
+        luminance(painted.pixel(CAPTION_POINT)) > 0.5 &&
+            luminance(painted.pixel(BESIDE_ARTWORK_POINT)) < 0.03
+    };
+    let painted = harness.painted_when(has_light_text_in_dark_box);
+    assert!(
+        has_light_text_in_dark_box(&painted),
+        "white box over a picture: text {:?} in {:?}, {}",
+        painted.pixel(CAPTION_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // An opaque picture is such a backdrop as a background image too, where it does not
+    // count as filling the background: at a size of its own, under text positioned over
+    // it, and as a strip repeated along one axis, under the element's own text.
+    for (case, body) in [
+        (
+            "black text over a background picture",
+            format!(
+                "<div style='position:fixed;left:240px;top:240px;width:140px;height:140px;\
+                 background:url({LIGHT_PICTURE_PNG}) 0 0/140px 140px no-repeat'></div>\
+                 <span style='position:fixed;left:250px;top:250px;font-size:40px;\
+                 color:black'>&#x2588;</span>"
+            ),
+        ),
+        (
+            "black text on a repeated background strip",
+            format!(
+                "<div style='position:fixed;left:240px;top:240px;width:140px;height:140px;\
+                 background:url({LIGHT_PICTURE_PNG}) 0 0/20px 140px repeat-x;color:black;\
+                 font-size:40px;line-height:1;padding:10px;box-sizing:border-box'>\
+                 &#x2588;</div>"
+            ),
+        ),
+    ] {
+        harness.load(page(&body));
+        let is_black_on_picture = |painted: &Painted| {
+            painted.pixel(CAPTION_POINT) == [0, 0, 0] &&
+                painted.pixel(BESIDE_ARTWORK_POINT) == [220, 220, 220]
+        };
+        let painted = harness.painted_when(is_black_on_picture);
+        assert!(
+            is_black_on_picture(&painted),
+            "{case}: {:?} beside {:?}, {}",
+            painted.pixel(CAPTION_POINT),
+            painted.pixel(BESIDE_ARTWORK_POINT),
+            painted.describe()
+        );
+    }
+
+    // Only the part of a background picture that shows in its element is one: text beside
+    // the element, where the rest of a larger picture would lie, is over the page.
+    harness.load(page(&format!(
+        "<div style='{IMAGE_STYLE};background:url({LIGHT_PICTURE_PNG}) -150px -150px/400px 400px \
+         no-repeat'></div><span style='position:fixed;left:370px;top:250px;font-size:40px;\
+         color:black'>&#x2588;</span>"
+    )));
+    let has_light_text_beside = |painted: &Painted| {
+        luminance(painted.pixel(BESIDE_PICTURE_POINT)) > 0.5 &&
+            painted.pixel(BESIDE_ARTWORK_POINT) == [220, 220, 220]
+    };
+    let painted = harness.painted_when(has_light_text_beside);
+    assert!(
+        has_light_text_beside(&painted),
+        "text beside a clipped background picture: {:?} beside {:?}, {}",
+        painted.pixel(BESIDE_PICTURE_POINT),
+        painted.pixel(BESIDE_ARTWORK_POINT),
+        painted.describe()
+    );
+
+    // The bullet of a checked radio button is a mark like text: it turns light on the
+    // darkened control.
+    harness.load(page(&format!(
+        "<input type=radio checked style='{IMAGE_STYLE}'>"
+    )));
+    let has_light_bullet = |painted: &Painted| luminance(painted.pixel(BULLET_POINT)) > 0.5;
+    let painted = harness.painted_when(has_light_bullet);
+    assert!(
+        has_light_bullet(&painted),
+        "radio bullet: {:?}, {}",
+        painted.pixel(BULLET_POINT),
+        painted.describe()
+    );
+
     // Under a dark theme, as in an embedder with a dark appearance, the root's light
     // color-scheme hint does not opt pages out, but an opt-out still applies.
     harness.webview.notify_theme_change(Theme::Dark);
@@ -412,4 +767,159 @@ fn test_adaptive_dark_mode() {
     harness.assert_adapted("before turning off");
     harness.webview.set_adaptive_dark_mode(false);
     harness.assert_authored_light("turned off");
+
+    // A page that uses a dark color scheme and sets no colors has that scheme's canvas
+    // under its light default text, not the shell's white. The theme is still dark, so a
+    // page that supports both schemes uses the dark one. Adaptive dark mode leaves such
+    // pages alone.
+    for adaptive_dark_mode in [false, true] {
+        harness.webview.set_adaptive_dark_mode(adaptive_dark_mode);
+        for (case, head) in [
+            ("metadata dark", "<meta name=color-scheme content=dark>"),
+            ("CSS dark", "<style>:root{color-scheme:dark}</style>"),
+            ("CSS normal", "<style>:root{color-scheme:normal}</style>"),
+            (
+                "metadata light dark",
+                "<meta name=color-scheme content='light dark'>",
+            ),
+            (
+                "metadata dark light",
+                "<meta name=color-scheme content='dark light'>",
+            ),
+            (
+                "CSS light dark",
+                "<style>:root{color-scheme:light dark}</style>",
+            ),
+            // Dark and not light, whatever else the metadata names.
+            (
+                "metadata only dark",
+                "<meta name=color-scheme content='only dark'>",
+            ),
+            (
+                "metadata dark only",
+                "<meta name=color-scheme content='dark only'>",
+            ),
+            (
+                "metadata dark and a custom scheme",
+                "<meta name=color-scheme content='dark sepia'>",
+            ),
+        ] {
+            harness.load(page(head));
+            harness.assert_dark_scheme(&format!("{case}, adaptive dark mode {adaptive_dark_mode}"));
+        }
+    }
+    harness.webview.set_adaptive_dark_mode(false);
+
+    // A root that names neither scheme follows the preferred one, as its system colors do
+    // in Stylo: the canvas must not stay white under their light text.
+    harness.load(page("<style>:root{color-scheme:normal}</style>"));
+    harness.assert_dark_scheme("CSS normal under a dark theme");
+
+    // That canvas is the `Canvas` system color, as an element paints it.
+    harness.load(page(
+        "<style>:root{color-scheme:dark}</style><div style='position:fixed;left:300px;\
+         top:300px;width:50px;height:50px;background:Canvas'></div>",
+    ));
+    let painted = harness.painted_when(Painted::is_dark_scheme);
+    assert!(painted.is_dark_scheme(), "{}", painted.describe());
+    assert_eq!(painted.pixel(KEPT_POINT), painted.canvas, "Canvas");
+
+    // Metadata that starts to declare both schemes switches a painted page, and removing
+    // it switches the page back.
+    harness.load(page("<meta name=color-scheme content=light>"));
+    harness.assert_authored_light("metadata light");
+    harness.evaluate("document.querySelector('meta').content = 'light dark'");
+    harness.assert_dark_scheme("metadata changed to light dark");
+    harness.evaluate("document.querySelector('meta').remove()");
+    harness.assert_authored_light("metadata removed");
+
+    // The first metadata with a valid value counts, and only that one.
+    harness.load(page(
+        "<meta name=color-scheme content='light dark'><meta name=color-scheme content=light>",
+    ));
+    harness.assert_dark_scheme("the first of two metadata");
+    harness.load(page(
+        "<meta name=color-scheme content=only><meta name=color-scheme content='light dark'>",
+    ));
+    harness.assert_dark_scheme("metadata after an invalid one");
+    harness.load(page(
+        "<meta name=color-scheme content=light><meta name=color-scheme content='light dark'>",
+    ));
+    harness.assert_authored_light("metadata after a valid one");
+
+    // Under a light theme, a page that supports both schemes is light, and a page that
+    // supports only the dark one is still dark.
+    harness.webview.notify_theme_change(Theme::Light);
+    harness.load(page("<meta name=color-scheme content='light dark'>"));
+    harness.assert_authored_light("metadata light dark under a light theme");
+    harness.load(page("<style>:root{color-scheme:dark}</style>"));
+    harness.assert_dark_scheme("CSS dark under a light theme");
+    harness.load(page("<meta name=color-scheme content='only dark'>"));
+    harness.assert_dark_scheme("metadata only dark under a light theme");
+
+    // Paint-only style repairs must reach the inner fragment of a replaced element.
+    // The black/clear edge is at x=290 when the ten-pixel image is scaled to 100px.
+    // Auto blends its neighboring pixels; pixelated keeps the pixel on the left black.
+    const IMAGE_EDGE: (u32, u32) = (289, 300);
+    let has_blended_edge = |painted: &Painted| {
+        let lightness = luminance(painted.pixel(IMAGE_EDGE));
+        lightness > 0.01 && lightness < 0.99
+    };
+    harness.load(page(&image(DARK_ON_CLEAR_PNG)));
+    let painted = harness.painted_when(has_blended_edge);
+    assert!(has_blended_edge(&painted), "auto image edge: {:?}", painted.pixel(IMAGE_EDGE));
+    harness.evaluate("document.querySelector('img').style.imageRendering='pixelated'");
+    let painted = harness.painted_when(|painted| painted.pixel(IMAGE_EDGE) == [0, 0, 0]);
+    assert_eq!(painted.pixel(IMAGE_EDGE), [0, 0, 0], "pixelated without layout");
+    harness.evaluate("document.querySelector('img').style.imageRendering='auto'");
+    let painted = harness.painted_when(has_blended_edge);
+    assert!(has_blended_edge(&painted), "auto image edge restored");
+
+    // A matching frame is transparent. A different scheme on the embedding element
+    // gives the child an opaque default canvas, including after a style-only change.
+    harness.load(page(&format!(
+        "<style>:root{{color-scheme:light;background:rgb(80,0,0)}}</style>\
+         <iframe style='{IMAGE_STYLE};border:0' srcdoc='<!doctype html>\
+         <style>:root{{color-scheme:light}}</style>'></iframe>"
+    )));
+    let assert_frame_color = |case: &str, expected: [u8; 3]| {
+        let painted = harness.painted_when(|painted| painted.pixel(KEPT_POINT) == expected);
+        assert_eq!(painted.pixel(KEPT_POINT), expected, "{case}");
+    };
+    assert_frame_color("matching schemes are transparent", [80, 0, 0]);
+    harness.evaluate(
+        "window.frameResizes=0;document.querySelector('iframe').contentWindow.onresize=\
+         ()=>window.frameResizes++",
+    );
+    harness.evaluate("document.querySelector('iframe').style.colorScheme='dark'");
+    assert_frame_color("mismatched schemes get a light backplate", [255, 255, 255]);
+    assert_eq!(harness.evaluate("frameResizes"), JSValue::Number(0.0));
+    harness.evaluate(
+        "document.querySelector('iframe').contentDocument.documentElement.style.colorScheme='dark'",
+    );
+    assert_frame_color("matching schemes become transparent again", [80, 0, 0]);
+
+    // An initial about:blank frame must not flash a white backplate over a dark page.
+    harness.load(page(&format!(
+        "<style>:root{{color-scheme:dark;background:rgb(80,0,0)}}</style>\
+         <iframe style='{IMAGE_STYLE};border:0'></iframe>"
+    )));
+    assert_frame_color("initial about:blank stays transparent", [80, 0, 0]);
+
+    // The shell's background color is the embedder's. It does not show through a page
+    // that sets no colors, light or darkened.
+    harness.set_shell_background([0.0, 0.0, 1.0, 1.0]);
+    harness.load(page(""));
+    harness.assert_authored_light("over a blue shell");
+    harness.webview.set_adaptive_dark_mode(true);
+    harness.assert_adapted("darkened over a blue shell");
+    harness.webview.set_adaptive_dark_mode(false);
+
+    // It shows where no page paints, such as a document without a root element, and
+    // follows the preference while Servo runs.
+    harness.evaluate("document.documentElement.remove()");
+    harness.assert_canvas("blue shell", [0, 0, 255]);
+    harness.set_shell_background([1.0, 0.0, 0.0, 1.0]);
+    harness.assert_canvas("red shell", [255, 0, 0]);
+    harness.set_shell_background([1.0, 1.0, 1.0, 1.0]);
 }

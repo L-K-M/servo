@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use app_units::{Au, MAX_AU};
 use data_url::DataUrl;
-use embedder_traits::ViewportDetails;
+use embedder_traits::{Theme, ViewportDetails};
 use euclid::{Scale, Size2D};
 use layout_api::{IFrameSize, LayoutElement, LayoutImageDestination, LayoutNode, SVGElementData};
 use malloc_size_of_derive::MallocSizeOf;
@@ -26,6 +26,7 @@ use style::logical_geometry::{Direction, WritingMode};
 use style::properties::{ComputedValues, StyleBuilder};
 use style::rule_cache::RuleCacheConditions;
 use style::rule_tree::RuleCascadeFlags;
+use style::queries::values::PrefersColorScheme;
 use style::stylesheets::container_rule::ContainerSizeQuery;
 use style::url::ComputedUrl;
 use style::values::CSSFloat;
@@ -534,13 +535,15 @@ impl ReplacedContents {
                         object_fit_size.width.scale_by(scale.0).to_px(),
                         object_fit_size.height.scale_by(scale.0).to_px(),
                     );
-                    layout_context.image_resolver.image_key_from_cached_image(
-                        image,
-                        size,
-                        self.base_fragment_info.tag.map(|tag| tag.node),
-                    )
+                    layout_context
+                        .image_resolver
+                        .image_key_and_pixels_from_cached_image(
+                            image,
+                            size,
+                            self.base_fragment_info.tag.map(|tag| tag.node),
+                        )
                 })
-                .map(|image_key| {
+                .map(|(image_key, pixels)| {
                     Fragment::Image(Arc::new(ImageFragment {
                         base,
                         style: style.clone().into(),
@@ -553,6 +556,7 @@ impl ReplacedContents {
                         natural_height: self.natural_size.height,
                         selected: self.selected.clone(),
                         is_inline_svg: false,
+                        pixels: Some(pixels),
                     }))
                 })
                 .into_iter()
@@ -570,6 +574,7 @@ impl ReplacedContents {
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
                     is_inline_svg: false,
+                    pixels: None,
                 }))]
             },
             ReplacedContentKind::IFrame(iframe) => {
@@ -585,6 +590,14 @@ impl ReplacedContents {
                             size,
                             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
                             device_size: layout_context.device_size.cast_unit(),
+                            embedding_color_scheme: Some(if style.uses_dark_color_scheme(
+                                layout_context.style_context.stylist.device().color_scheme() ==
+                                    PrefersColorScheme::Dark,
+                            ) {
+                                Theme::Dark
+                            } else {
+                                Theme::Light
+                            }),
                             ..Default::default()
                         },
                     },
@@ -592,6 +605,7 @@ impl ReplacedContents {
                 vec![Fragment::IFrame(Arc::new(IFrameFragment {
                     base,
                     style: style.clone().into(),
+                    browsing_context_id: iframe.browsing_context_id,
                     pipeline_id: iframe.pipeline_id,
                 }))]
             },
@@ -618,6 +632,7 @@ impl ReplacedContents {
                     natural_height: self.natural_size.height,
                     selected: self.selected.clone(),
                     is_inline_svg: false,
+                    pixels: None,
                 }))]
             },
             ReplacedContentKind::SVGElement {
@@ -676,6 +691,7 @@ impl ReplacedContents {
                             natural_height: self.natural_size.height,
                             selected: self.selected.clone(),
                             is_inline_svg: true,
+                            pixels: None,
                         }))
                     })
                     .into_iter()

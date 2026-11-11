@@ -310,6 +310,20 @@ impl RefreshRedirectDue {
     }
 }
 
+/// Which of the light and dark color schemes a document's `<meta name="color-scheme">`
+/// names. The root element's default `color-scheme` follows it.
+#[derive(Clone, Copy, Debug, Default, JSTraceable, MallocSizeOf, PartialEq)]
+pub(crate) enum MetadataColorSchemes {
+    /// Light and not dark, neither of them, or no valid metadata: the page is drawn for
+    /// the light scheme, the default of the web.
+    #[default]
+    Light,
+    /// Dark and not light.
+    Dark,
+    /// Both: the page's default colors follow the preferred color scheme.
+    LightAndDark,
+}
+
 #[derive(Clone, Copy, Debug, JSTraceable, MallocSizeOf, PartialEq)]
 pub(crate) enum IsHTMLDocument {
     HTMLDocument,
@@ -768,6 +782,10 @@ pub(crate) struct Document {
     /// Whether a `<meta name="color-scheme">` declares dark support or `only`, which
     /// keeps adaptive dark mode from painting this document.
     color_scheme_metadata_opts_out_of_adaptive_dark_mode: Cell<bool>,
+
+    /// Which of light and dark a `<meta name="color-scheme">` names, which decides the
+    /// color scheme of the page's default colors.
+    metadata_color_schemes: Cell<MetadataColorSchemes>,
 
     /// Language specific for this document, set by a meta element
     default_language: DomRefCell<Option<String>>,
@@ -3948,8 +3966,8 @@ impl<'dom> LayoutDom<'dom, Document> {
         self.unsafe_get().quirks_mode.get()
     }
 
-    pub(crate) fn theme_for_layout(self) -> Option<Theme> {
-        self.unsafe_get().theme.get()
+    pub(crate) fn metadata_color_schemes_for_layout(self) -> MetadataColorSchemes {
+        self.unsafe_get().metadata_color_schemes.get()
     }
 
     #[inline]
@@ -4259,6 +4277,7 @@ impl Document {
             theme: Default::default(),
             theme_override: Default::default(),
             color_scheme_metadata_opts_out_of_adaptive_dark_mode: Default::default(),
+            metadata_color_schemes: Default::default(),
             default_language: Default::default(),
             window_detached: Default::default(),
             live_ranges: Default::default(),
@@ -5451,18 +5470,28 @@ impl Document {
         self.theme.get()
     }
 
-    pub(crate) fn set_theme(&self, new_theme: Option<Theme>, no_gc: &NoGC) {
+    pub(crate) fn set_theme(&self, new_theme: Option<Theme>) {
         if self.theme.replace(new_theme) == new_theme {
             return;
         }
 
-        // Rematch the root: recascading alone reuses its previous presentational hints.
+        self.window.refresh_theme();
+    }
+
+    /// Rematches the root element after the metadata its `color-scheme` presentational
+    /// hint comes from changed: recascading alone reuses its previous hints.
+    fn rematch_root_color_scheme_hint(&self, no_gc: &NoGC) {
         if let Some(root) = self.GetDocumentElement() {
             root.restyle(no_gc, NodeDamage::Style);
             self.note_dirty_element(no_gc, &root);
         }
         self.add_restyle_reason(RestyleReason::ThemeChanged);
-        self.window.refresh_theme();
+    }
+
+    pub(crate) fn set_metadata_color_schemes(&self, schemes: MetadataColorSchemes, no_gc: &NoGC) {
+        if self.metadata_color_schemes.replace(schemes) != schemes {
+            self.rematch_root_color_scheme_hint(no_gc);
+        }
     }
 
     pub(crate) fn color_scheme_metadata_opts_out_of_adaptive_dark_mode(&self) -> bool {
