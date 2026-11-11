@@ -14329,6 +14329,13 @@
       ]
      ]
     },
+    "css-grid-subgrid-track-fallback.html": [
+     "4b8752deb05793ae3611de8664417703f783786c",
+     [
+      null,
+      {}
+     ]
+    ],
     "css-image-batch-callbacks.html": [
      "c449b8bab01d27a41bd1ba472ce6b38d0fa768b0",
      [
@@ -14527,6 +14534,20 @@
     ],
     "document-url.html": [
      "bf8149f45b9e28385bd00d57ca60cef38cfa7c49",
+     [
+      null,
+      {}
+     ]
+    ],
+    "document-write-nested-close.html": [
+     "2b70eb1222229ce240f42ba3a48c6d58fbcc747d",
+     [
+      null,
+      {}
+     ]
+    ],
+    "document-write-nested-write-close.html": [
+     "0faae439196498ad85795163adb61adf38f90101",
      [
       null,
       {}

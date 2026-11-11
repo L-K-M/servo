@@ -276,6 +276,14 @@ impl IndependentFormattingContext {
         &self.base.style
     }
 
+    /// Set the resolved `subgrid` fallback template on a grid container,
+    /// computed by its parent grid. `None` clears a stale fallback.
+    pub(crate) fn set_subgrid_templates(&mut self, templates: Option<crate::taffy::SubgridTemplates>) {
+        if let IndependentFormattingContextContents::Grid(container) = &mut self.contents {
+            container.set_subgrid_templates(templates);
+        }
+    }
+
     #[inline]
     pub fn base_fragment_info(&self) -> BaseFragmentInfo {
         self.base.base_fragment_info

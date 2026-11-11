@@ -3803,7 +3803,15 @@ impl Document {
                 }
                 // Step 9.2: Run the document open steps with document.
                 self.Open(cx, None, None)?;
-                self.get_current_parser().unwrap()
+                match self.get_current_parser() {
+                    Some(parser) if parser.can_write() => parser,
+                    // The document open steps can return without installing a
+                    // writable parser (an aborted active parser, or one in the
+                    // middle of a script). The insertion point is undefined and
+                    // the input cannot be inserted, so drop it rather than feed
+                    // a parser that has stopped or aborted.
+                    _ => return Ok(()),
+                }
             },
         };
 
