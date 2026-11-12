@@ -2483,16 +2483,55 @@ impl FlexItemBox {
             flex_context_getter,
         );
 
+        // <https://drafts.csswg.org/css-sizing-3/#replaced-percentage-min-contribution>
+        // > If the box is replaced, a cyclic percentage in the value of any max size property
+        // > or preferred size property (width/max-width/height/max-height), is resolved against
+        // > zero when calculating the min-content contribution in the corresponding axis.
+        //
+        // An automatic minimum size is capped by the item's specified size suggestion and
+        // clamped by its maximum main size (<https://drafts.csswg.org/css-flexbox-1/#min-size-auto>),
+        // so with those percentages resolved against zero it is zero too, for the min-content
+        // contribution only. Otherwise the content size suggestion, the item's natural width,
+        // floors that contribution below. The max-content size keeps the automatic minimum.
+        let compresses_automatic_minimum = config.flex_axis == FlexAxis::Row &&
+            self.independent_formatting_context.is_replaced() &&
+            content_box_sizes_and_pbm
+                .content_box_sizes
+                .inline
+                .min
+                .is_initial() &&
+            {
+                let writing_mode = containing_block.style.writing_mode;
+                let style = self.style();
+                let cyclic_percentage = |used: &Size<Au>, computed: Size<LengthPercentage>| {
+                    used.is_initial() &&
+                        matches!(computed, Size::Numeric(numeric) if numeric.has_percentage())
+                };
+                let content_box_sizes = &content_box_sizes_and_pbm.content_box_sizes.inline;
+                cyclic_percentage(
+                    &content_box_sizes.preferred,
+                    style.box_size(writing_mode).inline,
+                ) || cyclic_percentage(
+                    &content_box_sizes.max,
+                    style.max_box_size(writing_mode).inline,
+                )
+            };
+        let min_content_min_main_size = if compresses_automatic_minimum {
+            Au::zero()
+        } else {
+            content_min_main_size
+        };
+
         // Compute the min-content and max-content contributions of the item.
         // <https://drafts.csswg.org/css-flexbox/#intrinsic-item-contributions>
         let (content_contribution_sizes, depends_on_block_constraints) = match config.flex_axis {
             FlexAxis::Row => {
                 let auto_minimum = LogicalVec2 {
-                    inline: content_min_main_size,
+                    inline: min_content_min_main_size,
                     block: Au::zero(),
                 };
                 let InlineContentSizesResult {
-                    sizes,
+                    mut sizes,
                     depends_on_block_constraints,
                 } = self
                     .independent_formatting_context
@@ -2502,6 +2541,12 @@ impl FlexItemBox {
                         &auto_minimum,
                         automatic_cross_size_for_intrinsic_sizing == Size::Stretch,
                     );
+                if compresses_automatic_minimum {
+                    // The max-content contribution is still floored by the automatic minimum.
+                    sizes
+                        .max_content
+                        .max_assign(content_min_main_size + pbm_auto_is_zero.main);
+                }
                 (sizes, depends_on_block_constraints)
             },
             FlexAxis::Column => {
@@ -2538,8 +2583,10 @@ impl FlexItemBox {
         if style_position.flex_shrink.is_zero() {
             min_content_contribution.max_assign(outer_flex_base_size);
         }
-        min_content_contribution = min_content_contribution
-            .clamp_between_extremums(outer_min_main_size, outer_max_main_size);
+        min_content_contribution = min_content_contribution.clamp_between_extremums(
+            min_content_min_main_size + pbm_auto_is_zero.main,
+            outer_max_main_size,
+        );
 
         FlexItemBoxInlineContentSizesInfo {
             outer_flex_base_size,
