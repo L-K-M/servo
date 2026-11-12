@@ -885,6 +885,94 @@ fn test_commit_without_composition() {
     );
 }
 
+/// Caret metadata comes from the actual control/selection, never an embedder's empty buffer.
+#[test]
+fn test_input_method_caret_metadata() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        let mut preferences = Preferences::default();
+        preferences.network_http_proxy_uri = String::new();
+        preferences.network_https_proxy_uri = String::new();
+        preferences.dom_exec_command_enabled = true;
+        builder.preferences(preferences)
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html;charset=utf-8,<!doctype html><input id='field' value='a🦊b'><textarea id='area'>a🦊b</textarea><div id='editor' contenteditable><span>a🦊</span><b>b</b></div><div id='host'></div>").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    let timeout = std::time::Duration::from_secs(5);
+    let check = |script: &str, expected: Option<u32>| {
+        delegate.input_method_carets.borrow_mut().clear();
+        evaluate_javascript(&servo_test, webview.clone(), script).expect("script should evaluate");
+        assert!(
+            spin_until(&servo_test, timeout, || {
+                delegate
+                    .input_method_carets
+                    .borrow()
+                    .last()
+                    .is_some_and(|(_, caret)| *caret == expected)
+            }),
+            "no expected caret {expected:?} for {script}"
+        );
+        let control = delegate.input_method_carets.borrow().last().unwrap().0;
+        assert!(
+            delegate.controls_shown.borrow().iter().any(|shown| {
+                matches!(shown, EmbedderControl::InputMethod(ime) if ime.id() == control)
+            }),
+            "caret was not tagged with an actual input method control"
+        );
+    };
+    check("field.focus(); field.setSelectionRange(3, 3)", Some(3));
+    check("field.setSelectionRange(0, 3)", None);
+    check("area.focus(); area.setSelectionRange(4, 4)", Some(4));
+    check(
+        "editor.focus(); getSelection().collapse(editor.firstChild.firstChild, 3)",
+        Some(3),
+    );
+    check(
+        "getSelection().collapse(editor.lastChild.firstChild, 1)",
+        Some(4),
+    );
+    check("getSelection().collapse(editor, 1)", Some(3));
+    check("getSelection().selectAllChildren(editor)", None);
+    check(
+        "editor.innerHTML='<p>a</p><p><br></p><p>b</p>'; getSelection().collapse(editor.lastChild.firstChild, 1)",
+        Some(2),
+    );
+    check(
+        "editor.textContent=''; getSelection().collapse(editor, 0)",
+        Some(0),
+    );
+    delegate.input_method_carets.borrow_mut().clear();
+    webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit("é🦊".into())));
+    assert!(evaluate_until(&servo_test, &webview, "editor.textContent === 'é🦊'", timeout), "commit state: {:?}", evaluate_javascript(&servo_test, webview.clone(), "document.activeElement.id + '|' + editor.innerHTML + '|' + field.value + '|' + area.value"));
+    assert!(spin_until(&servo_test, timeout, || {
+        delegate.input_method_carets.borrow().last().is_some_and(|(_, caret)| *caret == Some(3))
+    }), "commit caret reports: {:?}", delegate.input_method_carets.borrow());
+    check(
+        "editor.textContent='a'.repeat(65537); getSelection().collapse(editor.firstChild, 65537)",
+        None,
+    );
+    check(
+        "editor.innerHTML='<i></i>'.repeat(10001)+'z'; getSelection().collapse(editor.lastChild, 1)",
+        None,
+    );
+    check(
+        "var root=host.attachShadow({mode:'closed'}); window.innerEditor=document.createElement('div'); innerEditor.contentEditable='true'; innerEditor.textContent='é🦊'; root.append(innerEditor); innerEditor.focus(); getSelection().collapse(innerEditor.firstChild, 3)",
+        Some(3),
+    );
+    let top_level_control = delegate.input_method_carets.borrow().last().unwrap().0;
+    check(
+        "var frame=document.createElement('iframe'); frame.onload=function(){var input=frame.contentDocument.getElementById('inner'); input.focus(); input.setSelectionRange(2,2)}; frame.srcdoc=\"<input id='inner' value='abc'>\"; document.body.append(frame)",
+        Some(2),
+    );
+    assert_ne!(
+        delegate.input_method_carets.borrow().last().unwrap().0.pipeline_id,
+        top_level_control.pipeline_id,
+    );
+}
+
 /// A focused editing host asks for a multiline text input method, as a `<textarea>` does, and
 /// gives it up on blur, when it stops being editable and when it is removed.
 #[test]

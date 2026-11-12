@@ -288,6 +288,7 @@ impl WebView {
             hidpi_scale_factor: Scale::new(inner.hidpi_scale_factor.0),
             device_size,
             max_layout_viewport_expansion,
+            embedding_color_scheme: None,
         }
     }
 
@@ -527,6 +528,18 @@ impl WebView {
                 self.id(),
                 theme,
             ))
+    }
+
+    /// Turn adaptive dark mode on or off for this [`WebView`]. While it is on, pages that
+    /// are light and do not declare dark support (`color-scheme: dark` or `light dark`, in
+    /// CSS or `<meta name="color-scheme">`) or opt out (`light only`) are painted with dark
+    /// colors. Their styles do not change: scripts read the authored colors, and images,
+    /// video and canvas keep theirs. Off by default, independent of the [`Theme`]. Like a
+    /// theme change, it takes effect asynchronously, at the page's next rendering update.
+    pub fn set_adaptive_dark_mode(&self, enabled: bool) {
+        self.servo().constellation_proxy().send(
+            EmbedderToConstellationMessage::AdaptiveDarkModeChange(self.id(), enabled),
+        )
     }
 
     /// Load the given URL into this [`WebView`] using the default request headers.

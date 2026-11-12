@@ -2796,8 +2796,13 @@ impl ScriptThread {
         let new_has_system_focus = new_state.has_system_focus.get();
         let system_focus_changed =
             webview_state.has_system_focus.replace(new_has_system_focus) != new_has_system_focus;
+        let new_adaptive_dark_mode = new_state.adaptive_dark_mode.get();
+        let adaptive_dark_mode_changed = webview_state
+            .adaptive_dark_mode
+            .replace(new_adaptive_dark_mode) !=
+            new_adaptive_dark_mode;
 
-        if !theme_changed && !system_focus_changed {
+        if !theme_changed && !system_focus_changed && !adaptive_dark_mode_changed {
             return;
         }
 
@@ -2817,6 +2822,9 @@ impl ScriptThread {
             }
             if theme_changed {
                 document.window().refresh_theme();
+            }
+            if adaptive_dark_mode_changed {
+                document.window().refresh_adaptive_dark_mode();
             }
             if system_focus_changed {
                 document.gained_or_lost_system_focus(cx, new_has_system_focus);
@@ -3574,6 +3582,7 @@ impl ScriptThread {
             viewport_details: incomplete.viewport_details,
             user_stylesheets,
             theme: incomplete.webview_state.theme.get(),
+            adaptive_dark_mode: incomplete.webview_state.adaptive_dark_mode.get(),
             embedder_chan: self.senders.pipeline_to_embedder_sender.clone(),
         };
 

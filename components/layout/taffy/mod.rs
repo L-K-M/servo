@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 mod layout;
 mod stylo_taffy;
+pub(crate) mod subgrid;
 use std::fmt;
 
 use app_units::Au;
@@ -13,6 +14,7 @@ use style::Atom;
 use style::context::SharedStyleContext;
 use style::properties::ComputedValues;
 pub(crate) use stylo_taffy::TaffyStyloStyle;
+pub(crate) use subgrid::{SubgridAxisTemplate, SubgridTemplates};
 use taffy::GridItemStyle;
 
 use crate::cell::ArcRefCell;
@@ -31,6 +33,9 @@ use crate::{DefiniteContainingBlock, PropagatedBoxTreeData};
 pub(crate) struct TaffyContainer {
     children: Vec<ArcRefCell<TaffyItemBox>>,
     style: Arc<ComputedValues>,
+    /// Approximated `subgrid` template, resolved by this container's parent
+    /// grid at construction time. See [`subgrid`].
+    subgrid_templates: Option<SubgridTemplates>,
 }
 
 impl TaffyContainer {
@@ -72,14 +77,66 @@ impl TaffyContainer {
             })
             .collect();
 
-        Self {
+        let container = Self {
             children,
             style: info.style.clone(),
-        }
+            subgrid_templates: None,
+        };
+        container.re_resolve_children();
+        container
     }
 
     pub(crate) fn repair_style(&mut self, new_style: &Arc<ComputedValues>) {
         self.style = new_style.clone();
+        // Re-resolve our own subgrid template against the parent data it was
+        // resolved from, then the children's from our new style: a restyle
+        // must not keep tracks from superseded styles.
+        self.subgrid_templates = self
+            .subgrid_templates
+            .as_ref()
+            .and_then(|templates| templates.re_resolve(new_style));
+        self.re_resolve_children();
+    }
+
+    /// Set the `subgrid` fallback template resolved by this container's
+    /// parent grid, and re-resolve the children against it: subgrids nested
+    /// inside this one resolve from its resolved tracks.
+    pub(crate) fn set_subgrid_templates(&mut self, templates: Option<SubgridTemplates>) {
+        if self.subgrid_templates == templates {
+            // Child resolution depends only on our style and templates; if
+            // nothing changed, the cascade below would recompute the same
+            // results for the whole subtree.
+            return;
+        }
+        self.subgrid_templates = templates;
+        self.re_resolve_children();
+    }
+
+    /// The track and name data this grid exposes to its items.
+    fn axis_sources(
+        &self,
+    ) -> (Option<Arc<SubgridAxisTemplate>>, Option<Arc<SubgridAxisTemplate>>) {
+        let position = self.style.get_position();
+        let own = self.subgrid_templates.as_ref();
+        (
+            subgrid::axis_source(
+                &position.grid_template_columns,
+                own.and_then(|templates| templates.columns.as_ref()),
+            ),
+            subgrid::axis_source(
+                &position.grid_template_rows,
+                own.and_then(|templates| templates.rows.as_ref()),
+            ),
+        )
+    }
+
+    fn re_resolve_children(&self) {
+        let (columns, rows) = self.axis_sources();
+        for child in &self.children {
+            let templates =
+                subgrid::resolve_for_item(columns.as_ref(), rows.as_ref(), &child.borrow().style);
+            child.borrow_mut().set_subgrid_templates(templates);
+        }
     }
 }
 
@@ -128,6 +185,14 @@ impl TaffyItemBox {
             positioning_context: PositioningContext::default(),
             style,
             taffy_level_box: inner,
+        }
+    }
+
+    /// Route the parent grid's `subgrid` fallback template to the item's
+    /// grid container, if it is one. `None` clears a stale fallback.
+    pub(crate) fn set_subgrid_templates(&mut self, templates: Option<SubgridTemplates>) {
+        if let TaffyItemBoxInner::InFlowBox(context) = &mut self.taffy_level_box {
+            context.set_subgrid_templates(templates);
         }
     }
 

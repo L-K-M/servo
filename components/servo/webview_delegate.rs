@@ -1089,6 +1089,20 @@ pub trait WebViewDelegate {
     /// After this point, any further responses to that request will be ignored.
     fn hide_embedder_control(&self, _webview: WebView, _control_id: EmbedderControlId) {}
 
+    /// A focused input method's collapsed caret changed. Offsets are UTF-16 code units in
+    /// a form control's value or an editing host's `textContent` projection (not rendered
+    /// paragraph breaks). `None` means unknown, noncollapsed, outside the host, or beyond
+    /// the bounded rich-tree scan. No field contents are exposed by this callback.
+    ///
+    /// Check the exact control ID before using it: a queued callback may outlive its field.
+    fn notify_input_method_caret_changed(
+        &self,
+        _webview: WebView,
+        _control_id: EmbedderControlId,
+        _caret: Option<u32>,
+    ) {
+    }
+
     /// Triggered when this [`WebView`] will load a web (HTTP/HTTPS) resource. The load may be
     /// intercepted and alternate contents can be loaded by the client by calling
     /// [`WebResourceLoad::intercept`]. If not handled, the load will continue as normal.

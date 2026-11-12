@@ -54,6 +54,10 @@ pub fn set(preferences: Preferences) {
     stylo_static_prefs::set_pref!("layout.columns.enabled", preferences.layout_columns_enabled);
     stylo_static_prefs::set_pref!("layout.grid.enabled", preferences.layout_grid_enabled);
     stylo_static_prefs::set_pref!(
+        "layout.css.grid-template-subgrid-value.enabled",
+        preferences.layout_css_grid_template_subgrid_value_enabled
+    );
+    stylo_static_prefs::set_pref!(
         "layout.css.ellipse-corners.enabled",
         preferences.layout_css_ellipse_corners_enabled
     );
@@ -310,6 +314,7 @@ pub struct Preferences {
     pub layout_grid_enabled: bool,
     pub layout_container_queries_enabled: bool,
     pub layout_css_ellipse_corners_enabled: bool,
+    pub layout_css_grid_template_subgrid_value_enabled: bool,
     pub layout_css_progress_function_enabled: bool,
     pub layout_style_sharing_cache_enabled: bool,
     pub layout_threads: i64,
@@ -572,6 +577,7 @@ impl Preferences {
             layout_columns_enabled: false,
             layout_container_queries_enabled: false,
             layout_css_ellipse_corners_enabled: false,
+            layout_css_grid_template_subgrid_value_enabled: true,
             layout_css_progress_function_enabled: false,
             layout_flexbox_balance: false,
             layout_grid_enabled: true,

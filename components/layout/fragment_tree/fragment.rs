@@ -12,8 +12,9 @@ use euclid::{Point2D, Rect, Size2D};
 use fonts::{FontMetrics, ShapedTextSlice};
 use layout_api::BoxAreaType;
 use malloc_size_of_derive::MallocSizeOf;
+use pixels::RasterImage;
 use servo_arc::Arc as ServoArc;
-use servo_base::id::PipelineId;
+use servo_base::id::{BrowsingContextId, PipelineId};
 use servo_base::print_tree::PrintTree;
 use servo_base::text::Utf32CodeUnits;
 use servo_url::ServoUrl;
@@ -29,7 +30,7 @@ use super::{
 use crate::SharedStyle;
 use crate::cell::{ArcRefCell, RefOrAtomicRef};
 use crate::flow::inline::text_run::SharedTextRunData;
-use crate::fragment_tree::FragmentStatus;
+use crate::fragment_tree::{FragmentFlags, FragmentStatus};
 use crate::geom::{LogicalSides, PhysicalPoint, PhysicalRect};
 use crate::layout_impl::LayoutThread;
 use crate::style_ext::ComputedValuesExt;
@@ -130,12 +131,19 @@ pub(crate) struct ImageFragment {
     /// Whether or not this image is selected.
     #[conditional_malloc_size_of]
     pub selected: Arc<AtomicBool>,
+    /// Whether this image is an inline `<svg>` element, rasterized with its colors.
+    pub is_inline_svg: bool,
+    /// The pixels of an image resource, which adaptive dark mode judges it by. Video,
+    /// canvas and inline `<svg>` have none.
+    #[ignore_malloc_size_of = "Shared with the image cache"]
+    pub pixels: Option<Arc<RasterImage>>,
 }
 
 #[derive(MallocSizeOf)]
 pub(crate) struct IFrameFragment {
     pub base: BaseFragment,
     pub style: SharedStyle,
+    pub browsing_context_id: BrowsingContextId,
     pub pipeline_id: PipelineId,
 }
 
@@ -431,6 +439,18 @@ impl Fragment {
             Fragment::Float(fragment) => &fragment.style,
         };
         *shared_style.borrow_mut() = new_style.clone();
+
+        // Replaced content has an inner image or iframe fragment with its own style cell.
+        // A paint-only change repairs the outer box without rebuilding that inner fragment.
+        if let Some(box_fragment) = self.retrieve_box_fragment() &&
+            box_fragment.base.flags.contains(FragmentFlags::IS_REPLACED)
+        {
+            for child in &box_fragment.children {
+                if matches!(child, Fragment::Image(..) | Fragment::IFrame(..)) {
+                    child.repair_style(new_style);
+                }
+            }
+        }
     }
 
     pub(crate) fn retrieve_box_fragment(&self) -> Option<RefOrAtomicRef<'_, Arc<BoxFragment>>> {

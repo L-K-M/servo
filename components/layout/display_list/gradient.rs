@@ -179,7 +179,10 @@ pub(super) fn build_linear(
 
     let mut color_stops =
         gradient_items_to_color_stops(style, items, Au::from_f32_px(gradient_line_length));
-    let stops = create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode);
+    let stops = builder.background_gradient_stops(
+        style,
+        create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode),
+    );
 
     WebRenderGradient::Linear(builder.wr().create_gradient(
         start_point,
@@ -285,7 +288,10 @@ pub(super) fn build_radial(
 
     let mut color_stops =
         gradient_items_to_color_stops(style, items, Au::from_f32_px(gradient_line_length));
-    let stops = create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode);
+    let stops = builder.background_gradient_stops(
+        style,
+        create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode),
+    );
 
     WebRenderGradient::Radial(builder.wr().create_radial_gradient(
         center,
@@ -325,7 +331,10 @@ fn build_conic(
     };
 
     let mut color_stops = conic_gradient_items_to_color_stops(style, items);
-    let stops = create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode);
+    let stops = builder.background_gradient_stops(
+        style,
+        create_webrender_stops(&mut color_stops, color_interpolation_method, extend_mode),
+    );
 
     WebRenderGradient::Conic(builder.wr().create_conic_gradient(
         center,

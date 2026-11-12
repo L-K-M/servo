@@ -33,7 +33,9 @@ use crate::dom::bindings::str::DOMString;
 use crate::dom::comparator::compare_dom_positions;
 use crate::dom::document::Document;
 use crate::dom::eventtarget::EventTarget;
-use crate::dom::iterators::{PrePostIteration, UnrootedFollowingFlatTreeNodesTraversal};
+use crate::dom::iterators::{
+    PrePostIteration, ShadowIncluding, UnrootedFollowingFlatTreeNodesTraversal,
+};
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::range::Range;
 use crate::dom::selection_range::{SelectionBoundary, SelectionRange};
@@ -124,6 +126,62 @@ impl Selection {
             .borrow()
             .as_ref()
             .is_none_or(|range| range.collapsed())
+    }
+
+    /// A collapsed caret's UTF-16 offset in the editing host's `textContent` projection.
+    /// This is metadata, not a rendered-text or writable-selection API. In particular, block
+    /// boundaries do not add characters. Refuse noncollapsed/outside selections and bound work
+    /// on page-controlled trees rather than inventing a caret at the start of the field.
+    pub(crate) fn input_method_caret(&self, host: &Node) -> Option<u32> {
+        const MAX_NODES: usize = 10_000;
+        const MAX_CODE_UNITS: u32 = 65_536;
+
+        fn count_text(node: &Node, total: &mut u32) -> Option<()> {
+            let Some(text) = node.downcast::<Text>() else {
+                return Some(());
+            };
+            // Check the byte length first: counting UTF-16 must not scan an unbounded string.
+            if text.upcast::<CharacterData>().data().len() > MAX_CODE_UNITS as usize * 4 {
+                return None;
+            }
+            *total = total.checked_add(node.len())?;
+            (*total <= MAX_CODE_UNITS).then_some(())
+        }
+
+        let range = self.range.borrow();
+        let range = range.as_ref().filter(|range| range.collapsed())?;
+        let boundary = &range.start;
+        let mut total = 0;
+        let mut visited = 0;
+        for node in host.traverse_preorder(ShadowIncluding::No) {
+            visited += 1;
+            if visited > MAX_NODES {
+                return None;
+            }
+            if *node != *boundary.container {
+                count_text(&node, &mut total)?;
+                continue;
+            }
+            if node.is::<Text>() {
+                return total
+                    .checked_add(boundary.offset)
+                    .filter(|offset| *offset <= MAX_CODE_UNITS);
+            }
+            if node.is::<CharacterData>() {
+                return None;
+            }
+            for child in node.children().take(boundary.offset as usize) {
+                for descendant in child.traverse_preorder(ShadowIncluding::No) {
+                    visited += 1;
+                    if visited > MAX_NODES {
+                        return None;
+                    }
+                    count_text(&descendant, &mut total)?;
+                }
+            }
+            return Some(total);
+        }
+        None
     }
 
     fn clear_cached_live_range(&self) {
@@ -451,6 +509,7 @@ impl Selection {
                     // selectionchange, which does not bubble and not cancelable, at
                     // target.
                     this.document.upcast::<EventTarget>().fire_event(cx, atom!("selectionchange"));
+                    this.document.embedder_controls().queue_input_method_caret();
                 }),
             );
     }

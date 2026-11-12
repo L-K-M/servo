@@ -330,8 +330,8 @@ pub struct ProtocolHandlerUpdateRegistration {
     pub register_or_unregister: RegisterOrUnregister,
 }
 
-/// Data about a `WebView` or `<iframe>` viewport: its size and also the
-/// HiDPI scale factor to use when rendering the contents.
+/// Data about a `WebView` or `<iframe>` viewport: its size, rendering scale and
+/// embedding color scheme.
 #[derive(Clone, Copy, Debug, Default, Deserialize, MallocSizeOf, PartialEq, Serialize)]
 pub struct ViewportDetails {
     /// The size of the layout viewport.
@@ -351,6 +351,11 @@ pub struct ViewportDetails {
     /// keep the scrollport at [`Self::size`], as for `<iframe>`s and when `<meta viewport>`
     /// is not processed.
     pub max_layout_viewport_expansion: f32,
+
+    /// The embedding element's used color scheme, when this viewport belongs to an iframe.
+    /// A child with a different scheme needs an opaque default canvas. This travels with
+    /// viewport updates so remote, pending and history pipelines receive it as well.
+    pub embedding_color_scheme: Option<Theme>,
 }
 
 impl ViewportDetails {
@@ -549,6 +554,8 @@ pub enum EmbedderMsg {
     ShowEmbedderControl(EmbedderControlId, DeviceIntRect, EmbedderControlRequest),
     /// Request to the embedder to hide a user interface control.
     HideEmbedderControl(EmbedderControlId),
+    /// A focused input method's collapsed UTF-16 caret, or unknown/noncollapsed.
+    InputMethodCaretChanged(EmbedderControlId, Option<u32>),
     /// Inform the embedding layer that a particular `InputEvent` was handled by Servo
     /// and the embedder can continue processing it, if necessary.
     InputEventsHandled(WebViewId, Vec<InputEventOutcome>),

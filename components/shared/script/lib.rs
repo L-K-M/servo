@@ -72,6 +72,8 @@ pub struct WebViewState {
     /// Whether or not the `WebView` has system focus. More than one `WebView` may have
     /// system focus at one time.
     pub has_system_focus: Cell<bool>,
+    /// Whether the `WebView` paints light pages with dark colors (adaptive dark mode).
+    pub adaptive_dark_mode: Cell<bool>,
 }
 
 /// The initial data required to create a new `Pipeline` attached to an existing `ScriptThread`.

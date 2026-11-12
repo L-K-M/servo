@@ -741,6 +741,13 @@ impl ServoInner {
                         .hide_embedder_control(webview, control_id);
                 }
             },
+            EmbedderMsg::InputMethodCaretChanged(control_id, caret) => {
+                if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
+                    webview
+                        .delegate()
+                        .notify_input_method_caret_changed(webview, control_id, caret);
+                }
+            },
             EmbedderMsg::GetWindowRect(webview_id, response_sender) => {
                 let window_rect = || {
                     let Some(webview) = self.get_webview_handle(webview_id) else {

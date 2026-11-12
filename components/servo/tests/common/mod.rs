@@ -90,6 +90,7 @@ pub(crate) struct WebViewDelegateImpl {
     pub(crate) new_frame_ready: Cell<bool>,
     pub(crate) load_status_changed: Cell<bool>,
     pub(crate) controls_shown: RefCell<Vec<EmbedderControl>>,
+    pub(crate) input_method_carets: RefCell<Vec<(servo::EmbedderControlId, Option<u32>)>>,
     pub(crate) active_dialog: RefCell<Option<SimpleDialog>>,
     pub(crate) number_of_controls_shown: Cell<usize>,
     pub(crate) number_of_controls_hidden: Cell<usize>,
@@ -106,6 +107,7 @@ impl WebViewDelegateImpl {
         self.cursor_changed.set(false);
         self.new_frame_ready.set(false);
         self.controls_shown.borrow_mut().clear();
+        self.input_method_carets.borrow_mut().clear();
         self.number_of_controls_shown.set(0);
         self.number_of_controls_hidden.set(0);
         self.last_accesskit_tree_updates.borrow_mut().clear();
@@ -152,6 +154,15 @@ impl WebViewDelegate for WebViewDelegateImpl {
     fn hide_embedder_control(&self, _webview: WebView, _control_id: servo::EmbedderControlId) {
         self.number_of_controls_hidden
             .set(self.number_of_controls_hidden.get() + 1);
+    }
+
+    fn notify_input_method_caret_changed(
+        &self,
+        _webview: WebView,
+        control: servo::EmbedderControlId,
+        caret: Option<u32>,
+    ) {
+        self.input_method_carets.borrow_mut().push((control, caret));
     }
 
     fn notify_accessibility_tree_update(
