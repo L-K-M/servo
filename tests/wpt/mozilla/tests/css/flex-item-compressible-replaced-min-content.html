@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Min-content contribution of a compressible replaced flex item with an automatic minimum size</title>
+<link rel="help" href="https://drafts.csswg.org/css-sizing-3/#replaced-percentage-min-contribution">
+<link rel="help" href="https://drafts.csswg.org/css-flexbox-1/#min-size-auto">
+<meta name="assert" content="A replaced flex item whose width or max-width is a cyclic percentage contributes zero to the min-content size of its flex container, even though its automatic minimum size is its natural width. The max-content size keeps that minimum.">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  .outer { display: flex; width: 100px; }
+  .inner { display: flex; }
+  img { display: block; height: auto; }
+</style>
+<div class="outer"><div class="inner"><img id="max" src="400x400-green.png" style="max-width: 100%"></div></div>
+<div class="outer"><div class="inner"><img id="width" src="400x400-green.png" style="width: 100%"></div></div>
+<div class="outer"><div class="inner"><img id="fixed-max" src="400x400-green.png" style="max-width: 200px"></div></div>
+<div class="outer" style="display: grid; grid-template-columns: auto"><div class="inner"><img id="grid" src="400x400-green.png" style="max-width: 100%"></div></div>
+<div style="display: flex; width: max-content"><img id="basis" src="400x400-green.png" style="flex: 0 1 0px; max-width: 100%"></div>
+<script>
+  setup({ explicit_done: true });
+  addEventListener("load", () => {
+    const width = id => document.getElementById(id).getBoundingClientRect().width;
+    test(() => {
+      assert_equals(width("max"), 100);
+      assert_equals(document.getElementById("max").parentElement.getBoundingClientRect().width, 100);
+    }, "max-width: 100% lets the inner flex container shrink to the outer one");
+    test(() => {
+      assert_equals(width("width"), 100);
+    }, "width: 100% lets the inner flex container shrink to the outer one");
+    test(() => {
+      assert_equals(width("fixed-max"), 200);
+    }, "a fixed max-width still bounds the automatic minimum size, without compression");
+    test(() => {
+      assert_equals(width("grid"), 100);
+    }, "max-width: 100% keeps an auto grid track at the grid container's width");
+    test(() => {
+      assert_equals(document.getElementById("basis").parentElement.getBoundingClientRect().width, 400);
+      assert_equals(width("basis"), 400);
+    }, "the max-content size keeps the automatic minimum size of a compressible item");
+    done();
+  });
+</script>
