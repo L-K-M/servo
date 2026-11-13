@@ -1,0 +1,140 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>requestIdleCallback runs idle callbacks in idle periods</title>
+<link rel="help" href="https://www.w3.org/TR/requestidlecallback/">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+setup({ allow_uncaught_exception: true });
+
+test(() => {
+  assert_equals(typeof window.requestIdleCallback, "function");
+  assert_equals(typeof window.cancelIdleCallback, "function");
+  const first = requestIdleCallback(() => {});
+  const second = requestIdleCallback(() => {});
+  assert_greater_than(first, 0, "handles are positive");
+  assert_equals(second, first + 1, "handles increase by one");
+  cancelIdleCallback(first);
+  cancelIdleCallback(second);
+}, "requestIdleCallback returns increasing handles");
+
+promise_test(async () => {
+  const deadline = await new Promise(resolve => requestIdleCallback(resolve));
+  assert_true(deadline instanceof IdleDeadline);
+  assert_false(deadline.didTimeout);
+  const remaining = deadline.timeRemaining();
+  assert_greater_than_equal(remaining, 0);
+  assert_less_than_equal(remaining, 50, "an idle period lasts at most 50 ms");
+}, "An idle callback receives an IdleDeadline");
+
+promise_test(async () => {
+  const order = [];
+  let cancelledRan = false;
+  const done = new Promise(resolve => {
+    requestIdleCallback(() => order.push(1));
+    const cancelled = requestIdleCallback(() => { cancelledRan = true; });
+    requestIdleCallback(() => order.push(2));
+    requestIdleCallback(() => { order.push(3); resolve(); });
+    cancelIdleCallback(cancelled);
+  });
+  await done;
+  assert_array_equals(order, [1, 2, 3], "callbacks run in request order");
+  assert_false(cancelledRan, "a cancelled callback does not run");
+}, "Idle callbacks run in order and can be cancelled");
+
+promise_test(async () => {
+  let periodEnd;
+  const deadline = await new Promise(resolve => {
+    requestIdleCallback(outer => {
+      periodEnd = performance.now() + outer.timeRemaining();
+      requestIdleCallback(resolve);
+    });
+  });
+  assert_false(deadline.didTimeout);
+  assert_greater_than_equal(performance.now(), periodEnd - 1,
+                            "runs in a later idle period");
+}, "An idle callback requested from an idle callback runs in the next idle period");
+
+promise_test(async t => {
+  // Running CSS animations keep rendering opportunities coming, so an idle period
+  // ends before the next frame.
+  const style = document.createElement("style");
+  style.textContent = "@keyframes spin { to { transform: rotate(1turn); } }" +
+                      "#spinner { animation: spin 1s linear infinite; }";
+  const spinner = document.createElement("div");
+  spinner.id = "spinner";
+  document.documentElement.append(style, spinner);
+  t.add_cleanup(() => { style.remove(); spinner.remove(); });
+  await new Promise(resolve => spinner.addEventListener("animationstart", resolve));
+  const remaining = await new Promise(resolve => {
+    requestIdleCallback(deadline => resolve(deadline.timeRemaining()));
+  });
+  assert_less_than_equal(remaining, 16.7);
+}, "A running CSS animation ends idle periods before the next frame");
+
+promise_test(async t => {
+  // A same-origin frame shares this event loop, so its timers end idle periods here.
+  const iframe = document.createElement("iframe");
+  iframe.srcdoc = "<!doctype html>";
+  const loaded = new Promise(resolve => iframe.onload = resolve);
+  document.documentElement.appendChild(iframe);
+  t.add_cleanup(() => iframe.remove());
+  await loaded;
+  const remaining = await new Promise(resolve => {
+    requestIdleCallback(deadline => {
+      iframe.contentWindow.setTimeout(() => {}, 10);
+      resolve(deadline.timeRemaining());
+    });
+  });
+  assert_less_than_equal(remaining, 10);
+}, "A timer in another window of the event loop shortens the idle period");
+
+promise_test(async () => {
+  // A callback that requests itself again waits for the next idle period, which
+  // starts no earlier than the end of the current one, instead of running in a
+  // busy loop.
+  let runs = 0;
+  const start = performance.now();
+  await new Promise(resolve => {
+    function loop() {
+      runs++;
+      if (performance.now() - start >= 200) {
+        resolve();
+      } else {
+        requestIdleCallback(loop);
+      }
+    }
+    requestIdleCallback(loop);
+  });
+  assert_less_than(runs, 50, "idle periods in 200 ms");
+}, "A callback that requests itself runs once per idle period");
+
+promise_test(async t => {
+  let thrown = false;
+  const previousOnError = window.onerror;
+  t.add_cleanup(() => { window.onerror = previousOnError; });
+  window.onerror = () => { thrown = true; };
+  requestIdleCallback(() => { throw new Error("idle"); });
+  await new Promise(resolve => requestIdleCallback(resolve));
+  assert_true(thrown, "the exception is reported");
+}, "An exception in an idle callback is reported and later callbacks still run");
+
+promise_test(async () => {
+  // Keep the event loop busy with a task that queues itself again, so that the
+  // event loop is never idle and only the timeout can run the callback.
+  const channel = new MessageChannel();
+  let busy = true;
+  channel.port1.onmessage = () => {
+    if (busy) {
+      channel.port2.postMessage(null);
+    }
+  };
+  channel.port2.postMessage(null);
+  const deadline = await new Promise(resolve => {
+    requestIdleCallback(resolve, { timeout: 50 });
+  });
+  busy = false;
+  assert_true(deadline.didTimeout, "didTimeout");
+  assert_equals(deadline.timeRemaining(), 0, "timeRemaining()");
+}, "A callback runs from its timeout while the event loop stays busy");
+</script>
