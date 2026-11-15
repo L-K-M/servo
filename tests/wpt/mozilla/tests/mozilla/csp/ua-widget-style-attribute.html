@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Style attributes inside user agent widgets are not blocked by the page's style-src</title>
+<link rel="help" href="https://www.w3.org/TR/CSP3/#should-block-inline">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<input type="range" id="range" value="25">
+<meter value="0.5"></meter>
+<progress value="0.5"></progress>
+<select><option>One</option><option>Two</option></select>
+<details><p>Details without a summary.</p></details>
+<script>
+  // Violations whose target is (retargeted to) one of the widgets above.
+  let widgetViolations = 0;
+  document.addEventListener("securitypolicyviolation", event => {
+    if (["input", "meter", "progress", "select", "details"].includes(event.target.localName)) {
+      widgetViolations++;
+    }
+  }, true);
+
+  function settle() {
+    return new Promise(resolve => {
+      requestAnimationFrame(() => requestAnimationFrame(() => step_timeout(resolve, 100)));
+    });
+  }
+
+  promise_test(async () => {
+    await settle();
+    assert_equals(widgetViolations, 0);
+  }, "Rendering the widgets reports no violations");
+
+  promise_test(async () => {
+    document.getElementById("range").value = 75;
+    document.querySelector("meter").value = 0.25;
+    document.querySelector("progress").value = 0.75;
+    document.querySelector("select").selectedIndex = 1;
+    document.querySelector("details").open = true;
+    await settle();
+    assert_equals(widgetViolations, 0);
+  }, "Updating the widgets reports no violations");
+
+  promise_test(async () => {
+    // Media controls run their script in the page's realm and get their shadow root
+    // from a document method the page can wrap, so author content can reach that
+    // shadow tree. Its style attributes must keep the page's policy.
+    let controlsRoot = null;
+    const getMediaControls = document.servoGetMediaControls;
+    document.servoGetMediaControls = function(id) {
+      controlsRoot = getMediaControls.call(this, id);
+      return controlsRoot;
+    };
+    const video = document.createElement("video");
+    video.controls = true;
+    document.body.append(video);
+    await settle();
+    assert_not_equals(controlsRoot, null, "the media controls got their shadow root");
+
+    const authorElement = document.createElement("div");
+    controlsRoot.append(authorElement);
+    authorElement.setAttribute("style", "color: rgb(255, 0, 0)");
+    await settle();
+    assert_not_equals(getComputedStyle(authorElement).color, "rgb(255, 0, 0)");
+  }, "Author content in media controls keeps the page's style-src");
+</script>
