@@ -34,7 +34,9 @@ use xml5ever::ns;
 
 use crate::dom::MoveContext;
 use crate::dom::activation::Activatable;
+use crate::dom::bindings::codegen::Bindings::CompositionEventBinding::CompositionEventMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
+use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::FileListBinding::FileListMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
 use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputElementMethods;
@@ -71,7 +73,7 @@ use crate::dom::node::{
 };
 use crate::dom::nodelist::NodeList;
 use crate::dom::text_input::EmbedderClipboardProvider;
-use crate::dom::types::FocusEvent;
+use crate::dom::types::{CompositionEvent, FocusEvent};
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
 use crate::realms::enter_auto_realm;
@@ -2511,16 +2513,15 @@ impl VirtualMethods for HTMLInputElement {
     // https://w3c.github.io/uievents/#default-action
     /// <https://dom.spec.whatwg.org/#action-versus-occurance>
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
-        if (event.type_() == atom!("compositionstart")
-            || event.type_() == atom!("compositionupdate")
-            || event.type_() == atom!("compositionend"))
-            && self.input_type().is_textual_or_password()
-            && event.IsTrusted()
-            && !event.flags().contains(EventFlags::Handled)
-            && self.is_mutable()
-            && (event.type_() == atom!("compositionend")
-                || self
-                    .owner_document()
+        if (event.type_() == atom!("compositionstart") ||
+            event.type_() == atom!("compositionupdate") ||
+            event.type_() == atom!("compositionend")) &&
+            self.input_type().is_textual_or_password() &&
+            event.IsTrusted() &&
+            !event.flags().contains(EventFlags::Handled) &&
+            self.is_mutable() &&
+            (event.type_() == atom!("compositionend") ||
+                self.owner_document()
                     .event_handler()
                     .composition_epoch_for(self.upcast())
                     .is_some())
@@ -2533,7 +2534,7 @@ impl VirtualMethods for HTMLInputElement {
                         .handle_compositionend(compositionevent);
                     self.handle_key_reaction(cx, action);
                     self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-                    self.update_placeholder_shown_state();
+                    self.update_placeholder_shown_state(cx.no_gc());
                 } else if event.type_() == atom!("compositionupdate") {
                     let action = self
                         .text_input
@@ -2546,14 +2547,14 @@ impl VirtualMethods for HTMLInputElement {
                         .expect("validated composition target");
                     self.owner_document()
                         .event_handler()
-                        .composition_preview_updated(epoch, compositionevent.data().clone());
+                        .composition_preview_updated(epoch, compositionevent.Data());
                     self.handle_key_reaction(cx, action);
                     self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-                    self.update_placeholder_shown_state();
+                    self.update_placeholder_shown_state(cx.no_gc());
                 } else if event.type_() == atom!("compositionstart") {
                     self.text_input.borrow_mut().handle_compositionstart();
                     // Update placeholder state when composition starts
-                    self.update_placeholder_shown_state();
+                    self.update_placeholder_shown_state(cx.no_gc());
                 }
                 event.mark_as_handled();
             }

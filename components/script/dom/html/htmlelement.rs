@@ -1384,7 +1384,7 @@ impl VirtualMethods for HTMLElement {
                     },
                 }
             },
-            (&local_name!("contenteditable"), _) => self.editing_host_state_changed(),
+            (&local_name!("contenteditable"), _) => self.editing_host_state_changed(cx),
             (&local_name!("nonce"), mutation) => match mutation {
                 AttributeMutation::Set(_) => {
                     let nonce = &**attr.value();

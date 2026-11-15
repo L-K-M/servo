@@ -338,7 +338,7 @@ impl TextRunSegment {
             // Once a sequence has been broken, its continuation keeps breaking so that it
             // fills the line it was broken onto.
             let split = if can_break_within_words &&
-                !run.is_whitespace() &&
+                !run.all_white_space() &&
                 ((!soft_wrap_opportunity_before && ifc.in_emergency_broken_sequence) ||
                     ifc.content_overflows_empty_line(
                         ifc.current_line_segment.inline_size + run.total_advance(),

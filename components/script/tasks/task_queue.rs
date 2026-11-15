@@ -75,15 +75,10 @@ impl<T: QueuedTaskConversion> TaskQueue<T> {
         self.closed_pipelines.borrow().contains(pipeline_id)
     }
 
-    /// Whether tasks are waiting to run: received but not yet taken, held back by
-    /// throttling, or not yet received from the port.
+    /// Whether tasks are waiting to run: received but not yet taken, or not yet received
+    /// from the port. Tasks held for documents that are not fully active cannot run yet.
     pub(crate) fn has_pending_tasks(&self) -> bool {
-        !self.msg_queue.borrow().is_empty() ||
-            self.throttled
-                .borrow()
-                .values()
-                .any(|queue| !queue.is_empty()) ||
-            !self.port.is_empty()
+        !self.msg_queue.borrow().is_empty() || !self.port.is_empty()
     }
 
     /// Release previously held-back tasks for documents that are now fully-active.

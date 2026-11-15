@@ -31,6 +31,7 @@ use servo_url::ServoUrl;
 use webrender_api::units::{DeviceIntRect, DevicePoint};
 
 use crate::dom::activation::Activatable;
+use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::trace::NoTrace;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::iterators::ShadowIncluding;
@@ -329,8 +330,8 @@ impl DocumentEmbedderControls {
             ) => {
                 // A retained node can be removed or adopted while the menu is open.
                 let document = self.window.Document();
-                if context_menu_nodes.node.is_connected()
-                    && context_menu_nodes.node.owner_doc() == document
+                if context_menu_nodes.node.is_connected() &&
+                    context_menu_nodes.node.owner_doc() == document
                 {
                     let context = document.editing_context(cx.no_gc(), &context_menu_nodes.node);
                     document.handle_clipboard_action(

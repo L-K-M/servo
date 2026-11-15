@@ -350,7 +350,7 @@ impl Backdrop {
         let bottom_layer = background.background_image.0.len().saturating_sub(1);
         match get_cyclic(&background.background_clip.0, bottom_layer) {
             BackgroundClip::BorderBox | BackgroundClip::BorderArea => self.behind(style),
-            BackgroundClip::PaddingBox | BackgroundClip::ContentBox => *self,
+            BackgroundClip::PaddingBox | BackgroundClip::ContentBox | BackgroundClip::Text => *self,
         }
     }
 
@@ -592,7 +592,7 @@ impl AdaptiveDarkPainter {
         if backdrop.keeps_foregrounds() {
             return false;
         }
-        let color = Rgb::from_color_f(rgba(style.get_inherited_text().clone_color()));
+        let color = Rgb::from_color_f(rgba(*style.get_inherited_text().get_color()));
         color.luminance() < backdrop.authored.luminance()
     }
 

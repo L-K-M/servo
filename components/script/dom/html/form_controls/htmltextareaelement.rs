@@ -17,6 +17,8 @@ use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use style::attr::AttrValue;
 use stylo_dom::ElementState;
 
+use crate::dom::bindings::codegen::Bindings::CompositionEventBinding::CompositionEventMethods;
+use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
 use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
@@ -40,11 +42,11 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
-    BindContext, ChildrenMutation, CloneChildrenFlag, Node, NodeTraits, UnbindContext,
+    BindContext, ChildrenMutation, CloneChildrenFlag, Node, NodeDamage, NodeTraits, UnbindContext,
 };
 use crate::dom::nodelist::NodeList;
 use crate::dom::text_input::EmbedderClipboardProvider;
-use crate::dom::types::FocusEvent;
+use crate::dom::types::{CompositionEvent, FocusEvent};
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
 
@@ -768,15 +770,14 @@ impl VirtualMethods for HTMLTextAreaElement {
 
     // copied and modified from htmlinputelement.rs
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
-        if (event.type_() == atom!("compositionstart")
-            || event.type_() == atom!("compositionupdate")
-            || event.type_() == atom!("compositionend"))
-            && event.IsTrusted()
-            && !event.flags().contains(EventFlags::Handled)
-            && self.is_mutable()
-            && (event.type_() == atom!("compositionend")
-                || self
-                    .owner_document()
+        if (event.type_() == atom!("compositionstart") ||
+            event.type_() == atom!("compositionupdate") ||
+            event.type_() == atom!("compositionend")) &&
+            event.IsTrusted() &&
+            !event.flags().contains(EventFlags::Handled) &&
+            self.is_mutable() &&
+            (event.type_() == atom!("compositionend") ||
+                self.owner_document()
                     .event_handler()
                     .composition_epoch_for(self.upcast())
                     .is_some())
@@ -801,7 +802,7 @@ impl VirtualMethods for HTMLTextAreaElement {
                         .expect("validated composition target");
                     self.owner_document()
                         .event_handler()
-                        .composition_preview_updated(epoch, compositionevent.data().clone());
+                        .composition_preview_updated(epoch, compositionevent.Data());
                     self.handle_key_reaction(cx, action);
                     self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
                 } else if event.type_() == atom!("compositionstart") {

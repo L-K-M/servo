@@ -23,6 +23,7 @@ use servo_base::id::WebViewId;
 use servo_base::text::{AssumeUnder4GB, RangeAny, Utf8CodeUnits, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::{Rope, RopeIndex, RopeMovement, RopeSlice};
 
+use crate::dom::bindings::codegen::Bindings::CompositionEventBinding::CompositionEventMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::editing::MouseButtonSelectionAction;
@@ -30,7 +31,7 @@ use crate::dom::event::Event;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::mouseevent::MouseEvent;
 use crate::dom::text_control::TextControlElement;
-use crate::dom::types::{HTMLInputElement, HTMLTextAreaElement};
+use crate::dom::types::{CompositionEvent, HTMLInputElement, HTMLTextAreaElement};
 use crate::dom::{Element, NodeTraits};
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
 
@@ -169,6 +170,9 @@ pub enum InputEventType {
     InsertLineBreak,
     InsertFromPaste,
     InsertCompositionText,
+    /// The text a `compositionend` commits: `insertCompositionText`, but no longer composing,
+    /// since its input event follows the `compositionend` event.
+    CommitCompositionText,
     DeleteByCut,
     DeleteContentBackward,
     DeleteContentForward,
@@ -180,7 +184,7 @@ impl InputEventType {
             Self::InsertText => "insertText",
             Self::InsertLineBreak => "insertLineBreak",
             Self::InsertFromPaste => "insertFromPaste",
-            Self::InsertCompositionText => "insertCompositionText",
+            Self::InsertCompositionText | Self::CommitCompositionText => "insertCompositionText",
             Self::DeleteByCut => "deleteByCut",
             Self::DeleteContentBackward => "deleteContentBackward",
             Self::DeleteContentForward => "deleteContentForward",
@@ -189,7 +193,10 @@ impl InputEventType {
 
     /// <https://www.w3.org/TR/input-events-2/#interface-InputEvent-Attributes>
     pub(crate) fn is_beforeinput_cancelable(self) -> bool {
-        self != Self::InsertCompositionText
+        !matches!(
+            self,
+            Self::InsertCompositionText | Self::CommitCompositionText
+        )
     }
 
     pub(crate) fn is_composing(self) -> bool {
@@ -612,30 +619,26 @@ impl<T: ClipboardProvider> TextInput<T> {
     }
 
     pub(crate) fn handle_compositionend(&mut self, event: &CompositionEvent) -> KeyReaction {
-        let insertion = event.data().str();
+        let data = event.Data();
+        let insertion = data.str();
         let had_preview = std::mem::take(&mut self.composition_updated);
         if insertion.is_empty() && !had_preview {
             self.clear_selection();
             return KeyReaction::RedrawSelection;
         }
 
-        self.insert(&insertion);
+        self.insert(&*insertion);
         KeyReaction::DispatchInput(
             Some(insertion.to_string()),
-            IsComposing::NotComposing,
-            InputEventType::InsertCompositionText,
+            InputEventType::CommitCompositionText,
         )
     }
 
     pub(crate) fn handle_compositionupdate(&mut self, event: &CompositionEvent) -> KeyReaction {
-        let insertion = event.data().str().to_string();
+        let insertion = event.Data().str().to_string();
         self.composition_updated = true;
         self.insert_for_composition(insertion.clone());
-        KeyReaction::DispatchInput(
-            Some(insertion),
-            IsComposing::Composing,
-            InputEventType::InsertCompositionText,
-        )
+        KeyReaction::DispatchInput(Some(insertion), InputEventType::InsertCompositionText)
     }
 
     fn insert_for_composition<S: Into<String>>(&mut self, insertion: S) {

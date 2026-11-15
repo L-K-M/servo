@@ -315,7 +315,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         let url_data = UrlExtraData(document.url_for_layout().get_arc());
         let parsing_mode =
             ParsingMode::ALLOW_UNITLESS_LENGTH | ParsingMode::ALLOW_ALL_NUMERIC_VALUES;
-        let parser_context = ParserContext::new(
+        let mut parser_context = ParserContext::new(
             Origin::Author,
             &url_data,
             Some(CssRuleType::Style),
@@ -336,7 +336,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         // Servo's style system does not implement those properties yet.
         for (attr_name, longhand_id) in SVG_PRESENTATION_ATTRIBUTES {
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 attr_name,
                 PropertyId::NonCustom((*longhand_id).into()),
                 push,
@@ -347,19 +347,19 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         // <circle>: https://svgwg.org/svg2-draft/shapes.html#CircleElement
         if element.downcast::<SVGCircleElement>().is_some() {
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "cx",
                 PropertyId::NonCustom(LonghandId::Cx.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "cy",
                 PropertyId::NonCustom(LonghandId::Cy.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "r",
                 PropertyId::NonCustom(LonghandId::R.into()),
                 push,
@@ -368,25 +368,25 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         // <ellipse>: https://svgwg.org/svg2-draft/shapes.html#EllipseElement
         if element.downcast::<SVGEllipseElement>().is_some() {
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "cx",
                 PropertyId::NonCustom(LonghandId::Cx.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "cy",
                 PropertyId::NonCustom(LonghandId::Cy.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "rx",
                 PropertyId::NonCustom(LonghandId::Rx.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "ry",
                 PropertyId::NonCustom(LonghandId::Ry.into()),
                 push,
@@ -395,37 +395,37 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         // <rect>: https://svgwg.org/svg2-draft/shapes.html#RectElement
         if element.downcast::<SVGRectElement>().is_some() {
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "x",
                 PropertyId::NonCustom(LonghandId::X.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "y",
                 PropertyId::NonCustom(LonghandId::Y.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "width",
                 PropertyId::NonCustom(LonghandId::Width.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "height",
                 PropertyId::NonCustom(LonghandId::Height.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "rx",
                 PropertyId::NonCustom(LonghandId::Rx.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "ry",
                 PropertyId::NonCustom(LonghandId::Ry.into()),
                 push,
@@ -434,25 +434,25 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         // <image>: https://svgwg.org/svg2-draft/embedded.html#ImageElement
         if element.downcast::<SVGImageElement>().is_some() {
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "x",
                 PropertyId::NonCustom(LonghandId::X.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "y",
                 PropertyId::NonCustom(LonghandId::Y.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "width",
                 PropertyId::NonCustom(LonghandId::Width.into()),
                 push,
             );
             self.parse_svg_attribute(
-                &parser_context,
+                &mut parser_context,
                 "height",
                 PropertyId::NonCustom(LonghandId::Height.into()),
                 push,
@@ -466,7 +466,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
             if let Some(value) = element.get_attr_val_for_layout(&ns!(), &local_name!("d")) {
                 if value.eq_ignore_ascii_case("none") {
                     self.parse_svg_attribute(
-                        &parser_context,
+                        &mut parser_context,
                         "d",
                         PropertyId::NonCustom(LonghandId::D.into()),
                         push,
@@ -479,7 +479,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
                     self.parse_svg_value(
                         &wrapped,
                         PropertyId::NonCustom(LonghandId::D.into()),
-                        &parser_context,
+                        &mut parser_context,
                         push,
                     );
                 }
@@ -496,7 +496,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
     /// does not.
     fn parse_svg_attribute(
         self,
-        parser_context: &ParserContext,
+        parser_context: &mut ParserContext,
         attr_name: &str,
         property_id: PropertyId,
         push: &mut impl FnMut(PropertyDeclaration),
@@ -514,7 +514,7 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
         self,
         value: &str,
         property_id: PropertyId,
-        parser_context: &ParserContext,
+        parser_context: &mut ParserContext,
         push: &mut impl FnMut(PropertyDeclaration),
     ) {
         let mut parser = cssparser::Parser::new(value);

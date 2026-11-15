@@ -523,7 +523,6 @@ pub(crate) struct Window {
     /// <https://www.w3.org/TR/requestidlecallback/#window_extensions>
     idle_callbacks: IdleCallbacks,
 
-
     /// <https://html.spec.whatwg.org/multipage/#last-history-action-activation-timestamp>
     #[no_trace]
     last_history_action_activation_timestamp: Cell<UserActivationTimestamp>,
@@ -943,6 +942,7 @@ impl Window {
         if self.is_top_level() && was_loading {
             self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
                 self.webview_id(),
+                self.pipeline_id(),
                 LoadStatus::Stopped,
             ));
         }
@@ -3388,22 +3388,24 @@ impl Window {
     #[expect(unsafe_code)]
     pub(crate) fn caret_movement_query(
         &self,
+        cx: &mut JSContext,
         scope: &Node,
         focus: &Node,
         offset: u32,
         movement: layout_api::CaretMovement,
         preferred_x: Option<Au>,
     ) -> Option<(DomRoot<Node>, u32, Au, bool)> {
-        use crate::dom::characterdata::CharacterData;
-        use crate::dom::html::htmlbrelement::HTMLBRElement;
         use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
         use servo_base::text::{AssumeUnder4GB, Utf16CodeUnits, Utf32CodeUnits};
+
+        use crate::dom::characterdata::CharacterData;
+        use crate::dom::html::htmlbrelement::HTMLBRElement;
 
         let character_offset = focus
             .downcast::<CharacterData>()
             .map(|text| Utf16CodeUnits(offset).to_utf32_code_units_in(&text.data()))
             .unwrap_or(Utf32CodeUnits(offset));
-        self.layout_reflow(QueryMsg::TextIndexQuery);
+        self.layout_reflow(cx, QueryMsg::TextIndexOrSegmentQuery);
         let result = self.layout.borrow().query_caret_movement(
             scope.to_trusted_node_address(),
             focus.to_trusted_node_address(),

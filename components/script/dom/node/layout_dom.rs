@@ -295,14 +295,14 @@ impl<'dom> LayoutDom<'dom, Node> {
         // across selection moves, so existing text runs can update without being reshaped.
         let mut node = Some(*self);
         while let Some(current) = node {
-            if current.is::<crate::dom::html::htmlelement::HTMLElement>()
-                && let Some(value) = current.downcast::<Element>().and_then(|element| {
+            if current.is::<crate::dom::html::htmlelement::HTMLElement>() &&
+                let Some(value) = current.downcast::<Element>().and_then(|element| {
                     element.get_attr_val_for_layout(&ns!(), &local_name!("contenteditable"))
                 })
             {
-                if value.is_empty()
-                    || value.eq_ignore_ascii_case("true")
-                    || value.eq_ignore_ascii_case("plaintext-only")
+                if value.is_empty() ||
+                    value.eq_ignore_ascii_case("true") ||
+                    value.eq_ignore_ascii_case("plaintext-only")
                 {
                     return true;
                 }
@@ -325,19 +325,19 @@ impl<'dom> LayoutDom<'dom, Node> {
     pub(crate) fn element_caret(&self) -> Option<layout_api::ElementCaret> {
         use crate::dom::html::htmlbrelement::HTMLBRElement;
 
-        if !self.is_element_for_layout()
-            || !self
+        if !self.is_element_for_layout() ||
+            !self
                 .unsafe_get()
-                .get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
-            || self.unsafe_get().get_flag(NodeFlags::SELECTION_INHIBITED)
+                .get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) ||
+            self.unsafe_get().get_flag(NodeFlags::SELECTION_INHIBITED)
         {
             return None;
         }
         let selection = self.owner_doc_for_layout().visible_selection_for_layout()?;
-        let range = selection.range_for_layout().as_ref()?;
-        if range.start.offset != range.end.offset
-            || range.start.container != range.end.container
-            || unsafe { range.start.container.to_layout() } != *self
+        let range = selection.range_for_layout()?;
+        if range.start.offset != range.end.offset ||
+            range.start.container != range.end.container ||
+            unsafe { range.start.container.to_layout() } != *self
         {
             return None;
         }
@@ -387,8 +387,8 @@ impl<'dom> LayoutDom<'dom, Node> {
 
     pub(crate) fn replaced_is_selected(&self) -> bool {
         let unsafe_self = self.unsafe_get();
-        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
-            && !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
+        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) &&
+            !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
     }
 
     pub(crate) fn image_url(self) -> Option<ServoUrl> {

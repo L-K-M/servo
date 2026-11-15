@@ -210,13 +210,13 @@ impl HTMLElement {
                 .embedder_controls()
                 .has_input_method(self)
         {
-            self.show_input_method_for_editing_host();
+            self.show_input_method_for_editing_host(cx);
         }
     }
 
     /// Keeps the input method of a focused element in step with whether it is an editing host
     /// when its `contenteditable` attribute changes, which fires no focus or blur event.
-    pub(crate) fn editing_host_state_changed(&self) {
+    pub(crate) fn editing_host_state_changed(&self, cx: &mut JSContext) {
         if self.is_text_control() {
             return;
         }
@@ -229,7 +229,7 @@ impl HTMLElement {
             return;
         }
         if self.is_focused() && !document.embedder_controls().has_input_method(self) {
-            self.show_input_method_for_editing_host();
+            self.show_input_method_for_editing_host(cx);
         }
     }
 
@@ -246,10 +246,11 @@ impl HTMLElement {
         self.is::<HTMLInputElement>() || self.is::<HTMLTextAreaElement>()
     }
 
-    fn show_input_method_for_editing_host(&self) {
+    fn show_input_method_for_editing_host(&self, cx: &mut JSContext) {
         self.owner_document()
             .embedder_controls()
             .show_embedder_control(
+                cx,
                 ControlElement::Ime(Dom::from_ref(self)),
                 EmbedderControlRequest::InputMethod(InputMethodRequest {
                     input_method_type: InputMethodType::Text,

@@ -110,7 +110,6 @@ use style::computed_values::white_space_collapse::T as WhiteSpaceCollapse;
 use style::computed_values::word_break::T as WordBreak;
 use style::context::{QuirksMode, SharedStyleContext};
 use style::properties::ComputedValues;
-use style::properties::style_structs::InheritedText;
 use style::values::computed::{BaselineShift, OverflowWrap};
 use style::values::generics::box_::BaselineShiftKeyword;
 use style::values::generics::font::LineHeight;

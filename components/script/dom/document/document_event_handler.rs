@@ -22,7 +22,7 @@ use embedder_traits::{
 use euclid::{Point2D, Vector2D};
 use js::context::{JSContext, NoGC};
 use keyboard_types::{
-    Code, CompositionState, Key, KeyState, KeyboardEvent as KeyboardTypesEvent, Modifiers, NamedKey,
+    Code, Key, KeyState, KeyboardEvent as KeyboardTypesEvent, Modifiers, NamedKey,
 };
 use layout_api::{HitTestFlags, ScrollContainerQueryFlags, node_id_from_scroll_id};
 use rustc_hash::FxHashMap;
@@ -58,9 +58,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::bindings::trace::NoTrace;
 use crate::dom::document::FireMouseEventType;
-use crate::dom::document::editing::{
-    editing_action_from_keyboard_event,
-};
+use crate::dom::document::editing::editing_action_from_keyboard_event;
 use crate::dom::document::focus::FocusableArea;
 use crate::dom::document::interactive_element_command::InteractiveElementCommand;
 use crate::dom::event::{EventBubbles, EventCancelable, EventComposed, EventFlags};
@@ -1834,10 +1832,11 @@ impl DocumentEventHandler {
     fn handle_ime_event(&self, cx: &mut JSContext, event: ImeEvent) -> InputEventResult {
         match event {
             ImeEvent::Dismissed => {
-                self.window
-                    .Document()
-                    .focus_handler()
-                    .focus(cx, &FocusableArea::Viewport, FocusTrigger::Script);
+                self.window.Document().focus_handler().focus(
+                    cx,
+                    &FocusableArea::Viewport,
+                    FocusTrigger::Script,
+                );
                 Default::default()
             },
             ImeEvent::Commit(text) => self.handle_ime_commit(cx, text),
