@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>IntersectionObserver after the frame of an observed target stops being rendered</title>
+<link rel="help" href="https://w3c.github.io/IntersectionObserver/#compute-the-intersection">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<iframe id="frame"></iframe>
+<script>
+promise_test(async t => {
+  const frame = document.getElementById("frame");
+  const target = frame.contentDocument.createElement("div");
+  target.style.height = "50px";
+  frame.contentDocument.body.append(target);
+
+  let entries = [];
+  let notify = () => {};
+  const observer = new frame.contentWindow.IntersectionObserver(newEntries => {
+    entries.push(...newEntries);
+    notify();
+  });
+  t.add_cleanup(() => observer.disconnect());
+  const nextEntry = () => new Promise(resolve => {
+    notify = resolve;
+  });
+
+  observer.observe(target);
+  await nextEntry();
+  assert_true(entries.at(-1).isIntersecting, "the target intersects while its frame is shown");
+
+  // The frame's document keeps its layout, but the frame itself no longer has a box.
+  frame.style.display = "none";
+  await nextEntry();
+  assert_false(entries.at(-1).isIntersecting, "the target no longer intersects once its frame is hidden");
+});
+</script>
