@@ -1,7 +1,7 @@
 # Servo for Combray
 
 Independent downstream source for [Combray](https://github.com/L-K-M/Combray),
-based on Servo v0.7.0 (`aac43a3f31a259f04a574f5ec4e959c943ad7cc7`).
+based on Servo v0.8.0 (`4e136d8ef31b7c4748fbfac606ca463f3efd7537`).
 The app pins a tested commit from the newest `combray/0.N` branch, which
 follows upstream releases. Its build instructions, native bridge and
 validation evidence live in the Combray repository.
