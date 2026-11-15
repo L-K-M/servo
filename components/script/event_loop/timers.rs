@@ -434,6 +434,12 @@ impl OneshotTimers {
         }
     }
 
+    /// The time until the earliest scheduled timer is due, if there is one.
+    pub(crate) fn time_until_next_timer(&self) -> Option<Duration> {
+        let next_timer = self.timers.borrow().back()?.data.scheduled_for;
+        Some(next_timer.saturating_duration_since(self.base_time()))
+    }
+
     fn is_next_timer(&self, handle: OneshotTimerHandle) -> bool {
         match self.timers.borrow().back() {
             None => false,
