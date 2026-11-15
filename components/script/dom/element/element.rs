@@ -128,6 +128,7 @@ use crate::dom::element::attributes::storage::{
 use crate::dom::element::create::create_element;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::html::embedded_content::htmlmediaelement::HTMLMediaElement;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlareaelement::HTMLAreaElement;
@@ -2445,16 +2446,30 @@ impl Element {
                         // Content Security Policy? algorithm returns "Blocked" when executed
                         // upon the attribute's element, "style attribute", and the attribute's value,
                         // then the style rules defined in the attribute's value must not be applied to the element. [CSP]
-                        if global
-                            .get_csp_list()
-                            .should_elements_inline_type_behavior_be_blocked(
-                                cx,
-                                global,
-                                self,
-                                InlineCheckType::StyleAttribute,
-                                source,
-                                doc.get_current_parser_line(),
-                            )
+                        //
+                        // Style attributes inside a user agent widget's shadow tree are set by the
+                        // user agent, not by the page, so the page's policy does not cover them.
+                        // Media controls are the exception: their script runs in the page's realm
+                        // and obtains their shadow root from a document method the page can wrap,
+                        // so page script can put content there, which keeps the page's policy.
+                        let is_in_user_agent_widget = self
+                            .upcast::<Node>()
+                            .containing_shadow_root()
+                            .is_some_and(|shadow_root| {
+                                shadow_root.is_user_agent_widget() &&
+                                    !shadow_root.Host().is::<HTMLMediaElement>()
+                            });
+                        if !is_in_user_agent_widget &&
+                            global
+                                .get_csp_list()
+                                .should_elements_inline_type_behavior_be_blocked(
+                                    cx,
+                                    global,
+                                    self,
+                                    InlineCheckType::StyleAttribute,
+                                    source,
+                                    doc.get_current_parser_line(),
+                                )
                         {
                             return;
                         }
