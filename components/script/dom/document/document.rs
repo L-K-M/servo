@@ -43,6 +43,7 @@ use layout_api::{
 };
 use malloc_size_of::MallocSizeOfOps;
 use metrics::{InteractiveFlag, InteractiveWindow, ProgressiveWebMetrics};
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::CookieSource::NonHTTP;
 use net_traits::CoreResourceMsg::{GetCookieStringForUrl, SetCookiesForUrl};
 use net_traits::image_cache::ImageCache;
@@ -598,6 +599,10 @@ pub(crate) struct Document {
     interactive_time: DomRefCell<ProgressiveWebMetrics>,
     #[no_trace]
     tti_window: DomRefCell<InteractiveWindow>,
+    /// Combray: the controller of the navigation fetch that delivers this document's body,
+    /// which `WebView::stop_loading` aborts.
+    #[no_trace]
+    navigation_fetch_controller: DomRefCell<FetchController>,
     /// Combray: the body that this PDF viewer document receives, kept out of the parser
     /// until it is complete and moves to the blob URL store. `None` once the load ended.
     pdf_viewer_body: DomRefCell<Option<Vec<u8>>>,
@@ -1288,7 +1293,12 @@ impl Document {
 
     /// Combray: stop the navigation fetch that is still delivering this document's body.
     pub(crate) fn cancel_navigation_fetch(&self) {
-        self.canceller.borrow_mut().abort();
+        self.navigation_fetch_controller.borrow_mut().abort();
+    }
+
+    /// Combray: keep the controller of the navigation fetch that delivers this document's body.
+    pub(crate) fn set_navigation_fetch_controller(&self, controller: FetchController) {
+        *self.navigation_fetch_controller.borrow_mut() = controller;
     }
 
     /// Combray: the body that this PDF viewer document still receives, if any.
@@ -4401,6 +4411,7 @@ impl Document {
             form_id_listener_map: Default::default(),
             interactive_time: DomRefCell::new(interactive_time),
             tti_window: DomRefCell::new(InteractiveWindow::default()),
+            navigation_fetch_controller: Default::default(),
             pdf_viewer_body: Default::default(),
             pdf_viewer_blob: Cell::new(None),
             throw_on_dynamic_markup_insertion_counter: Cell::new(0),

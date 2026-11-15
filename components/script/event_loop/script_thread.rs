@@ -3812,6 +3812,8 @@ impl ScriptThread {
         //   navigation start time set to navigationParams's response's timing
         //   info's start time.
         document.set_navigation_start(incomplete.navigation_start);
+        // Combray: `WebView::stop_loading` aborts the fetch that still delivers the body.
+        document.set_navigation_fetch_controller(incomplete.controller);
 
         let referrer_policy = metadata
             .headers
