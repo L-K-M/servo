@@ -10,19 +10,13 @@ async_test(t => {
   const frame = document.createElement("iframe");
   let readBeforeLoad = false;
 
+  // Reads the frame's current document: first its initial about:blank document, then
+  // the navigated one, which exists from its headers on while its body is delayed.
   const read = () => {
     const location = frame.contentWindow.location;
-    if (!location.pathname.endsWith("/resources/slow-body.py")) {
-      return false;
-    }
     assert_array_equals(Array.from(location.ancestorOrigins), [self.origin]);
-    return true;
+    return location.pathname.endsWith("/resources/slow-body.py");
   };
-
-  const timer = setInterval(t.step_func(() => {
-    readBeforeLoad = read() || readBeforeLoad;
-  }), 5);
-  t.add_cleanup(() => clearInterval(timer));
 
   frame.onload = t.step_func_done(() => {
     assert_true(readBeforeLoad, "the frame's new document was read before it loaded");
@@ -30,5 +24,11 @@ async_test(t => {
   });
   frame.src = "resources/slow-body.py";
   document.body.append(frame);
+
+  read();
+  const timer = setInterval(t.step_func(() => {
+    readBeforeLoad = read() || readBeforeLoad;
+  }), 5);
+  t.add_cleanup(() => clearInterval(timer));
 });
 </script>
