@@ -11,13 +11,15 @@ use style::values::computed::TextDecorationLine;
 
 use crate::display_list::adaptive_dark::Backdrop;
 use crate::display_list::{
-    ClipId, FragmentTextDecoration, StackingContext, StackingContextFragments,
+    ClipId, ContainerTimingRootChain, ContainerTimingRoots, FragmentTextDecoration,
+    StackingContext, StackingContextFragments,
 };
 use crate::fragment_tree::{
     BoxFragment, BoxFragmentWithStyle, Fragment, FragmentFlags, IFrameFragment, ImageFragment,
     PositioningFragment, Tag, TextFragment,
 };
 use crate::geom::{PhysicalPoint, PhysicalRect};
+use crate::style_ext::ComputedValuesExt;
 
 pub(crate) struct PaintTraversal<'a, Handler: PaintTraversalHandler> {
     handler: &'a mut Handler,
@@ -238,6 +240,17 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
             },
             Fragment::Box(box_fragment) => {
                 let box_fragment = &box_fragment.with_style();
+
+                // The stacking context tree traversal doesn't descend into collapsed block-level
+                // fragments, so it is important not to do this here either.
+                if box_fragment
+                    .base
+                    .flags
+                    .contains(FragmentFlags::IS_COLLAPSED)
+                {
+                    return false;
+                }
+
                 // If this box establishes a stacking context or stacking container, do not paint
                 // it during this phase. Instead it is painted when the stacking context or container
                 // is processed.
@@ -349,6 +362,16 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
                 at_root_of_stacking_context,
             ),
             Fragment::Box(box_fragment) => {
+                // The stacking context tree traversal doesn't descend into collapsed block-level
+                // fragments, so it is important not to do this here either.
+                if box_fragment
+                    .base
+                    .flags
+                    .contains(FragmentFlags::IS_COLLAPSED)
+                {
+                    return;
+                }
+
                 // If this box establishes a stacking context or stacking container, do not paint
                 // it during this phase. Instead it is painted when the stacking context or container
                 // is processed.
@@ -567,18 +590,40 @@ pub(crate) trait PaintTraversalHandler {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct TraversalState {
     pub spatial_id: ScrollTreeNodeId,
     pub clip_id: ClipId,
     pub origin: PhysicalPoint<Au>,
     pub text_decorations: Rc<Vec<FragmentTextDecoration>>,
-    /// The tag of the nearest ancestor box fragment that has a tag.
-    /// Used for text LCP candidate grouping — all text fragments within
-    /// a single element are unioned before computing effective visual size.
+    /// The product of the used opacity of the fragments visited.
+    pub accumulated_opacity: f32,
+    /// <https://www.w3.org/TR/paint-timing/#sec-modifications-dom>:
+    ///
+    /// The tag of the nearest ancestor box that determines the containing block of
+    /// text, used to group text fragments for LCP.
     pub containing_element_tag: Option<Tag>,
     /// What is painted behind content here, when adaptive dark mode paints the document.
     pub backdrop: Option<Backdrop>,
+    /// The Container Timing roots enclosing this point in the traversal, nearest first.
+    /// Note that this does not include the box currently being visited, see
+    /// [`Self::container_timing_roots_including`].
+    pub container_timing_roots: ContainerTimingRoots,
+}
+
+impl Default for TraversalState {
+    fn default() -> Self {
+        Self {
+            spatial_id: Default::default(),
+            clip_id: Default::default(),
+            origin: Default::default(),
+            text_decorations: Default::default(),
+            accumulated_opacity: 1.0,
+            containing_element_tag: Default::default(),
+            container_timing_roots: Default::default(),
+            backdrop: Default::default(),
+        }
+    }
 }
 
 impl TraversalState {
@@ -603,18 +648,16 @@ impl TraversalState {
             propagated_text_decorations = Default::default();
         }
 
-        let text_decorations = match &style.get_text().text_decoration_line {
+        let text_decorations = match style.get_text_decoration_line() {
             &TextDecorationLine::NONE => propagated_text_decorations,
             line => {
                 let mut new_vector = (*propagated_text_decorations).clone();
                 let color = &style.get_inherited_text().color;
                 new_vector.push(FragmentTextDecoration {
                     line: *line,
-                    color: style
-                        .clone_text_decoration_color()
-                        .resolve_to_absolute(color),
-                    style: style.clone_text_decoration_style(),
-                    thickness: style.clone_text_decoration_thickness(),
+                    color: style.get_text_decoration_color().resolve_to_absolute(color),
+                    style: style.slow_clone_text_decoration_style(),
+                    thickness: style.slow_clone_text_decoration_thickness(),
                 });
                 Rc::new(new_vector)
             },
@@ -627,14 +670,41 @@ impl TraversalState {
                 .unwrap_or(self.spatial_id),
             clip_id: box_fragment.generated_clip_id().unwrap_or(self.clip_id),
             text_decorations,
-            containing_element_tag: box_fragment.base.tag.or(self.containing_element_tag),
+            accumulated_opacity: self.accumulated_opacity * style.slow_clone_opacity(),
+            container_timing_roots: self.container_timing_roots_including(box_fragment),
+            // From <https://www.w3.org/TR/paint-timing/#sec-modifications-dom>:
+            // > Let element be the Element which determines the containing block of text.
+            // > Append text to element’s set of owned text nodes.
+            //
+            // In the following cases this box establishes its own containing block,
+            // so use its tag:
+            // - Non-inline box
+            // - Style establishes a containing block
+            containing_element_tag: if !box_fragment.is_inline_box() ||
+                style.establishes_containing_block_for_absolute_descendants(
+                    box_fragment.base.flags,
+                ) {
+                box_fragment.base.tag.or(self.containing_element_tag)
+            } else {
+                self.containing_element_tag
+            },
             backdrop: self.backdrop.map(|backdrop| backdrop.behind(style)),
         }
+    }
+
+    /// The Container Timing roots that apply to the given box fragment, which is visited
+    /// with this state, including the fragment itself if it is a root.
+    pub(crate) fn container_timing_roots_including(
+        &self,
+        box_fragment: &BoxFragment,
+    ) -> ContainerTimingRoots {
+        ContainerTimingRootChain::for_contents_of(&self.container_timing_roots, &box_fragment.base)
     }
 
     pub(crate) fn without_text_decorations(&self) -> Self {
         Self {
             text_decorations: Default::default(),
+            container_timing_roots: self.container_timing_roots.clone(),
             ..*self
         }
     }
@@ -648,8 +718,11 @@ impl TraversalState {
             spatial_id: self.spatial_id,
             clip_id: self.clip_id,
             text_decorations: self.text_decorations.clone(),
+            accumulated_opacity: self.accumulated_opacity *
+                positioning_fragment.style.borrow().slow_clone_opacity(),
             containing_element_tag: self.containing_element_tag,
             backdrop: self.backdrop,
+            container_timing_roots: self.container_timing_roots.clone(),
         }
     }
 
@@ -659,9 +732,14 @@ impl TraversalState {
             spatial_id: stacking_context.scroll_tree_node_id,
             clip_id: stacking_context.clip_id,
             text_decorations: stacking_context.text_decorations.clone(),
+            accumulated_opacity: self.accumulated_opacity *
+                stacking_context
+                    .fragment()
+                    .map_or(1.0, |fragment| fragment.style().slow_clone_opacity()),
             containing_element_tag: self.containing_element_tag,
             // Approximate: a positioned box paints over its stacking context's backdrop.
             backdrop: self.backdrop,
+            container_timing_roots: stacking_context.container_timing_roots.clone(),
         }
     }
 }

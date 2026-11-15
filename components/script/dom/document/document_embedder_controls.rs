@@ -12,7 +12,7 @@ use embedder_traits::{
     EmbedderControlRequest, EmbedderControlResponse, EmbedderMsg,
 };
 use euclid::{Point2D, Rect, Size2D};
-use js::context::{JSContext, NoGC};
+use js::context::JSContext;
 use net_traits::CoreResourceMsg;
 use net_traits::filemanager_thread::FileManagerThreadMsg;
 use rustc_hash::FxHashMap;
@@ -25,25 +25,22 @@ use script_bindings::codegen::GenericBindings::HistoryBinding::HistoryMethods;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::{Dom, DomRoot};
-use script_bindings::str::DOMString;
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSend;
-use servo_constellation_traits::{LoadData, NavigationHistoryBehavior};
 use servo_url::ServoUrl;
 use webrender_api::units::{DeviceIntRect, DevicePoint};
 
 use crate::dom::activation::Activatable;
-use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::trace::NoTrace;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::iterators::ShadowIncluding;
+use crate::dom::links::htmlhyperlinkelementutils::HyperlinkElementTraits;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::types::{
     Element, HTMLAnchorElement, HTMLElement, HTMLImageElement, HTMLInputElement, HTMLSelectElement,
     HTMLTextAreaElement, Window,
 };
 use crate::messaging::MainThreadScriptMsg;
-use crate::navigation::navigate;
 
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -108,6 +105,7 @@ impl DocumentEmbedderControls {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn show_embedder_control(
         &self,
+        cx: &mut JSContext,
         element: ControlElement,
         request: EmbedderControlRequest,
         point: Option<DevicePoint>,
@@ -119,7 +117,7 @@ impl DocumentEmbedderControls {
                 let rect = element
                     .node()
                     .upcast::<Node>()
-                    .border_box()
+                    .border_box(cx)
                     .unwrap_or_default();
 
                 let rect = Rect::new(
@@ -349,7 +347,7 @@ impl DocumentEmbedderControls {
         }
     }
 
-    pub(crate) fn show_context_menu(&self, no_gc: &NoGC, hit_test_result: &HitTestResult) {
+    pub(crate) fn show_context_menu(&self, cx: &mut JSContext, hit_test_result: &HitTestResult) {
         {
             let mut visible_elements = self.visible_elements.borrow_mut();
             visible_elements.retain(|index, control_element| {
@@ -393,7 +391,7 @@ impl DocumentEmbedderControls {
         if let Some(anchor_element) = anchor_element.as_ref() {
             info.flags.insert(ContextMenuElementInformationFlags::Link);
             info.link_url = anchor_element
-                .full_href_url_for_user_interface(no_gc)
+                .full_href_url_for_user_interface()
                 .map(ServoUrl::into_url);
 
             items.extend(vec![
@@ -433,7 +431,7 @@ impl DocumentEmbedderControls {
         }
 
         let document = self.window.Document();
-        let editing_context = document.editing_context(no_gc, &hit_test_result.node);
+        let editing_context = document.editing_context(cx.no_gc(), &hit_test_result.node);
 
         let has_selection = editing_context.has_uncollapsed_selection();
         if has_selection {
@@ -491,6 +489,7 @@ impl DocumentEmbedderControls {
         ]);
 
         self.show_embedder_control(
+            cx,
             ControlElement::ContextMenu(ContextMenuNodes {
                 node: hit_test_result.node.as_traced(),
                 anchor_element: anchor_element.map(|element| element.as_traced()),
@@ -531,36 +530,6 @@ impl ContextMenuNodes {
             window.send_to_embedder(EmbedderMsg::SetClipboardText(window.webview_id(), string));
         };
 
-        let open_url_in_new_webview = |cx: &mut JSContext, url: ServoUrl| {
-            let Some(browsing_context) = document.browsing_context() else {
-                return;
-            };
-            let (browsing_context, new) = browsing_context.choose_a_navigable(
-                cx,
-                DOMString::from_static("_blank"),
-                true, /* noopener */
-            );
-            let Some(browsing_context) = browsing_context else {
-                return;
-            };
-            assert!(new);
-            let Some(target_document) = browsing_context.document() else {
-                return;
-            };
-
-            let target_window = target_document.window();
-            let target = Trusted::new(target_window);
-            let load_data = LoadData::new_for_new_unrelated_webview(url);
-            let task = task!(open_link_in_new_webview: move |cx| {
-                navigate(cx, &target.root(), NavigationHistoryBehavior::Replace, false, load_data);
-            });
-            target_document
-                .owner_global()
-                .task_manager()
-                .dom_manipulation_task_source()
-                .queue(task);
-        };
-
         match action {
             ContextMenuAction::GoBack => {
                 let _ = window.History(cx).Back();
@@ -577,7 +546,7 @@ impl ContextMenuNodes {
                 };
 
                 let url_string = anchor_element
-                    .full_href_url_for_user_interface(cx.no_gc())
+                    .full_href_url_for_user_interface()
                     .as_ref()
                     .map(ServoUrl::to_string)
                     .unwrap_or_else(|| String::from(anchor_element.Href(cx.no_gc())));
@@ -587,8 +556,8 @@ impl ContextMenuNodes {
                 let Some(anchor_element) = &self.anchor_element else {
                     return;
                 };
-                if let Some(url) = anchor_element.full_href_url_for_user_interface(cx.no_gc()) {
-                    open_url_in_new_webview(cx, url);
+                if let Some(url) = anchor_element.full_href_url_for_user_interface() {
+                    document.event_handler().open_url_in_new_webview(cx, url);
                 };
             },
             ContextMenuAction::CopyImageLink => {
@@ -607,7 +576,7 @@ impl ContextMenuNodes {
                     return;
                 };
                 if let Some(url) = image_element.full_image_url_for_user_interface() {
-                    open_url_in_new_webview(cx, url);
+                    document.event_handler().open_url_in_new_webview(cx, url);
                 }
             },
             ContextMenuAction::Cut => {

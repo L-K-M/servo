@@ -11,26 +11,27 @@ use style::values::generics::grid::{TrackListValue, TrackRepeat, TrackSize};
 use style::values::specified::BorderStyle;
 use style::values::specified::position::NamedArea;
 use style::{Atom, OwnedSlice};
-use taffy::prelude::TaffyAuto;
 
 use super::{as_clamped_i16, convert, stylo};
 use crate::taffy::subgrid::{SubgridAxisTemplate, SubgridTemplates};
+use crate::fragment_tree::FragmentFlags;
+use crate::style_ext::ComputedValuesExt;
 
 /// A wrapper struct for anything that Deref's to a [`ComputedValues`], which
 /// implements Taffy's layout traits and can used with Taffy's layout algorithms.
 pub struct TaffyStyloStyle<'s, T: Deref<Target = ComputedValues>> {
     pub style: T,
-    pub is_compressible_replaced: bool,
+    pub fragment_flags: FragmentFlags,
     /// Resolved fallback template for a `subgrid` axis; Taffy has no subgrid
     /// support. See [`crate::taffy::subgrid`].
     pub subgrid: Option<&'s SubgridTemplates>,
 }
 
 impl<'s, T: Deref<Target = ComputedValues>> TaffyStyloStyle<'s, T> {
-    pub fn new(style: T, is_compressible_replaced: bool) -> Self {
+    pub fn new(style: T, fragment_flags: FragmentFlags) -> Self {
         Self {
             style,
-            is_compressible_replaced,
+            fragment_flags,
             subgrid: None,
         }
     }
@@ -51,7 +52,7 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle
 
     #[inline]
     fn direction(&self) -> taffy::Direction {
-        convert::direction(self.style.clone_direction())
+        convert::direction(self.style.slow_clone_direction())
     }
 
     #[inline]
@@ -61,7 +62,12 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle
 
     #[inline]
     fn is_compressible_replaced(&self) -> bool {
-        self.is_compressible_replaced
+        self.fragment_flags.is_compressible_replaced()
+    }
+
+    #[inline]
+    fn is_replaced(&self) -> bool {
+        self.fragment_flags.contains(FragmentFlags::IS_REPLACED)
     }
 
     #[inline]
@@ -89,20 +95,18 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::CoreStyle for TaffyStyloStyle
     }
 
     #[inline]
+    fn is_containing_block(&self) -> taffy::ContainingBlockClaims {
+        let fixed = self
+            .style
+            .establishes_containing_block_for_all_descendants(self.fragment_flags);
+        let absolute = fixed ||
+            self.style
+                .establishes_containing_block_for_absolute_descendants(self.fragment_flags);
+        taffy::ContainingBlockClaims { absolute, fixed }
+    }
+
+    #[inline]
     fn inset(&self) -> taffy::Rect<taffy::LengthPercentageAuto> {
-        // Taffy doesn't support static nor sticky positionings, they are treated
-        // as relative. As a workaround, ignore the insets.
-        if matches!(
-            self.style.get_box().position,
-            stylo::Position::Static | stylo::Position::Sticky
-        ) {
-            return taffy::Rect {
-                left: taffy::LengthPercentageAuto::AUTO,
-                right: taffy::LengthPercentageAuto::AUTO,
-                top: taffy::LengthPercentageAuto::AUTO,
-                bottom: taffy::LengthPercentageAuto::AUTO,
-            };
-        }
         let position_styles = self.style.get_position();
         taffy::Rect {
             left: convert::inset(&position_styles.left),
@@ -292,7 +296,6 @@ fn axis_template_tracks<'a>(
                 .iter()
                 .map(track_value_to_taffy as AxisTemplateTrackFn<'a>)
         }),
-        stylo::GenericGridTemplateComponent::Masonry => None,
     }
 }
 
@@ -310,7 +313,6 @@ fn axis_template_names<'a>(
         stylo::GenericGridTemplateComponent::Subgrid(_) => {
             subgrid_axis.map(|axis| StyloLineNameIter::new(axis.line_names()))
         },
-        stylo::GenericGridTemplateComponent::Masonry => None,
     }
 }
 
@@ -440,23 +442,23 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::GridContainerStyle for TaffyS
     }
 
     #[inline]
-    fn align_content(&self) -> Option<taffy::AlignContent> {
+    fn align_content(&self) -> taffy::AlignContent {
         convert::content_alignment(self.style.get_position().align_content)
     }
 
     #[inline]
-    fn justify_content(&self) -> Option<taffy::JustifyContent> {
+    fn justify_content(&self) -> taffy::JustifyContent {
         convert::content_alignment(self.style.get_position().justify_content)
     }
 
     #[inline]
-    fn align_items(&self) -> Option<taffy::AlignItems> {
-        convert::item_alignment(self.style.get_position().align_items.0)
+    fn align_items(&self) -> taffy::AlignItems {
+        convert::items_alignment(self.style.get_position().align_items.0)
     }
 
     #[inline]
-    fn justify_items(&self) -> Option<taffy::AlignItems> {
-        convert::item_alignment(self.style.get_position().justify_items.computed.0.0)
+    fn justify_items(&self) -> taffy::AlignItems {
+        convert::items_alignment(self.style.get_position().justify_items.computed.0.0)
     }
 }
 
@@ -481,11 +483,11 @@ impl<'s, T: Deref<Target = ComputedValues>> taffy::GridItemStyle for TaffyStyloS
 
     #[inline]
     fn align_self(&self) -> Option<taffy::AlignSelf> {
-        convert::item_alignment(self.style.get_position().align_self.0)
+        convert::self_alignment(self.style.get_position().align_self.0)
     }
 
     #[inline]
     fn justify_self(&self) -> Option<taffy::AlignSelf> {
-        convert::item_alignment(self.style.get_position().justify_self.0)
+        convert::self_alignment(self.style.get_position().justify_self.0)
     }
 }

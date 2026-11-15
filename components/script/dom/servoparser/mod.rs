@@ -8,12 +8,14 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::mem;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use content_security_policy::{CspList, PolicyDisposition, PolicySource};
+#[cfg(feature = "devtools")]
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
 use embedder_traits::resources::{self, Resource};
@@ -30,6 +32,7 @@ use markup5ever::TokenizerResult;
 use mime::{self, Mime};
 use net_traits::mime_classifier::{ApacheBugFlag, MediaType, MimeClassifier, NoSniffFlag};
 use net_traits::policy_container::{EmbedderPolicy, PolicyContainer};
+use net_traits::response::RedirectTaint;
 use net_traits::{
     FetchMetadata, LoadContext, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming,
 };
@@ -70,7 +73,9 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::csp::parse_csp_list_from_metadata;
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
-use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument};
+use crate::dom::document::{
+    AbortReason, Document, HasBrowsingContext, IsHTMLDocument, SetParserReason,
+};
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::documenttype::DocumentType;
 use crate::dom::domstringlist::DOMStringList;
@@ -172,6 +177,7 @@ pub(crate) struct ServoParser {
     prefetch_input: BufferQueue,
     // The whole input as a string, if needed for the devtools Sources panel.
     // TODO: use a faster type for concatenating strings?
+    #[cfg(feature = "devtools")]
     content_for_devtools: Option<DomRefCell<String>>,
 }
 
@@ -232,9 +238,15 @@ impl ServoParser {
         //
         // Set as the document's current parser and initialize with `input`, if given.
         if let Some(input) = input {
-            parser.parse_complete_string_chunk(cx, String::from(input));
+            parser.parse_complete_string_chunk(
+                cx,
+                String::from(input),
+                SetParserReason::ParsingHtmlDocument,
+            );
         } else {
-            parser.document.set_current_parser(Some(&parser));
+            parser
+                .document
+                .set_current_parser(Some(&parser), SetParserReason::ParsingHtmlDocument);
         }
     }
 
@@ -269,7 +281,6 @@ impl ServoParser {
             loader,
             None,
             None,
-            Default::default(),
             false,
             allow_declarative_shadow_roots,
             Some(context_document.insecure_requests_policy()),
@@ -314,7 +325,11 @@ impl ServoParser {
             None,
             None,
         );
-        parser.parse_complete_string_chunk(cx, String::from(input));
+        parser.parse_complete_string_chunk(
+            cx,
+            String::from(input),
+            SetParserReason::ParsingHtmlFragment,
+        );
 
         // Step 14.
         let root_element = document.GetDocumentElement().expect("no document element");
@@ -341,7 +356,7 @@ impl ServoParser {
             None,
             None,
         );
-        document.set_current_parser(Some(&parser));
+        document.set_current_parser(Some(&parser), SetParserReason::ParsingHtmlScriptInput);
     }
 
     pub(crate) fn parse_xml_document(
@@ -362,9 +377,15 @@ impl ServoParser {
 
         // Set as the document's current parser and initialize with `input`, if given.
         if let Some(input) = input {
-            parser.parse_complete_string_chunk(cx, String::from(input));
+            parser.parse_complete_string_chunk(
+                cx,
+                String::from(input),
+                SetParserReason::ParsingXmlDocument,
+            );
         } else {
-            parser.document.set_current_parser(Some(&parser));
+            parser
+                .document
+                .set_current_parser(Some(&parser), SetParserReason::ParsingXmlDocument);
         }
     }
 
@@ -519,25 +540,35 @@ impl ServoParser {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#abort-a-parser>
-    pub(crate) fn abort(&self, cx: &mut JSContext) {
-        assert!(!self.aborted.get());
+    pub(crate) fn abort(&self, cx: &mut JSContext, reason: AbortReason) {
+        // This can happen if, for example, a `readystatechange` handler that runs during
+        // an abort calls `stop()` another time.
+        if self.aborted.get() {
+            return;
+        }
+
         self.aborted.set(true);
 
-        // Step 1.
+        // Step 1. Throw away any pending content in the input stream, and discard any future
+        // content that would have been added to it.
         self.script_input.replace_with(BufferQueue::default());
         self.network_input.replace_with(BufferQueue::default());
         // Combray: a PDF viewer document's body is input that bypasses the parser.
         abort_pdf_viewer_load(cx, &self.document);
 
-        // Step 2.
+        // Step 2. Stop the speculative HTML parser for this HTML parser.
+        // TODO: Implement this.
+
+        // Step 3. Update the current document readiness to "interactive".
         self.document
             .update_the_current_document_readiness(cx, DocumentReadyState::Interactive);
 
-        // Step 3.
+        // Step 4. Pop all the nodes off the stack of open elements.
         self.tokenizer.end(cx);
-        self.document.set_current_parser(None);
+        self.document
+            .set_current_parser(None, SetParserReason::Abort(reason));
 
-        // Step 4.
+        // Step 5. Update the current document readiness to "complete".
         self.document
             .update_the_current_document_readiness(cx, DocumentReadyState::Complete);
     }
@@ -557,6 +588,7 @@ impl ServoParser {
         // Store the whole input for the devtools Sources panel, if the devtools server is running
         // and we are parsing for a document load (not just things like innerHTML).
         // TODO: check if a devtools client is actually connected and/or wants the sources?
+        #[cfg(feature = "devtools")]
         let content_for_devtools = (document.global().devtools_chan().is_some() &&
             document.has_browsing_context())
         .then_some(DomRefCell::new(String::new()));
@@ -584,6 +616,7 @@ impl ServoParser {
             )),
             prefetch_tokenizer: prefetch::Tokenizer::new(document),
             prefetch_input: BufferQueue::default(),
+            #[cfg(feature = "devtools")]
             content_for_devtools,
         }
     }
@@ -611,6 +644,7 @@ impl ServoParser {
     }
 
     fn push_tendril_input_chunk(&self, chunk: StrTendril) {
+        #[cfg(feature = "devtools")]
         if let Some(mut content_for_devtools) = self
             .content_for_devtools
             .as_ref()
@@ -711,7 +745,8 @@ impl ServoParser {
         });
         self.feed_depth.set(self.feed_depth.get() - 1);
 
-        if self.suspended.get() {
+        // Tokenizing can cause parsing to be suspended or aborted.
+        if self.suspended.get() || self.aborted.get() {
             return;
         }
 
@@ -722,8 +757,13 @@ impl ServoParser {
         }
     }
 
-    fn parse_complete_string_chunk(&self, cx: &mut JSContext, input: String) {
-        self.document.set_current_parser(Some(self));
+    fn parse_complete_string_chunk(
+        &self,
+        cx: &mut JSContext,
+        input: String,
+        reason: SetParserReason,
+    ) {
+        self.document.set_current_parser(Some(self), reason);
         self.push_string_input_chunk(input);
         self.last_chunk_received.set(true);
         if !self.suspended.get() {
@@ -734,7 +774,8 @@ impl ServoParser {
     fn parse_bytes_chunk(&self, cx: &mut JSContext, input: &[u8]) {
         let mut realm = enter_auto_realm(cx, &*self.document);
         let cx = &mut realm.current_realm();
-        self.document.set_current_parser(Some(self));
+        self.document
+            .set_current_parser(Some(self), SetParserReason::ParsingBytesChunk);
         self.push_bytes_input_chunk(input.as_ref());
         if !self.suspended.get() {
             self.parse_sync(cx);
@@ -822,7 +863,8 @@ impl ServoParser {
             .get_current_parser()
             .is_some_and(|parser| std::ptr::eq(&*parser, self))
         {
-            self.document.set_current_parser(None);
+            self.document
+                .set_current_parser(None, SetParserReason::FinishingParser);
         }
         // Step 5. While the list of scripts that will execute when the document has finished parsing is not empty:
         self.document.start_the_end_loading_phase();
@@ -830,6 +872,7 @@ impl ServoParser {
         self.document.finish_load(LoadType::PageSource(url), cx);
 
         // Send the source contents to devtools, if needed.
+        #[cfg(feature = "devtools")]
         if let Some(content_for_devtools) = self
             .content_for_devtools
             .as_ref()
@@ -956,11 +999,13 @@ impl Tokenizer {
 /// of the struct when used in loading document spec algorithms.
 struct NavigationParams {
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-policy-container>
-    policy_container: PolicyContainer,
+    policy_container: Arc<PolicyContainer>,
     /// content-type of this document, if known. Otherwise need to sniff it
     content_type: Option<Mime>,
     /// link headers from the response
     link_headers: Vec<LinkHeader>,
+    /// redirect taint from the response
+    redirect_taint: RedirectTaint,
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-sandboxing>
     final_sandboxing_flag_set: SandboxingFlagSet,
     /// <https://mimesniff.spec.whatwg.org/#resource-header>
@@ -1137,6 +1182,7 @@ impl ParserContext {
                 resource_header: vec![],
                 about_base_url: Default::default(),
                 iframe_element_referrer_policy: Default::default(),
+                redirect_taint: Default::default(),
             },
             target_snapshot_params,
             source_origin,
@@ -1145,11 +1191,11 @@ impl ParserContext {
         }
     }
 
-    pub(crate) fn set_policy_container(&mut self, policy_container: Option<&PolicyContainer>) {
+    pub(crate) fn set_policy_container(&mut self, policy_container: Option<Arc<PolicyContainer>>) {
         let Some(policy_container) = policy_container else {
             return;
         };
-        self.navigation_params.policy_container = policy_container.clone();
+        self.navigation_params.policy_container = policy_container;
     }
 
     pub(crate) fn set_about_base_url(&mut self, about_base_url: Option<ServoUrl>) {
@@ -1600,7 +1646,7 @@ impl ParserContext {
         // `Document::update_the_current_document_readiness`.
         debug_assert_eq!(document.ReadyState(), DocumentReadyState::Complete);
 
-        document.set_current_parser(None);
+        document.set_current_parser(None, SetParserReason::AboutBlankComplete);
         document.finish_load(LoadType::PageSource(self.url.clone()), cx);
 
         document.notify_embedder_of_load_completion();
@@ -1615,13 +1661,7 @@ impl ParserContext {
         meta_result: Result<FetchMetadata, NetworkError>,
     ) {
         let (metadata, mut error) = match meta_result {
-            Ok(meta) => (
-                Some(match meta {
-                    FetchMetadata::Unfiltered(m) => m,
-                    FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-                }),
-                None,
-            ),
+            Ok(meta) => (Some(meta.into()), None),
             Err(error) => (
                 // Check variant without moving
                 match &error {
@@ -1654,25 +1694,27 @@ impl ParserContext {
         // Step 21.9. Set responsePolicyContainer to the result of creating a
         // policy container from a fetch response given response and request's
         // reserved client.
-        let (policy_container, endpoints_list, link_headers, content_language) = metadata
-            .as_ref()
-            .map(|metadata| {
-                (
-                    Self::create_policy_container_from_fetch_response(metadata),
-                    ReportingEndpoint::parse_reporting_endpoints_header(
-                        &self.url.clone(),
-                        &metadata.headers,
-                    ),
-                    extract_links_from_headers(&metadata.headers),
-                    metadata
-                        .headers
-                        .as_ref()
-                        .and_then(|headers| headers.get("Content-Language"))
-                        .and_then(|header| header.to_str().ok())
-                        .map(|string| string.to_owned()),
-                )
-            })
-            .unwrap_or_default();
+        let (policy_container, endpoints_list, link_headers, content_language, redirect_taint) =
+            metadata
+                .as_ref()
+                .map(|metadata| {
+                    (
+                        Self::create_policy_container_from_fetch_response(metadata),
+                        ReportingEndpoint::parse_reporting_endpoints_header(
+                            &self.url,
+                            &metadata.headers,
+                        ),
+                        extract_links_from_headers(&metadata.headers),
+                        metadata
+                            .headers
+                            .as_ref()
+                            .and_then(|headers| headers.get("Content-Language"))
+                            .and_then(|header| header.to_str().ok())
+                            .map(|string| string.to_owned()),
+                        metadata.redirect_taint,
+                    )
+                })
+                .unwrap_or_default();
 
         // Combray: the viewer gets a new policy container, not the PDF response's: the viewer's
         // policy, so a `sandbox` directive in the response cannot stop the viewer module either,
@@ -1728,11 +1770,11 @@ impl ParserContext {
         };
 
         let Some(document) = script_thread.handle_page_headers_available(
+            cx,
             self.webview_id,
             self.pipeline_id,
             metadata.as_ref(),
             origin.clone(),
-            cx,
         ) else {
             return;
         };
@@ -1803,7 +1845,7 @@ impl ParserContext {
             self.parser = Some(Trusted::new(&*parser));
         }
         self.navigation_params = NavigationParams {
-            policy_container,
+            policy_container: Arc::new(policy_container),
             content_type,
             final_sandboxing_flag_set,
             link_headers,
@@ -1812,6 +1854,7 @@ impl ParserContext {
             iframe_element_referrer_policy: self
                 .target_snapshot_params
                 .iframe_element_referrer_policy,
+            redirect_taint,
         };
         self.submit_resource_timing(cx);
 
@@ -1961,7 +2004,31 @@ impl ParserContext {
         let cx = &mut realm;
 
         if status.is_ok() {
-            document.set_resource_fetch_timing(timing);
+            // Step 15 of https://html.spec.whatwg.org/multipage/#initialise-the-document-object
+
+            // Step 15.1. Let fullTimingInfo be the result of extracting the full timing info
+            // from navigationParams's fetch controller.
+            let mut full_timing_info = timing;
+
+            // Step 15.3. If navigationParams's response's redirect taint is "same-origin", or all of the following are true:
+            //   * navigationParams's request's client is null, or navigationParams's request's referrer is not "no-referrer", and
+            //   * navigation TAO check given navigationParams's response and navigationParams's origin returns success,
+            // then set redirectCount to navigationParams's request's redirect count.
+            //
+            // TODO: Implement the two other bullet points
+            let redirect_count =
+                if self.navigation_params.redirect_taint == RedirectTaint::SameOrigin {
+                    full_timing_info.redirect_count
+                } else {
+                    // Step 15.2. Let redirectCount be 0.
+                    0
+                };
+
+            // Step 15.4. Create the navigation timing entry for document, given fullTimingInfo, redirectCount,
+            // navigationTimingType, navigationParams's response's service worker timing info,
+            // and navigationParams's response's body info.
+            full_timing_info.redirect_count = redirect_count;
+            document.set_resource_fetch_timing(full_timing_info);
         }
 
         // Combray: hand the complete PDF body to the viewer module.

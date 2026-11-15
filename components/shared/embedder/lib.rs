@@ -9,6 +9,7 @@
 //! is probably a better fit for the `servo_constellation_traits` crate.
 
 pub mod embedder_controls;
+pub mod geolocation;
 pub mod input_events;
 pub mod resources;
 pub mod user_contents;
@@ -50,6 +51,7 @@ use webrender_api::units::{
 };
 
 pub use crate::embedder_controls::*;
+pub use crate::geolocation::*;
 pub use crate::input_events::*;
 use crate::user_contents::UserContentManagerId;
 pub use crate::webdriver::*;
@@ -452,6 +454,7 @@ pub enum ConsoleLogLevel {
     Error,
     Trace,
     Dir,
+    Table,
 }
 
 impl From<ConsoleLogLevel> for log::Level {
@@ -464,6 +467,7 @@ impl From<ConsoleLogLevel> for log::Level {
             ConsoleLogLevel::Error => log::Level::Error,
             ConsoleLogLevel::Trace => log::Level::Trace,
             ConsoleLogLevel::Dir => log::Level::Info,
+            ConsoleLogLevel::Table => log::Level::Info,
         }
     }
 }
@@ -526,10 +530,23 @@ pub enum EmbedderMsg {
     ),
     /// Open interface to request permission specified by prompt.
     PromptPermission(WebViewId, PermissionFeature, GenericSender<AllowOrDeny>),
-    /// Async permission request for screen wake lock. The callback is invoked
-    /// with the user's decision, which resolves or rejects the pending promise
-    /// without blocking the script thread.
-    RequestWakeLockPermission(WebViewId, GenericCallback<AllowOrDeny>, WakeLockType),
+    /// Request permission without blocking the script thread. The callback is invoked with the user's
+    /// decision once it is known.
+    RequestPermission(WebViewId, PermissionFeature, GenericCallback<AllowOrDeny>),
+    /// Request a single geographic position fix. The callback is invoked exactly once.
+    RequestGeolocationPosition(
+        WebViewId,
+        GeolocationRequestOptions,
+        GenericCallback<GeolocationResult>,
+    ),
+    /// Begin delivering continuous position updates for the given watch.
+    StartGeolocationWatch(
+        GeolocationWatchId,
+        GeolocationRequestOptions,
+        GenericCallback<GeolocationResult>,
+    ),
+    /// Stop delivering updates for a watch started by [`EmbedderMsg::StartGeolocationWatch`].
+    StopGeolocationWatch(GeolocationWatchId),
     /// Report the status of Devtools Server with a token that can be used to bypass the permission prompt.
     OnDevtoolsStarted(Result<u16, ()>, String),
     /// Ask the user to allow a devtools client to connect.
@@ -699,9 +716,9 @@ pub struct WebResourceRequest {
         serialize_with = "::hyper_serde::serialize"
     )]
     pub headers: HeaderMap,
-    pub url: Url,
+    pub url: ServoUrl,
     pub destination: Destination,
-    pub referrer_url: Option<Url>,
+    pub referrer_url: Option<ServoUrl>,
     pub is_for_main_frame: bool,
     pub is_redirect: bool,
 }
@@ -729,13 +746,11 @@ pub struct WebResourceResponse {
         deserialize_with = "::hyper_serde::deserialize",
         serialize_with = "::hyper_serde::serialize"
     )]
-    #[ignore_malloc_size_of = "Defined in hyper"]
     pub headers: HeaderMap,
     #[serde(
         deserialize_with = "::hyper_serde::deserialize",
         serialize_with = "::hyper_serde::serialize"
     )]
-    #[ignore_malloc_size_of = "Defined in hyper"]
     pub status_code: StatusCode,
     pub status_message: Vec<u8>,
 }
@@ -826,6 +841,9 @@ pub enum LoadStatus {
     /// `document.readyState` == `complete`.
     /// See <https://developer.mozilla.org/en-US/docs/Web/API/Document/readyState>
     Complete,
+    /// The current load was stopped, either by the embedder or by script on the page
+    /// (for instance, by calling `window.stop()`).
+    Stopped,
 }
 
 /// Data that could be used to display a desktop notification to the end user
@@ -944,7 +962,7 @@ impl UntrustedNodeAddress {
 }
 
 /// The result of a hit test in `Paint`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub struct PaintHitTestResult {
     /// The pipeline id of the resulting item.
     pub pipeline_id: PipelineId,

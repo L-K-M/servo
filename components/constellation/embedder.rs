@@ -44,4 +44,6 @@ pub enum ConstellationToEmbedderMsg {
     AllowNavigationRequest(WebViewId, PipelineId, ServoUrl),
     /// The history state has changed. The [`PipelineId`] is the active top-level document.
     HistoryChanged(WebViewId, PipelineId, Vec<ServoUrl>, usize),
+    /// A pipeline exited, whether cleanly or because its content process died.
+    PipelineExited(PipelineId),
 }
