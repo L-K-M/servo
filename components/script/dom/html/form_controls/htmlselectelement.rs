@@ -142,19 +142,21 @@ impl UAShadowRoot<ShadowTree> for HTMLSelectElement {
     fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
         let document = self.owner_document();
 
+        // Insert the widget's parts before styling them, so that their style attributes
+        // are known to belong to a user agent widget and the page's CSP does not block them.
         let select_box = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
-        select_box.set_string_attribute(cx, &local_name!("style"), SELECT_BOX_STYLE.into());
         shadow_root
             .upcast::<Node>()
             .AppendChild(cx, select_box.upcast::<Node>())
             .unwrap();
+        select_box.set_string_attribute(cx, &local_name!("style"), SELECT_BOX_STYLE.into());
 
         let text_container = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
-        text_container.set_string_attribute(cx, &local_name!("style"), TEXT_CONTAINER_STYLE.into());
         select_box
             .upcast::<Node>()
             .AppendChild(cx, text_container.upcast::<Node>())
             .unwrap();
+        text_container.set_string_attribute(cx, &local_name!("style"), TEXT_CONTAINER_STYLE.into());
 
         let text = Text::new(cx, DOMString::new(), &document);
         text_container
@@ -163,15 +165,15 @@ impl UAShadowRoot<ShadowTree> for HTMLSelectElement {
             .unwrap();
 
         let chevron_container = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        select_box
+            .upcast::<Node>()
+            .AppendChild(cx, chevron_container.upcast::<Node>())
+            .unwrap();
         chevron_container.set_string_attribute(
             cx,
             &local_name!("style"),
             CHEVRON_CONTAINER_STYLE.into(),
         );
-        select_box
-            .upcast::<Node>()
-            .AppendChild(cx, chevron_container.upcast::<Node>())
-            .unwrap();
 
         let _ = self
             .shadow_tree
