@@ -1746,7 +1746,6 @@ impl ParserContext {
         };
 
         self.document = Some(Trusted::new(&*document));
-        self.initialize_ancestor_origins(cx, &document);
 
         if document
             .get_current_parser()
@@ -1754,6 +1753,8 @@ impl ParserContext {
         {
             return;
         }
+
+        self.initialize_ancestor_origins(cx, &document);
 
         let mut realm = enter_auto_realm(cx, &*document);
         let cx = &mut realm;
