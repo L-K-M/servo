@@ -967,8 +967,6 @@ struct NavigationParams {
     resource_header: Vec<u8>,
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-about-base-url>
     about_base_url: Option<ServoUrl>,
-    /// <https://html.spec.whatwg.org/multipage/#navigation-params-iframe-referrer-policy>
-    iframe_element_referrer_policy: ReferrerPolicy,
 }
 
 /// The context required for asynchronously fetching a document
@@ -1136,7 +1134,6 @@ impl ParserContext {
                 final_sandboxing_flag_set: creation_sandboxing_flag_set,
                 resource_header: vec![],
                 about_base_url: Default::default(),
-                iframe_element_referrer_policy: Default::default(),
             },
             target_snapshot_params,
             source_origin,
@@ -1226,8 +1223,29 @@ impl ParserContext {
         Some((pdf_viewer, csp))
     }
 
+    /// Steps 11 and 12 of
+    /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>.
+    ///
+    /// Combray: these run as soon as the document exists rather than in
+    /// `initialize_document_object`, which waits for the resource header. In between, a
+    /// same-origin parent can already reach the document through `iframe.contentWindow`,
+    /// and reading `location.ancestorOrigins` there found no list and panicked.
+    fn initialize_ancestor_origins(&self, cx: &mut JSContext, document: &Document) {
+        // Step 11. Set document's internal ancestor origin objects list to the result of
+        // running the internal ancestor origin objects list creation steps given
+        // document and navigationParams's iframe element referrer policy.
+        document.set_internal_ancestor_origin_objects_list(
+            document.internal_ancestor_origin_objects_list_creation_steps(
+                &self.target_snapshot_params.iframe_element_referrer_policy,
+            ),
+        );
+        // Step 12. Set document's ancestor origins list to the result of
+        // running the ancestor origins list creation steps given document.
+        document.set_ancestor_origins_list(&document.ancestor_origins_list_creation_steps(cx));
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#initialise-the-document-object>
-    fn initialize_document_object(&self, cx: &mut JSContext, document: &Document) {
+    fn initialize_document_object(&self, document: &Document) {
         // Step 9. Let document be a new Document, with
         // policy container: navigationParams's policy container
         document.set_policy_container(self.navigation_params.policy_container.clone());
@@ -1237,17 +1255,7 @@ impl ParserContext {
         document.set_document_readiness_to_loading_for_initialization();
         // about base URL: navigationParams's about base URL
         document.set_about_base_url(self.navigation_params.about_base_url.clone());
-        // Step 11. Set document's internal ancestor origin objects list to the result of
-        // running the internal ancestor origin objects list creation steps given
-        // document and navigationParams's iframe element referrer policy.
-        document.set_internal_ancestor_origin_objects_list(
-            document.internal_ancestor_origin_objects_list_creation_steps(
-                &self.navigation_params.iframe_element_referrer_policy,
-            ),
-        );
-        // Step 12. Set document's ancestor origins list to the result of
-        // running the ancestor origins list creation steps given document.
-        document.set_ancestor_origins_list(&document.ancestor_origins_list_creation_steps(cx));
+        // Steps 11 and 12 ran in `initialize_ancestor_origins` when the document was created.
         // Step 17. Process link headers given document, navigationParams's response, and "pre-media".
         process_link_headers(
             &self.navigation_params.link_headers,
@@ -1317,7 +1325,7 @@ impl ParserContext {
             // Return the result of loading an HTML document, given navigationParams.
             MediaType::Html => self.load_html_document(cx, document),
             // Return the result of loading an XML document given navigationParams and type.
-            MediaType::Xml => self.load_xml_document(cx, document),
+            MediaType::Xml => self.load_xml_document(document),
             // Return the result of loading a text document given navigationParams and type.
             MediaType::JavaScript | MediaType::Text | MediaType::Css => {
                 self.load_text_document(cx, parser.expect("Must have a parser for text"))
@@ -1362,7 +1370,7 @@ impl ParserContext {
     fn load_html_document(&mut self, cx: &mut JSContext, document: &Document) {
         // Step 1. Let document be the result of creating and initializing a
         // Document object given "html", "text/html", and navigationParams.
-        self.initialize_document_object(cx, document);
+        self.initialize_document_object(document);
         // Step 2. If document's URL is about:blank, then populate with html/head/body given document.
         if document.is_initial_about_blank() {
             populate_about_blank(cx, document);
@@ -1374,13 +1382,13 @@ impl ParserContext {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#read-xml>
-    fn load_xml_document(&mut self, cx: &mut JSContext, document: &Document) {
+    fn load_xml_document(&mut self, document: &Document) {
         // When faced with displaying an XML file inline, provided navigation params navigationParams
         // and a string type, user agents must follow the requirements defined in XML and Namespaces in XML,
         // XML Media Types, DOM, and other relevant specifications to create and initialize a
         // Document object document, given "xml", type, and navigationParams, and return that Document.
         // They must also create a corresponding XML parser. [XML] [XMLNS] [RFC7303] [DOM]
-        self.initialize_document_object(cx, document);
+        self.initialize_document_object(document);
         // The first task that the networking task source places on the task queue while fetching
         // runs must process link headers given document, navigationParams's response, and "media",
         // after the task has been processed by the XML parser.
@@ -1391,7 +1399,7 @@ impl ParserContext {
     fn load_text_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
         // Step 1. Let document be the result of creating and initializing a Document
         // object given "html", type, and navigationParams.
-        self.initialize_document_object(cx, &parser.document);
+        self.initialize_document_object(&parser.document);
         // Step 4. Create an HTML parser and associate it with the document.
         // Act as if the tokenizer had emitted a start tag token with the tag name "pre" followed by
         // a single U+000A LINE FEED (LF) character, and switch the HTML parser's tokenizer to the PLAINTEXT state.
@@ -1420,7 +1428,7 @@ impl ParserContext {
     ) {
         // Step 1. Let document be the result of creating and initializing a Document
         // object given "html", type, and navigationParams.
-        self.initialize_document_object(cx, &parser.document);
+        self.initialize_document_object(&parser.document);
         // Step 8. Act as if the user agent had stopped parsing document.
         self.is_synthesized_document = true;
         parser.last_chunk_received.set(true);
@@ -1486,7 +1494,7 @@ impl ParserContext {
 
     /// Load a JSON document with a pretty-printing, interactive viewer.
     fn load_json_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
-        self.initialize_document_object(cx, &parser.document);
+        self.initialize_document_object(&parser.document);
         parser.push_string_input_chunk(resources::read_string(Resource::JsonViewerHTML));
         parser.parse_sync(cx);
         parser.tokenizer.set_plaintext_state();
@@ -1498,7 +1506,7 @@ impl ParserContext {
     fn load_pdf_viewer_document(&mut self, cx: &mut JSContext, parser: &ServoParser) {
         // This applies the viewer's policy container and sandboxing flags. The response's
         // link headers were already dropped.
-        self.initialize_document_object(cx, &parser.document);
+        self.initialize_document_object(&parser.document);
         // The viewer is top level, so no ancestor's origin makes its requests mixed content.
         // Servo still passes a trustworthy one on to a popup of a trustworthy opener, and to
         // a link followed out of a frame of a trustworthy page, and it would block the module
@@ -1738,6 +1746,7 @@ impl ParserContext {
         };
 
         self.document = Some(Trusted::new(&*document));
+        self.initialize_ancestor_origins(cx, &document);
 
         if document
             .get_current_parser()
@@ -1809,9 +1818,6 @@ impl ParserContext {
             link_headers,
             about_base_url: document.about_base_url(),
             resource_header: vec![],
-            iframe_element_referrer_policy: self
-                .target_snapshot_params
-                .iframe_element_referrer_policy,
         };
         self.submit_resource_timing(cx);
 

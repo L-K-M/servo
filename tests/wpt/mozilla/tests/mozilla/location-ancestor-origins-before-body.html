@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>location.ancestorOrigins of a same-origin frame before its body arrives</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#initialise-the-document-object">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<script>
+async_test(t => {
+  const frame = document.createElement("iframe");
+  let readBeforeLoad = false;
+
+  const read = () => {
+    const location = frame.contentWindow.location;
+    if (!location.pathname.endsWith("/resources/slow-body.py")) {
+      return false;
+    }
+    assert_array_equals(Array.from(location.ancestorOrigins), [self.origin]);
+    return true;
+  };
+
+  const timer = setInterval(t.step_func(() => {
+    readBeforeLoad = read() || readBeforeLoad;
+  }), 5);
+  t.add_cleanup(() => clearInterval(timer));
+
+  frame.onload = t.step_func_done(() => {
+    assert_true(readBeforeLoad, "the frame's new document was read before it loaded");
+    assert_true(read(), "the frame's loaded document was read");
+  });
+  frame.src = "resources/slow-body.py";
+  document.body.append(frame);
+});
+</script>
