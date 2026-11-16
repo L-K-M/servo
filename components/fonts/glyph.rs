@@ -706,8 +706,7 @@ impl ShapedTextSlice {
                 hangable: white_space_in(&logical_glyphs, hangable_start..removable_start),
                 removable: white_space_in(&logical_glyphs, removable_start..glyphs.len()),
             };
-            let all_white_space = self.all_white_space ||
-                logical_glyphs.start >= hangable_start;
+            let all_white_space = self.all_white_space || logical_glyphs.start >= hangable_start;
             let glyph_range = if self.shaped_text.is_rtl {
                 self.glyph_range.end - logical_glyphs.end..
                     self.glyph_range.end - logical_glyphs.start

@@ -13,9 +13,9 @@ use style::values::specified::position::NamedArea;
 use style::{Atom, OwnedSlice};
 
 use super::{as_clamped_i16, convert, stylo};
-use crate::taffy::subgrid::{SubgridAxisTemplate, SubgridTemplates};
 use crate::fragment_tree::FragmentFlags;
 use crate::style_ext::ComputedValuesExt;
+use crate::taffy::subgrid::{SubgridAxisTemplate, SubgridTemplates};
 
 /// A wrapper struct for anything that Deref's to a [`ComputedValues`], which
 /// implements Taffy's layout traits and can used with Taffy's layout algorithms.

@@ -43,9 +43,9 @@ use layout_api::{
 };
 use malloc_size_of::MallocSizeOfOps;
 use metrics::{InteractiveFlag, InteractiveWindow, ProgressiveWebMetrics};
-use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::CookieSource::NonHTTP;
 use net_traits::CoreResourceMsg::{GetCookieStringForUrl, SetCookiesForUrl};
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::pub_domains::{Site, is_pub_domain};
