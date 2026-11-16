@@ -3106,6 +3106,11 @@ struct ContentSizesComputation<'layout_data> {
     ending_inline_pbm_stack: Vec<Au>,
     /// Stack of [`TextWrapMode`] of ongoing inline boxes.
     text_wrap_mode_stack: Vec<TextWrapMode>,
+    /// Combray: the depth in `text_wrap_mode_stack` and the [`TextWrapMode`] of the
+    /// shallowest inline box level crossed since the last text, which is the nearest
+    /// common ancestor of that text and the next one. `None` if no inline box started or
+    /// ended in between.
+    boundary_text_wrap_mode: Option<(usize, TextWrapMode)>,
     /// Whether the inline content size depends on block constraints.
     depends_on_block_constraints: bool,
 }
@@ -3160,6 +3165,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 self.current_line.max_content += pbm.inline_start;
                 self.ending_inline_pbm_stack.push(pbm.inline_end);
 
+                self.note_inline_box_boundary();
                 self.text_wrap_mode_stack
                     .push(layout_style.style().slow_clone_text_wrap_mode());
             },
@@ -3168,6 +3174,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 self.commit_pending_opening_pbm_for_inline_boxes();
                 self.add_inline_size(length);
                 self.text_wrap_mode_stack.pop();
+                self.note_inline_box_boundary();
             },
             InlineItem::TextRun(text_run) => {
                 let text_run = &*text_run.borrow();
@@ -3188,6 +3195,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                             self.process_text_segment(&parent_style, text_run, segment)
                         },
                     }
+                    self.boundary_text_wrap_mode = None;
                 }
             },
             InlineItem::Atomic(atomic, offset_in_text, _level) => {
@@ -3211,6 +3219,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 {
                     self.line_break_opportunity();
                 }
+                self.boundary_text_wrap_mode = None;
             },
             InlineItem::OutOfFlowFloatBox(float_box) => {
                 let float_box = float_box.borrow();
@@ -3262,6 +3271,15 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
         // TODO: This should take account whether or not the first and last character prevent
         // linebreaks after atomics as in layout.
         let break_at_start = segment.break_at_start && self.had_content_yet_for_min_content;
+        // Combray: the `white-space` of the nearest common ancestor of the previous text and
+        // this one controls the soft wrap opportunity between them, so a space between two
+        // `white-space: nowrap` inline boxes is still a min-content break.
+        // See <https://drafts.csswg.org/css-text-3/#line-break-details>.
+        let can_wrap_at_start = self
+            .boundary_text_wrap_mode
+            .map_or(can_wrap, |(_, text_wrap_mode)| {
+                text_wrap_mode == TextWrapMode::Wrap
+            });
 
         let mut text_cursor = SegmentTextCursor::new(segment);
         let mut run_end = segment.character_range.start;
@@ -3289,7 +3307,9 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
 
             // Break before each unbreakable run in this TextRun, except the first unless the
             // linebreaker was set to break before the first run.
-            if can_wrap && (run_index != 0 || break_at_start) {
+            if (run_index != 0 && can_wrap) ||
+                (run_index == 0 && break_at_start && can_wrap_at_start)
+            {
                 self.line_break_opportunity();
             }
 
@@ -3464,6 +3484,18 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
         self.paragraph.union_assign(&end_floats);
     }
 
+    /// Combray: remember the [`TextWrapMode`] at the current inline box level if it is
+    /// the shallowest level reached since the last text.
+    fn note_inline_box_boundary(&mut self) {
+        let depth = self.text_wrap_mode_stack.len();
+        if self
+            .boundary_text_wrap_mode
+            .is_none_or(|(boundary_depth, _)| depth < boundary_depth)
+        {
+            self.boundary_text_wrap_mode = Some((depth, *self.text_wrap_mode()));
+        }
+    }
+
     fn text_wrap_mode(&self) -> &TextWrapMode {
         self.text_wrap_mode_stack
             .last()
@@ -3489,6 +3521,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
             had_content_yet_for_max_content: false,
             ending_inline_pbm_stack: Vec::new(),
             text_wrap_mode_stack: Vec::new(),
+            boundary_text_wrap_mode: None,
             depends_on_block_constraints: false,
         }
         .traverse(inline_formatting_context)

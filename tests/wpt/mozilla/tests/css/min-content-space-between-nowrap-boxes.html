@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A space between white-space: nowrap inline boxes is a min-content break</title>
+<link rel="help" href="https://drafts.csswg.org/css-text-3/#line-break-details">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  body { margin: 0; font: 10px/1 Ahem; }
+  .min-content { width: min-content; }
+  .nowrap { white-space: nowrap; }
+  .flex { display: flex; width: 30px; }
+</style>
+<div id="spans" class="min-content"><span class="nowrap">XX XX</span> <span class="nowrap">XX XX</span></div>
+<div id="nested" class="min-content"><span class="nowrap">XX XX</span> <span><span class="nowrap">XXX XX</span></span></div>
+<div id="no-break-before" class="min-content">XX <span>!</span></div>
+<div id="nowrap-ancestor" class="min-content nowrap"><span style="white-space: normal">XX </span><span>XX</span></div>
+<div class="flex"><div id="flex-item"><span class="nowrap">XX XX</span> <span class="nowrap">XX XX</span></div></div>
+<script>
+  const width = id => document.getElementById(id).getBoundingClientRect().width;
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("spans"), 50);
+  }, "A space between two nowrap inline boxes is a soft wrap opportunity");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("nested"), 60);
+  }, "The opportunity remains when the next nowrap box is nested in another inline box");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("no-break-before"), 40);
+  }, "No opportunity is added where the line breaker allows none");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("nowrap-ancestor"), 50);
+  }, "A nowrap common ancestor prevents the opportunity");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("flex-item"), 50);
+  }, "The automatic minimum size of a flex item uses the opportunity");
+</script>
