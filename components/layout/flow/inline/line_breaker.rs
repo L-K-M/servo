@@ -68,6 +68,19 @@ impl LineBreaker {
         linebreaks_range
     }
 
+    /// Combray: the line break opportunities not yet consumed that come before `index`.
+    pub(crate) fn pending_linebreaks_before(&self, index: Utf8CodeUnits) -> &[Utf8CodeUnits] {
+        let remaining = self
+            .linebreaks
+            .get(self.current_linebreak_offset..)
+            .unwrap_or_default();
+        let count = remaining
+            .iter()
+            .take_while(|linebreak| **linebreak < index)
+            .count();
+        &remaining[..count]
+    }
+
     pub(crate) fn set_additional_break_at_start(&mut self, index: Utf8CodeUnits) {
         debug_assert!(self.additional_break_at_start.is_none());
         self.additional_break_at_start = Some(index);

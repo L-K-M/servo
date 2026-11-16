@@ -93,6 +93,21 @@ impl BatchSlicer<'_> {
         let text_style = parent_style.get_inherited_text();
         let mut break_at_start =
             self.line_breaker.take_additional_break_at_start() == Some(range.start);
+        // Combray: the bidi control characters of an inline box with `unicode-bidi: isolate`
+        // or `embed` (such as an HTML `li`) sit between text segments. An opportunity before
+        // them, as after a space, belongs to the start of the following text; otherwise it
+        // would be skipped below.
+        break_at_start |= self
+            .line_breaker
+            .pending_linebreaks_before(range.start)
+            .iter()
+            .any(|linebreak| {
+                self.text[Utf8CodeUnits::to_usize_range(&(*linebreak..range.start))]
+                    .chars()
+                    .all(|character| {
+                        matches!(character, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+                    })
+            });
         let linebreaks = self
             .line_breaker
             .advance_to_linebreaks_in_range(segment.byte_range.clone());

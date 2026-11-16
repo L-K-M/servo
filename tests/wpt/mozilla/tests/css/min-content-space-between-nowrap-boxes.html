@@ -15,6 +15,7 @@
 <div id="nested" class="min-content"><span class="nowrap">XX XX</span> <span><span class="nowrap">XXX XX</span></span></div>
 <div id="no-break-before" class="min-content">XX <span>!</span></div>
 <div id="nowrap-ancestor" class="min-content nowrap"><span style="white-space: normal">XX </span><span>XX</span></div>
+<div id="isolate" class="min-content"><span class="nowrap">XX XX</span> <span class="nowrap" style="unicode-bidi: isolate">XX XX</span></div>
 <div class="flex"><div id="flex-item"><span class="nowrap">XX XX</span> <span class="nowrap">XX XX</span></div></div>
 <script>
   const width = id => document.getElementById(id).getBoundingClientRect().width;
@@ -28,6 +29,11 @@
     await document.fonts.ready;
     assert_equals(width("nested"), 60);
   }, "The opportunity remains when the next nowrap box is nested in another inline box");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    assert_equals(width("isolate"), 50);
+  }, "The opportunity remains before a nowrap box that isolates its bidi content");
 
   promise_test(async () => {
     await document.fonts.ready;
