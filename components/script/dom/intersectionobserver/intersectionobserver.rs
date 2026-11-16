@@ -11,6 +11,7 @@ use dom_struct::dom_struct;
 use euclid::{Rect, SideOffsets2D, Size2D, Vector2D};
 use js::context::{JSContext, NoGC};
 use js::rust::{HandleObject, MutableHandleValue};
+use layout_api::BoxAreaType;
 use script_bindings::callback::{RootedCallback, TracedCallback};
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto};
@@ -964,12 +965,21 @@ fn compute_the_intersection(
 
                     intersection_rect = intersect_rectangle(&intersection_rect, &viewport_rect)?;
 
-                    let current_offset = frame_container
-                        .upcast::<Node>()
-                        .padding_box(cx)
-                        .unwrap()
-                        .origin
-                        .to_vector();
+                    // Combray: unwrapping a missing box here crashed the script thread. A frame
+                    // whose transform has no 2D rectangle, such as a perspective rotation, still
+                    // has an untransformed box; use it, as this loop does not map transforms yet
+                    // (see above). A frame without any box, for example one switched to
+                    // `display: none` after its document was laid out, is not rendered, so nothing
+                    // inside it intersects the root.
+                    let frame_node = frame_container.upcast::<Node>();
+                    let frame_padding_box = frame_node.padding_box(cx).or_else(|| {
+                        frame_node.owner_window().box_area_query_without_reflow(
+                            frame_node,
+                            BoxAreaType::Padding,
+                            true,
+                        )
+                    })?;
+                    let current_offset = frame_padding_box.origin.to_vector();
                     intersection_rect.origin += current_offset;
                     total_inter_document_offset += current_offset;
 

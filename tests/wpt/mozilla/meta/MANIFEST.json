@@ -11570,6 +11570,10 @@
       "c4fbe534ed193e1d192c0338997a8d9da8eb6406",
       []
      ],
+     "slow-body.py": [
+      "e2631404ff46d7999a1cae20a039788ca7a780cd",
+      []
+     ],
      "ssl.https.html": [
       "8faa57c0c47c4fdf27c052d059b28ee1088235e9",
       []
@@ -15232,6 +15236,13 @@
       {}
      ]
     ],
+    "intersection-observer-hidden-frame.html": [
+     "ce54da2527e25a3826209bee59afd0771eb9e2f0",
+     [
+      null,
+      {}
+     ]
+    ],
     "invalid-this.html": [
      "2dcc7eeae58b33515417de4e92935e80fac5df62",
      [
@@ -15308,6 +15319,13 @@
     ],
     "localeCompare.html": [
      "c6042d8739edd005e2ce812cebc168a062753a65",
+     [
+      null,
+      {}
+     ]
+    ],
+    "location-ancestor-origins-before-body.html": [
+     "415e257008419b412e3e74f8ba69aabf170d0e72",
      [
       null,
       {}

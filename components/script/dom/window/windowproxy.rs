@@ -949,7 +949,11 @@ impl WindowProxy {
             ))
         } else if let Some(parent_proxy) = self.parent() {
             // Step 4. Assert: parentDoc is fully active.
-            assert!(parent_proxy.currently_active().is_some());
+            // Combray: `ScriptThread::load` gives a parent in another script thread a pipeline
+            // only when the constellation reports it fully active. A parent that is not, such
+            // as one whose frame is navigating away, has none; treat it like the same-thread
+            // case above instead of asserting, which crashed the script thread. The call below
+            // returns `None` without a pipeline.
             parent_proxy.document_origin_and_internal_ancestor_origin_objects_list()
         } else {
             None
