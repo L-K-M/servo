@@ -3312,17 +3312,17 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
                 if let Some((pieces, break_before_first_piece)) = pieces {
                     // There is a soft wrap opportunity before every grapheme cluster, including
                     // the first one of a run that continues text from a preceding inline box.
-                    // The last piece keeps the run's trailing white space, handled below.
-                    let piece_count = pieces.len();
+                    // Each piece holds its part of the run's trailing white space, which is
+                    // handled below.
                     for (piece_index, piece) in pieces.into_iter().enumerate() {
                         if piece_index != 0 || break_before_first_piece {
                             self.line_break_opportunity();
                         }
-                        let mut piece_advance = piece.total_advance();
-                        if piece_index + 1 == piece_count {
-                            piece_advance -= removable_advance + hangable_advance;
-                        }
-                        self.add_inline_size(piece_advance);
+                        self.add_inline_size(
+                            piece.total_advance() -
+                                piece.removable_advance() -
+                                piece.hangable_advance(),
+                        );
                     }
                 } else {
                     self.add_inline_size(advance - removable_advance - hangable_advance);

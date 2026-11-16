@@ -671,8 +671,8 @@ impl ShapedTextSlice {
     /// character offsets, which are relative to the start of this slice and must be
     /// increasing. Glyphs that correspond to zero characters stay with the preceding
     /// glyph, and a glyph is never split. The characters after the last offset form
-    /// the last slice, which keeps the trailing white space of this slice. The
-    /// returned slices are in logical order.
+    /// the last slice. Each slice gets the part of this slice's trailing white space
+    /// that it holds. The returned slices are in logical order.
     pub fn split_at_character_offsets(
         &self,
         character_offsets: impl IntoIterator<Item = Utf32CodeUnits>,
@@ -685,10 +685,29 @@ impl ShapedTextSlice {
             self.glyphs().collect()
         };
 
+        // The trailing white space is a logical suffix of this slice: hangable glyphs, then
+        // removable ones. Give each piece the part of that suffix that it holds.
+        let removable_start = glyphs.len() - self.trailing_white_space.removable.count;
+        let hangable_start = removable_start - self.trailing_white_space.hangable.count;
+        let white_space_in = |logical_glyphs: &Range<usize>, white_space: Range<usize>| {
+            let start = logical_glyphs.start.max(white_space.start);
+            let end = logical_glyphs.end.min(white_space.end);
+            let advance = glyphs
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .fold(Au::zero(), |advance, glyph| advance + glyph.advance());
+            GlyphCountAndAdvance::new(end.saturating_sub(start), advance)
+        };
+
         let mut slices = Vec::new();
-        let mut make_slice = |logical_glyphs: Range<usize>,
-                              character_count: Utf32CodeUnits,
-                              is_last: bool| {
+        let mut make_slice = |logical_glyphs: Range<usize>, character_count: Utf32CodeUnits| {
+            let trailing_white_space = TrailingWhiteSpace {
+                hangable: white_space_in(&logical_glyphs, hangable_start..removable_start),
+                removable: white_space_in(&logical_glyphs, removable_start..glyphs.len()),
+            };
+            let all_white_space = self.all_white_space ||
+                logical_glyphs.start >= hangable_start;
             let glyph_range = if self.shaped_text.is_rtl {
                 self.glyph_range.end - logical_glyphs.end..
                     self.glyph_range.end - logical_glyphs.start
@@ -708,15 +727,8 @@ impl ShapedTextSlice {
                     .iter()
                     .filter(|glyph| glyph.char_is_word_separator())
                     .count(),
-                trailing_white_space: if is_last {
-                    self.trailing_white_space.clone()
-                } else {
-                    TrailingWhiteSpace {
-                        hangable: GlyphCountAndAdvance::new(0, Au::zero()),
-                        removable: GlyphCountAndAdvance::new(0, Au::zero()),
-                    }
-                },
-                all_white_space: is_last && self.all_white_space,
+                trailing_white_space,
+                all_white_space,
             }));
         };
 
@@ -738,7 +750,6 @@ impl ShapedTextSlice {
                     make_slice(
                         slice_start..index,
                         current_character - slice_start_character,
-                        false,
                     );
                     slice_start = index;
                     slice_start_character = current_character;
@@ -751,7 +762,6 @@ impl ShapedTextSlice {
             make_slice(
                 slice_start..glyphs.len(),
                 current_character - slice_start_character,
-                true,
             );
         }
         slices
