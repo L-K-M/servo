@@ -346,15 +346,19 @@ impl<T: ClipboardProvider> TextInput<T> {
     ///
     /// If there is no selection, returns an empty range at the edit point.
     ///
-    /// If the start or/and end of the range is at the start/end of the text,
-    /// return a `RangeAny` unbounded on that side.
+    /// Both ends of the returned `RangeAny` are bounded, also at the start and end of the
+    /// text.
     pub(crate) fn sorted_selection_character_offsets_range(&self) -> RangeAny<Utf32CodeUnits> {
         let rope = &self.rope;
         let start = self.selection_start();
         let end = self.selection_end();
-        let start = (start != rope.first_index()).then(|| rope.index_to_character_offset(start));
-        let end = (end != rope.last_index()).then(|| rope.index_to_character_offset(end));
-        RangeAny::new(start, end)
+        // Combray: always bound both ends. The control's text is a single text node, and
+        // layout treats an empty range with an open end as a selection that only passes
+        // through the node, which hid the caret at the start or end of the value.
+        RangeAny::new(
+            Some(rope.index_to_character_offset(start)),
+            Some(rope.index_to_character_offset(end)),
+        )
     }
 
     /// The state of the current selection. Can be used to compare whether selection state has changed.
