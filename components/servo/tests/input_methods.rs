@@ -259,6 +259,36 @@ fn test_attempting_to_cancel_beforeinput_composition() {
 }
 
 #[test]
+fn test_composition_shortened_by_maxlength_keeps_following_text() {
+    let test = InputMethodTest::new(
+        "<!DOCTYPE html> \
+        <input id=my-input maxlength=5 value=abcd>",
+    );
+    test.focus("my-input");
+    evaluate_javascript(
+        &test.servo_test,
+        test.webview.clone(),
+        "document.getElementById('my-input').setSelectionRange(1, 1);",
+    )
+    .expect("JS evaluation should not fail");
+
+    for (state, data) in [
+        (CompositionState::Start, ""),
+        (CompositionState::Update, "XY"),
+        (CompositionState::End, "XY"),
+    ] {
+        test.send_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+            state,
+            data: data.to_owned(),
+        })));
+    }
+
+    // Only one character fits while composing, and the commit replaces just that
+    // preview, never the text after it.
+    assert_eq!(test.get_text_control_value("my-input"), "aXbcd");
+}
+
+#[test]
 fn test_ime_multiline_for_textarea() {
     let test = InputMethodTest::new(
         "<!DOCTYPE html> \

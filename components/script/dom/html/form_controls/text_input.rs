@@ -645,9 +645,12 @@ impl<T: ClipboardProvider> TextInput<T> {
         let start = self.selection_start_offset();
         let insertion = insertion.into();
         self.insert(&insertion);
+        // Combray: select what was actually inserted. `insert` can shorten the text
+        // (`maxlength`, newlines in single-line controls), and selecting the requested
+        // length would take in following text that the commit then replaces.
         self.set_selection_range_utf8(
             start,
-            start + Utf8CodeUnits(insertion.len() as u32),
+            self.rope.index_to_utf8_offset(self.selection_end()),
             SelectionDirection::Forward,
         );
     }
