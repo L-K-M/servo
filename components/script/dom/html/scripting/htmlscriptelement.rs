@@ -305,17 +305,13 @@ pub(crate) fn script_type_for_attributes(
         (Some(ty), _) => {
             debug!("script type={}", ty);
 
-            if ty
-                .trim_matches(HTML_SPACE_CHARACTERS)
-                .eq_ignore_ascii_case("module")
-            {
+            // The script block's type string is the attribute's value as it is: only the
+            // JavaScript MIME type match below strips leading and trailing white space.
+            if ty.eq_ignore_ascii_case("module") {
                 return Some(ScriptType::Module);
             }
 
-            if ty
-                .trim_matches(HTML_SPACE_CHARACTERS)
-                .eq_ignore_ascii_case("importmap")
-            {
+            if ty.eq_ignore_ascii_case("importmap") {
                 return Some(ScriptType::ImportMap);
             }
 
