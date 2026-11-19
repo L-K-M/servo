@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Quirks mode of documents that share a window without owning its layout</title>
+<link rel="help" href="https://dom.spec.whatwg.org/#concept-document-quirks">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#initialise-the-document-object">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="resources/replaced-initial-document.js"></script>
+<style>.foo { color: rgb(0, 128, 0); }</style>
+<body>
+<p class="Foo" id="paragraph">Text</p>
+<script>
+// Class selectors match case-insensitively only in quirks mode.
+const GREEN = "rgb(0, 128, 0)";
+
+function colorAfterRestyle(document, paragraph) {
+  document.head.append(document.createElement("style"));
+  return document.defaultView.getComputedStyle(paragraph).color;
+}
+
+test(() => {
+  const paragraph = document.getElementById("paragraph");
+  assert_equals(document.compatMode, "CSS1Compat");
+  assert_not_equals(colorAfterRestyle(document, paragraph), GREEN, "class selectors are case-sensitive");
+
+  const parsed = new DOMParser().parseFromString("<p>Text</p>", "text/html");
+  assert_equals(parsed.compatMode, "BackCompat", "a document without a doctype is in quirks mode");
+  assert_not_equals(colorAfterRestyle(document, paragraph), GREEN);
+}, "A quirks mode document from DOMParser does not change how its creator's selectors match");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  assert_equals(initialDocument.compatMode, "BackCompat", "the initial about:blank document is in quirks mode");
+  const newDocument = await replaceInitialDocument(
+    frame,
+    `<!doctype html><style>.foo { color: ${GREEN}; }</style><p class="Foo">Text</p>`
+  );
+  assert_equals(newDocument.compatMode, "CSS1Compat");
+  const paragraph = newDocument.querySelector("p");
+  assert_not_equals(colorAfterRestyle(newDocument, paragraph), GREEN, "class selectors are case-sensitive");
+
+  // Fragment parsing runs in a document with the context's quirks mode.
+  initialDocument.body.innerHTML = "<b>Text</b>";
+  assert_not_equals(colorAfterRestyle(newDocument, paragraph), GREEN);
+}, "Fragment parsing in a replaced initial document does not change how its replacement's selectors match");
+</script>

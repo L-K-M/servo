@@ -13,11 +13,11 @@ function frameWithInitialDocument(t) {
   return { frame, initialDocument };
 }
 
-async function replaceInitialDocument(frame) {
+async function replaceInitialDocument(frame, srcdoc = "<p>Text</p>") {
   const initialDocument = frame.contentDocument;
   await new Promise(resolve => {
     frame.addEventListener("load", resolve, { once: true });
-    frame.srcdoc = "<p>Text</p>";
+    frame.srcdoc = srcdoc;
   });
 
   const newDocument = frame.contentDocument;

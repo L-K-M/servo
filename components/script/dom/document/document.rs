@@ -1376,7 +1376,7 @@ impl Document {
     pub(crate) fn set_quirks_mode(&self, new_mode: QuirksMode) {
         let old_mode = self.quirks_mode.replace(new_mode);
 
-        if old_mode != new_mode {
+        if old_mode != new_mode && self.owns_window_layout() {
             self.window.layout_mut().set_quirks_mode(new_mode);
         }
     }
@@ -4293,14 +4293,16 @@ impl Document {
         self.window_detached.get()
     }
 
-    /// Whether this document's style sheets belong in its window's layout.
+    /// Whether this document's style sheets and quirks mode belong in its
+    /// window's layout.
     ///
-    /// A document without a browsing context has no layout of its own. A
-    /// document that replaces a frame's initial about:blank document and is same
-    /// origin-domain with it reuses that document's window, which gets a new
-    /// layout for the new document; the replaced document keeps its style sheets
-    /// to itself, so that they neither style the new document nor go missing from
-    /// its layout when they are removed.
+    /// A document without a browsing context, such as one from `DOMParser` or the
+    /// fragment parser, shares its creator's window but has no layout of its own.
+    /// A document that replaces a frame's initial about:blank document and is
+    /// same origin-domain with it reuses that document's window, which gets a new
+    /// layout for the new document. Neither may change the window's layout: their
+    /// sheets would style another document or go missing from its layout when
+    /// removed, and their quirks mode would change how its selectors match.
     fn owns_window_layout(&self) -> bool {
         self.has_browsing_context() && !self.window_detached()
     }

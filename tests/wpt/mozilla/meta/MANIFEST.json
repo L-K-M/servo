@@ -11516,7 +11516,7 @@
       []
      ],
      "replaced-initial-document.js": [
-      "34498255fa6d7808d61de3251d810bd22fa36167",
+      "5221dbc8f65ca4907858165b5889c05886ba14ff",
       []
      ],
      "second.html": [
@@ -15610,6 +15610,13 @@
     ],
     "proxy-setter.html": [
      "b8d3d8e9cfba0f547e859db86073b1767a6a9a2f",
+     [
+      null,
+      {}
+     ]
+    ],
+    "quirks-mode-of-documents-without-own-layout.html": [
+     "c73dc446d1ba36a9c73140a95a73a73033fc7670",
      [
       null,
       {}
