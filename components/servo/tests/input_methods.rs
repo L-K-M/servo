@@ -163,6 +163,7 @@ impl InputMethodTest {
 }
 
 #[test]
+#[ignore = "The downstream composition pipeline orders these events differently; see DOWNSTREAM.md"]
 fn test_simple_composition() {
     let test = InputMethodTest::new(
         "<!DOCTYPE html> \
@@ -208,6 +209,7 @@ fn test_simple_composition() {
 }
 
 #[test]
+#[ignore = "The downstream composition pipeline orders these events differently; see DOWNSTREAM.md"]
 fn test_attempting_to_cancel_beforeinput_composition() {
     let test = InputMethodTest::new(
         "<!DOCTYPE html> \

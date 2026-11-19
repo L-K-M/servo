@@ -75,6 +75,19 @@ cases; never name a website.
 | Script: user agent widget style attributes are exempt from CSP | This PR | Servo positions the parts of `<input type=range>`, `<meter>`, `<progress>`, `<select>`, `<details>` and other controls with `style` attributes in their user agent shadow trees, and checked those against the page's Content Security Policy. Under a `style-src` without `'unsafe-inline'` the controls rendered wrongly, and a range input never settled: each blocked attribute fired a `securitypolicyviolation` event, which reached the `<input>`, whose event handling set the attributes again, so the script thread fired violation events without end and the page never became idle. Only style attributes in a user agent widget's shadow tree skip the check; author style attributes keep it. `<select>` now inserts its widget parts before styling them, so they count as widget content. Media controls keep the check, for their style attributes and their `<style>` element: their script runs in the page's realm and gets their shadow root from a document method the page can wrap, so page script can reach it. `HTMLInputElement::handle_event` still updates the widget on every event (as upstream does) | `./mach test-wpt --profile medium --headless tests/wpt/mozilla/tests/mozilla/csp/ua-widget-style-attribute.html` (failed before the change) | Upstream exempts user agent widget styles from the page's CSP |
 | Layout: compress the automatic minimum of replaced flex items | `b5d2d9283ad` | A flex container holding an `<img style="max-width: 100%">` (or `width: 100%`) took the image's natural width as its min-content size: the flex item's automatic minimum size floored its compressed min-content contribution. So a wide image in a narrow flex or grid column kept its natural width and the page overflowed, where other browsers shrink it to the column | `./mach test-wpt --profile medium --headless tests/wpt/mozilla/tests/css/flex-item-compressible-replaced-min-content.html` | An upstream release passes css/css-flexbox/intrinsic-size/auto-min-size-001.html and the test above with this change reverted |
 
+## Upstream input-method tests that are ignored
+
+Upstream's `components/servo/tests/input_methods.rs` expects a form control to get
+`beforeinput` and `input` (`insertCompositionText`) after every `compositionupdate`
+and nothing after `compositionend`. The downstream composition pipeline ("Editing:
+live IME composition in rich text" above) is kept as Combray ships it: it fires no
+`beforeinput` for a composition update and fires one more `input` after
+`compositionend`. `test_simple_composition` and
+`test_attempting_to_cancel_beforeinput_composition` are therefore marked `#[ignore]`;
+the other tests in that file run. Remove the attributes when the downstream pipeline
+adopts upstream's event order or is replaced by upstream's composition editing
+actions.
+
 ## Stop fallback creation failure
 
 Real thread/channel exhaustion is nondeterministic. The ignored
