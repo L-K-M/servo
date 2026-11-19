@@ -1376,7 +1376,7 @@ impl Document {
     pub(crate) fn set_quirks_mode(&self, new_mode: QuirksMode) {
         let old_mode = self.quirks_mode.replace(new_mode);
 
-        if old_mode != new_mode {
+        if old_mode != new_mode && self.owns_window_layout() {
             self.window.layout_mut().set_quirks_mode(new_mode);
         }
     }
@@ -4293,6 +4293,20 @@ impl Document {
         self.window_detached.get()
     }
 
+    /// Whether this document's style sheets and quirks mode belong in its
+    /// window's layout.
+    ///
+    /// A document without a browsing context, such as one from `DOMParser` or the
+    /// fragment parser, shares its creator's window but has no layout of its own.
+    /// A document that replaces a frame's initial about:blank document and is
+    /// same origin-domain with it reuses that document's window, which gets a new
+    /// layout for the new document. Neither may change the window's layout: their
+    /// sheets would style another document or go missing from its layout when
+    /// removed, and their quirks mode would change how its selectors match.
+    fn owns_window_layout(&self) -> bool {
+        self.has_browsing_context() && !self.window_detached()
+    }
+
     /// Returns a policy value that should be used for fetches initiated by this document.
     pub(crate) fn insecure_requests_policy(&self) -> InsecureRequestsPolicy {
         if let Some(csp_list) = self.get_csp_list().as_ref() {
@@ -4955,7 +4969,7 @@ impl Document {
                 .cloned()
         };
 
-        if self.has_browsing_context() {
+        if self.owns_window_layout() {
             self.add_stylesheet_to_stylist(
                 sheet.clone(),
                 insertion_point.as_ref().map(|s| s.sheet.clone()),
@@ -4991,7 +5005,7 @@ impl Document {
                 .cloned()
         };
 
-        if self.has_browsing_context() {
+        if self.owns_window_layout() {
             self.add_stylesheet_to_stylist(
                 sheet.clone(),
                 insertion_point.as_ref().map(|s| s.sheet.clone()),
@@ -5021,7 +5035,7 @@ impl Document {
     /// Remove a stylesheet owned by `owner` from the list of document sheets.
     #[cfg_attr(crown, expect(crown::unrooted_must_root))] // Owner needs to be rooted already necessarily.
     pub(crate) fn remove_stylesheet(&self, owner: StylesheetSource, stylesheet: &Arc<Stylesheet>) {
-        if self.has_browsing_context() {
+        if self.owns_window_layout() {
             self.window
                 .layout_mut()
                 .remove_stylesheet(stylesheet.clone());
