@@ -1860,6 +1860,12 @@ impl InlineFormattingContextLayout<'_> {
             return;
         };
 
+        // A placeholder of editable text outside a text control never turns a phantom
+        // line into a real one.
+        if !caret_placeholder.creates_line && self.current_line.is_phantom() {
+            return;
+        }
+
         // If the last content line item is a text item, then the placeholder for the text caret is not necessary.
         if self
             .current_line

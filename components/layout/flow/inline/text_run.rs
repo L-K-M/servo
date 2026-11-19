@@ -471,6 +471,10 @@ pub(crate) struct CaretPlaceholder {
     /// Character index of the preserved newline in the IFC's transformed text, relative
     /// to the start of the DOM node.
     pub character_index: Utf32CodeUnits,
+    /// Whether an otherwise empty line gets a line box for this placeholder, as in a
+    /// text control. Editable text elsewhere only shows the caret on a line that exists
+    /// without it, such as one a following `<br>` creates.
+    pub creates_line: bool,
 }
 
 /// A single item in a [`TextRun`].
@@ -739,14 +743,19 @@ impl TextRun {
 
             if character == '\n' {
                 finish_current_segment(&mut current, &mut results);
+                // Editable text outside text controls also paints a caret after a
+                // preserved newline, but only on a line that other content creates:
+                // unlike in a text control, the newline alone adds no line.
                 let needs_caret_placeholder = self.run_data.needs_caret_placeholder;
-                results.push(TextRunItem::LineBreak(needs_caret_placeholder.then(|| {
+                let has_caret_placeholder = needs_caret_placeholder || self.run_data.paints_caret;
+                results.push(TextRunItem::LineBreak(has_caret_placeholder.then(|| {
                     CaretPlaceholder {
                         run_data: self.run_data.clone(),
                         base_fragment_info: self.base_fragment_info,
                         // The placeholder that is placed after a newline is for the index after that newline.
                         // The newline itself is at the end of the previous line.
                         character_index: Utf32CodeUnits((relative_character_index + 1) as u32),
+                        creates_line: needs_caret_placeholder,
                     }
                 })));
                 continue;
@@ -853,6 +862,7 @@ impl TextRun {
                     run_data: self.run_data.clone(),
                     base_fragment_info: self.base_fragment_info,
                     character_index: Utf32CodeUnits(0),
+                    creates_line: true,
                 });
             }
             return;
