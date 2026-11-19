@@ -11515,6 +11515,10 @@
       "bdd3d9349af8ade8bb4dcec1d7d46256ee2cffa1",
       []
      ],
+     "replaced-initial-document.js": [
+      "9d672049b5ee97ba1ce4e9afca2cb7f1c0c02c67",
+      []
+     ],
      "second.html": [
       "c4fbe534ed193e1d192c0338997a8d9da8eb6406",
       []
@@ -14163,6 +14167,13 @@
       {}
      ]
     ],
+    "adopted-stylesheets-of-replaced-initial-document.html": [
+     "1ab91e8c05f159c24a3fb90ac8f0627bdde015ba",
+     [
+      null,
+      {}
+     ]
+    ],
     "animation-removed-node.html": [
      "d8845c873181c87cfde8bfdfbe31924ea6b73e59",
      [
@@ -15750,6 +15761,13 @@
     ],
     "style-remove-prop.html": [
      "07b319bb67ec2a4fe234a6ba98ddd17fc090d593",
+     [
+      null,
+      {}
+     ]
+    ],
+    "stylesheets-of-replaced-initial-document.html": [
+     "dc3bde7f2a3e071f625f29009ddaa1e2b69b6788",
      [
       null,
       {}

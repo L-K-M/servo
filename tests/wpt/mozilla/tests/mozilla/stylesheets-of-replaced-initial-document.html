@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Style elements of a frame's replaced initial about:blank document</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#initialise-the-document-object">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#update-a-style-block">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="resources/replaced-initial-document.js"></script>
+<body>
+<script>
+const RED = "rgb(255, 0, 0)";
+const GREEN = "rgb(0, 128, 0)";
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  await replaceInitialDocument(frame);
+
+  const style = initialDocument.createElement("style");
+  style.textContent = `p { color: ${RED}; }`;
+  initialDocument.head.append(style);
+  assert_not_equals(style.sheet, null, "the replaced document still parses its style elements");
+  assert_not_equals(colorOfParagraph(frame), RED);
+
+  style.remove();
+  assert_not_equals(colorOfParagraph(frame), RED);
+}, "A style element added to a replaced initial document does not style its replacement");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  const style = initialDocument.createElement("style");
+  style.textContent = `p { color: ${GREEN}; }`;
+  initialDocument.head.append(style);
+  await replaceInitialDocument(frame);
+
+  style.textContent = `p { color: ${RED}; }`;
+  assert_not_equals(style.sheet, null, "the style element has a new sheet");
+  assert_not_equals(colorOfParagraph(frame), RED);
+}, "Changing a style element left in a replaced initial document");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  const style = document.createElement("style");
+  style.textContent = `p { color: ${GREEN}; }`;
+  initialDocument.head.append(style);
+  assert_not_equals(style.sheet, null, "the style element has a sheet in the initial document");
+  const newDocument = await replaceInitialDocument(frame);
+
+  newDocument.head.append(style);
+  assert_not_equals(style.sheet, null, "the style element has a sheet in the new document");
+  assert_equals(colorOfParagraph(frame), GREEN);
+}, "Moving a style element from a replaced initial document into its replacement");
+</script>

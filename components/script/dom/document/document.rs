@@ -4293,6 +4293,18 @@ impl Document {
         self.window_detached.get()
     }
 
+    /// Whether this document's style sheets belong in its window's layout.
+    ///
+    /// A document without a browsing context has no layout of its own. A
+    /// same-origin document that replaces a frame's initial about:blank document
+    /// reuses that document's window, which gets a new layout for the new
+    /// document; the replaced document keeps its style sheets to itself, so that
+    /// they neither style the new document nor go missing from its layout when
+    /// they are removed.
+    fn owns_window_layout(&self) -> bool {
+        self.has_browsing_context() && !self.window_detached()
+    }
+
     /// Returns a policy value that should be used for fetches initiated by this document.
     pub(crate) fn insecure_requests_policy(&self) -> InsecureRequestsPolicy {
         if let Some(csp_list) = self.get_csp_list().as_ref() {
@@ -4955,7 +4967,7 @@ impl Document {
                 .cloned()
         };
 
-        if self.has_browsing_context() {
+        if self.owns_window_layout() {
             self.add_stylesheet_to_stylist(
                 sheet.clone(),
                 insertion_point.as_ref().map(|s| s.sheet.clone()),
@@ -4991,7 +5003,7 @@ impl Document {
                 .cloned()
         };
 
-        if self.has_browsing_context() {
+        if self.owns_window_layout() {
             self.add_stylesheet_to_stylist(
                 sheet.clone(),
                 insertion_point.as_ref().map(|s| s.sheet.clone()),
@@ -5021,7 +5033,7 @@ impl Document {
     /// Remove a stylesheet owned by `owner` from the list of document sheets.
     #[cfg_attr(crown, expect(crown::unrooted_must_root))] // Owner needs to be rooted already necessarily.
     pub(crate) fn remove_stylesheet(&self, owner: StylesheetSource, stylesheet: &Arc<Stylesheet>) {
-        if self.has_browsing_context() {
+        if self.owns_window_layout() {
             self.window
                 .layout_mut()
                 .remove_stylesheet(stylesheet.clone());
