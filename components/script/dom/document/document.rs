@@ -4296,11 +4296,11 @@ impl Document {
     /// Whether this document's style sheets belong in its window's layout.
     ///
     /// A document without a browsing context has no layout of its own. A
-    /// same-origin document that replaces a frame's initial about:blank document
-    /// reuses that document's window, which gets a new layout for the new
-    /// document; the replaced document keeps its style sheets to itself, so that
-    /// they neither style the new document nor go missing from its layout when
-    /// they are removed.
+    /// document that replaces a frame's initial about:blank document and is same
+    /// origin-domain with it reuses that document's window, which gets a new
+    /// layout for the new document; the replaced document keeps its style sheets
+    /// to itself, so that they neither style the new document nor go missing from
+    /// its layout when they are removed.
     fn owns_window_layout(&self) -> bool {
         self.has_browsing_context() && !self.window_detached()
     }

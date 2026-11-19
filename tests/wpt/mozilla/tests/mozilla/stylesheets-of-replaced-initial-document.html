@@ -31,6 +31,7 @@ promise_test(async t => {
   style.textContent = `p { color: ${GREEN}; }`;
   initialDocument.head.append(style);
   await replaceInitialDocument(frame);
+  assert_not_equals(colorOfParagraph(frame), GREEN, "the initial document's sheet does not style its replacement");
 
   style.textContent = `p { color: ${RED}; }`;
   assert_not_equals(style.sheet, null, "the style element has a new sheet");

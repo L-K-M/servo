@@ -1,5 +1,5 @@
-// A same-origin document that replaces a frame's initial about:blank document
-// reuses that document's window, and the window gets a new layout for it.
+// A document that replaces a frame's initial about:blank document and is same
+// origin-domain with it reuses that document's window, which gets a new layout.
 // https://html.spec.whatwg.org/multipage/#initialise-the-document-object (step 6)
 
 function frameWithInitialDocument(t) {
