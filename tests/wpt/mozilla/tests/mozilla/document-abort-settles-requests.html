@@ -72,6 +72,28 @@ promise_test(async t => {
 
 promise_test(async t => {
   const frame = await loadedFrame(t);
+  const response = frame.contentWindow.fetch("/common/redirect.py?location=/common/blank.html", { redirect: "error" });
+  // Stop before the failed fetch is done.
+  const stopped = response.catch(error => {
+    frame.contentWindow.stop();
+    throw error;
+  });
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, stopped, "the fetch"));
+  await delay(t, 200);
+}, "window.stop() leaves a fetch() that failed rejected");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const response = await settledWithin(
+    t, frame.contentWindow.fetch("/fetch/api/resources/trickle.py?ms=100&count=100"), "the response");
+  await response.body.cancel();
+  frame.contentWindow.stop();
+  await delay(t, 200);
+  assert_true(response.bodyUsed);
+}, "window.stop() leaves the cancelled body of a fetch() as it is");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
   const doc = frame.contentDocument;
   const form = doc.body.appendChild(doc.createElement("form"));
   form.action = "/common/blank.html?submitted";
