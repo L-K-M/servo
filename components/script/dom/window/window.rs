@@ -3178,6 +3178,20 @@ impl Window {
         ))
     }
 
+    /// The advance of each string in the computed font of its node's element, in CSS
+    /// pixels; see [`layout_api::Layout::query_text_advances`].
+    pub(crate) fn text_advances_query(&self, runs: &[(TrustedNodeAddress, String)]) -> Vec<f32> {
+        self.layout_reflow(QueryMsg::TextAdvancesQuery);
+
+        let document = self.Document();
+        let animations = document.animation_manager().sets();
+        self.layout.borrow().query_text_advances(
+            runs,
+            animations,
+            document.current_animation_timeline_value(),
+        )
+    }
+
     /// If the given |browsing_context_id| refers to an `<iframe>` that is an element
     /// in this [`Window`] and that `<iframe>` has been laid out, return its size.
     /// Otherwise, return `None`.

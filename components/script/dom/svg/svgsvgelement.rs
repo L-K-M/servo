@@ -386,11 +386,8 @@ impl SVGSVGElement {
             let Some(text) = node.downcast::<Text>() else {
                 continue;
             };
-            let transformed = match text_transform {
-                SvgTextTransform::Uppercase => text.data().to_uppercase(),
-                SvgTextTransform::Lowercase => text.data().to_lowercase(),
-                SvgTextTransform::Capitalize => capitalize_words(&text.data()),
-                SvgTextTransform::None | SvgTextTransform::Unsupported => continue,
+            let Some(transformed) = text_transform.apply(&text.data()) else {
+                continue;
             };
             text.upcast::<CharacterData>()
                 .SetData(cx, DOMString::from(transformed));
@@ -543,35 +540,4 @@ impl VirtualMethods for SVGSVGElement {
 
         self.invalidate_cached_serialized_subtree_and_rasterization_result(cx.no_gc());
     }
-}
-
-/// Uppercase the first typographic letter of every word. Approximates CSS
-/// `text-transform: capitalize` (CSS Text 4): a word boundary is a run of
-/// non-alphanumeric characters, except that apostrophes between letters
-/// ("don't") do not start a new word, and digits do not consume the word
-/// start ("2abc" becomes "2Abc").
-fn capitalize_words(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut at_word_start = true;
-    let mut previous_is_letter = false;
-
-    for character in text.chars() {
-        if character.is_alphabetic() {
-            if at_word_start {
-                result.extend(character.to_uppercase());
-                at_word_start = false;
-                previous_is_letter = true;
-                continue;
-            }
-            previous_is_letter = true;
-        } else if matches!(character, '\'' | '\u{2019}') && previous_is_letter {
-            // A word-internal apostrophe: keep the word going.
-        } else if !character.is_numeric() {
-            at_word_start = true;
-            previous_is_letter = false;
-        }
-        result.push(character);
-    }
-
-    result
 }
