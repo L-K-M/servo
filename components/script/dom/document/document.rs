@@ -1133,9 +1133,9 @@ impl Document {
 
         if activity != DocumentActivity::FullyActive {
             if !self.window_detached() {
-                // Whatever navigation made this document inactive is over for its navigable
-                // by the time the document is shown again.
-                self.window().clear_ongoing_navigation();
+                // The navigation that made this document inactive is over when it is
+                // shown again, but queued navigation tasks can still run on resume.
+                self.window().clear_started_navigation();
                 self.window().suspend(cx);
             }
             media.suspend(&client_context_id);
