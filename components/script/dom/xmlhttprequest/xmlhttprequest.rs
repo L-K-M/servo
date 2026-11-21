@@ -168,7 +168,6 @@ impl FetchResponseListener for XHRContext {
         self.xhr
             .root()
             .process_partial_response(cx, XHRProgress::Errored(self.gen_id, Error::Abort(None)));
-        *self.sync_status.safe_borrow_mut(cx.no_gc()) = Some(Err(Error::Abort(None)));
     }
 }
 
