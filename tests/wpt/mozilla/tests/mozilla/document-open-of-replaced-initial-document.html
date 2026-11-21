@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="timeout" content="long">
+<title>document.open() on a frame's replaced initial about:blank document</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-document-open">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-document-open-window">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#initialise-the-document-object">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script src="resources/replaced-initial-document.js"></script>
+<body>
+<script>
+// The replaced document has no node navigable, so opening it must not stop
+// loading in the window it shares with the document that replaced it.
+
+function slowURL() {
+  return `/common/slow.py?${Math.random()}`;
+}
+
+// /common/slow.py answers after two seconds; a request cancelled by mistake
+// never settles in Servo, so give up on it well after that, leaving room for
+// a slow machine.
+function settledWithin(t, promise, description) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => t.step_timeout(() => reject(new Error(`${description} did not settle`)), 10000)),
+  ]);
+}
+
+function animationFrame(window) {
+  return new Promise(resolve => window.requestAnimationFrame(resolve));
+}
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  await replaceInitialDocument(frame);
+
+  const response = frame.contentWindow.fetch(slowURL());
+  initialDocument.open();
+  initialDocument.write("<p id=written>Written</p>");
+  initialDocument.close();
+  assert_not_equals(initialDocument.getElementById("written"), null, "the replaced document parses what is written");
+
+  const { status } = await settledWithin(t, response, "the fetch");
+  assert_equals(status, 200);
+}, "document.open() on a replaced initial document leaves its replacement's fetches running");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  await replaceInitialDocument(frame);
+
+  const request = new frame.contentWindow.XMLHttpRequest();
+  const loaded = new Promise((resolve, reject) => {
+    request.onload = resolve;
+    request.onabort = request.onerror = () => reject(new Error("the request did not load"));
+  });
+  request.open("GET", slowURL());
+  request.send();
+  initialDocument.write("<p>Written</p>");
+  initialDocument.close();
+
+  await settledWithin(t, loaded, "the request");
+  assert_equals(request.status, 200);
+}, "document.write() on a replaced initial document leaves its replacement's requests running");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  await replaceInitialDocument(frame);
+
+  const source = new frame.contentWindow.EventSource("/eventsource/resources/message.py?sleep=500");
+  t.add_cleanup(() => source.close());
+  const message = new Promise((resolve, reject) => {
+    source.onmessage = resolve;
+    source.onerror = () => {
+      if (source.readyState == EventSource.CLOSED) {
+        reject(new Error("the event source was closed"));
+      }
+    };
+  });
+  initialDocument.open();
+  initialDocument.close();
+
+  const { data } = await settledWithin(t, message, "the event source");
+  assert_equals(data, "data");
+}, "document.open() on a replaced initial document leaves its replacement's event sources open");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  const newDocument = await replaceInitialDocument(frame);
+  await new Promise(resolve => t.step_timeout(resolve, 200));
+  await animationFrame(frame.contentWindow);
+  const before = newDocument.timeline.currentTime;
+  assert_greater_than(before, 0, "the new document's timeline has advanced");
+
+  initialDocument.open();
+  initialDocument.close();
+  await animationFrame(frame.contentWindow);
+  assert_greater_than_equal(newDocument.timeline.currentTime, before);
+}, "document.open() on a replaced initial document does not restart its replacement's timeline");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  const newDocument = await replaceInitialDocument(frame);
+
+  let error = null;
+  try {
+    initialDocument.open("/common/blank.html", "_self", "");
+  } catch (e) {
+    error = e;
+  }
+  assert_not_equals(error, null, "open(url, name, features) throws");
+  assert_equals(error.name, "InvalidAccessError");
+
+  await new Promise(resolve => t.step_timeout(resolve, 500));
+  assert_equals(frame.contentDocument, newDocument, "the frame still shows the replacement");
+}, "document.open(url, name, features) on a replaced initial document throws instead of navigating its frame");
+promise_test(async t => {
+  await new Promise(resolve => t.step_timeout(resolve, 200));
+  await animationFrame(window);
+  const before = document.timeline.currentTime;
+  assert_greater_than(before, 0, "this document's timeline has advanced");
+
+  const created = document.implementation.createHTMLDocument("");
+  created.open();
+  created.write("<p>Written</p>");
+  created.close();
+  await animationFrame(window);
+  assert_greater_than_equal(document.timeline.currentTime, before);
+}, "document.open() on a document without a browsing context does not restart its creator's timeline");
+</script>

@@ -14650,6 +14650,15 @@
       {}
      ]
     ],
+    "document-open-of-replaced-initial-document.html": [
+     "5f2112bc1ffba9b126bcf7a7fe96090ef45ed05d",
+     [
+      null,
+      {
+       "timeout": "long"
+      }
+     ]
+    ],
     "document-origin-redirect.html": [
      "92ce91a78ba0e84ff840100549cc7a5c13580c87",
      [
