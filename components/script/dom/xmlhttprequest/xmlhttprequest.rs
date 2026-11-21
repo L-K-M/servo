@@ -165,9 +165,10 @@ impl FetchResponseListener for XHRContext {
     /// A request that its document's abort terminated fails as an aborted one, as in other
     /// browsers: `abort` and `loadend` fire after `readyState` turns `DONE` with status 0.
     fn process_termination(self, cx: &mut JSContext, _: RequestId, _: bool) {
+        let error = Error::Abort(Some("The document stopped loading.".into()));
         self.xhr
             .root()
-            .process_partial_response(cx, XHRProgress::Errored(self.gen_id, Error::Abort(None)));
+            .process_partial_response(cx, XHRProgress::Errored(self.gen_id, error));
     }
 }
 
@@ -189,7 +190,7 @@ pub(crate) enum XHRProgress {
     Loading(GenerationId, Bytes),
     /// Loading is done
     Done(GenerationId),
-    /// There was an error (only Error::Abort(None), Error::Timeout(None) or Error::Network(None) is used)
+    /// There was an error (only Error::Abort, Error::Timeout or Error::Network are used)
     Errored(GenerationId, Error),
 }
 
@@ -1244,7 +1245,7 @@ impl XMLHttpRequest {
                 return_if_fetch_was_terminated!();
 
                 let errormsg = match e {
-                    Error::Abort(None) => "abort",
+                    Error::Abort(_) => "abort",
                     Error::Timeout(None) => "timeout",
                     _ => "error",
                 };
