@@ -14537,6 +14537,15 @@
       {}
      ]
     ],
+    "document-open-of-replaced-initial-document.html": [
+     "01ef87bff3c635943ebcdd99ee6995de69675572",
+     [
+      null,
+      {
+       "timeout": "long"
+      }
+     ]
+    ],
     "document-origin-redirect.html": [
      "92ce91a78ba0e84ff840100549cc7a5c13580c87",
      [
