@@ -1,0 +1,120 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SVGTextContentElement.getNumberOfChars() and getComputedTextLength()</title>
+<link rel="help" href="https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getNumberOfChars">
+<link rel="help" href="https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getComputedTextLength">
+<link rel="help" href="https://www.w3.org/TR/SVG11/text.html#WhiteSpace">
+<link rel="stylesheet" href="/fonts/ahem.css">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+@font-face {
+  font-family: NotoNaskhArabic;
+  src: url(/fonts/noto/NotoNaskhArabic-regular.woff2);
+}
+.arabic {
+  font-family: NotoNaskhArabic;
+}
+text {
+  font: 20px/1 Ahem;
+}
+</style>
+<svg width="800" height="400">
+  <path id="line" d="M 0 300 H 800"/>
+  <text id="plain" y="20">ABCD</text>
+  <text id="nested" y="40">AB<tspan id="nested-tspan">CD</tspan><a><tspan id="nested-link">E</tspan></a></text>
+  <text id="collapsed" y="60">
+    A   B
+&#9;C  </text>
+  <text id="across" y="80">A <tspan id="across-tspan"> B </tspan> </text>
+  <text id="preserved" y="100" xml:space="preserve"> A  B </text>
+  <text id="letter-spacing" y="120" style="letter-spacing: 5px">ABCD</text>
+  <text id="word-spacing" y="140" style="word-spacing: 10px">A B</text>
+  <text id="spacing" y="160" textLength="200">ABCD</text>
+  <text id="spacing-and-glyphs" y="180" textLength="200" lengthAdjust="spacingAndGlyphs">ABCD</text>
+  <text id="partly-hidden" y="200">AB<tspan style="display: none">CD</tspan></text>
+  <text id="hidden" y="220" style="display: none">ABCD</text>
+  <text id="on-path"><textPath href="#line">AB</textPath>C</text>
+  <text id="resized" y="240">ABCD</text>
+  <text id="transformed" y="260" style="text-transform: uppercase">ß</text>
+  <text id="astral" y="280">&#x1F600;</text>
+  <text id="arabic" class="arabic" y="320">سلام</text>
+  <text id="arabic-spaced" class="arabic" y="340" style="letter-spacing: 5px">سلام</text>
+  <defs><text id="defined">ABCD</text></defs>
+</svg>
+<script>
+setup({ explicit_done: true });
+
+// Ahem draws every character one em wide, so at 20px each advances by 20.
+function check(id, characters, length) {
+  const element = document.getElementById(id);
+  assert_equals(element.getNumberOfChars(), characters, `characters of #${id}`);
+  assert_approx_equals(element.getComputedTextLength(), length, 0.01, `length of #${id}`);
+}
+
+Promise.all([document.fonts.ready, document.fonts.load("20px NotoNaskhArabic")]).then(() => {
+  test(() => check("plain", 4, 80), "Text sums the advances of its characters");
+
+  test(() => {
+    check("nested", 5, 100);
+    check("nested-tspan", 2, 40);
+    check("nested-link", 1, 20);
+  }, "A text element counts the text of its tspan and a elements, and a tspan only its own");
+
+  test(() => check("collapsed", 5, 100),
+    "White space collapses to single spaces, and the text's leading and trailing spaces go");
+
+  test(() => {
+    check("across", 3, 60);
+    check("across-tspan", 1, 20);
+  }, "White space collapses across tspan elements");
+
+  test(() => check("preserved", 6, 120), "xml:space=preserve keeps every space");
+
+  test(() => check("letter-spacing", 4, 100), "letter-spacing adds to every advance");
+
+  test(() => {
+    const natural = document.getElementById("arabic").getComputedTextLength();
+    const spaced = document.getElementById("arabic-spaced").getComputedTextLength();
+    assert_greater_than(natural, 0);
+    assert_approx_equals(spaced, natural, 0.01);
+  }, "letter-spacing does not break cursive connections");
+
+  test(() => check("word-spacing", 3, 70), "word-spacing adds to the advance of a space");
+
+  test(() => {
+    check("spacing", 4, 80);
+    check("spacing-and-glyphs", 4, 200);
+  }, "textLength scales the advances only with lengthAdjust=spacingAndGlyphs");
+
+  test(() => {
+    check("partly-hidden", 2, 40);
+    check("hidden", 0, 0);
+    check("defined", 0, 0);
+  }, "Text that does not render counts nothing");
+
+  test(() => check("on-path", 3, 60), "A text element counts the text of its textPath");
+
+  test(() => {
+    const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    text.textContent = "ABCD";
+    assert_equals(text.getNumberOfChars(), 0);
+    assert_equals(text.getComputedTextLength(), 0);
+  }, "Disconnected text counts nothing");
+
+  test(() => {
+    const text = document.getElementById("resized");
+    check("resized", 4, 80);
+    text.style.fontSize = "10px";
+    check("resized", 4, 40);
+  }, "The length follows a style change");
+
+  test(() => check("transformed", 1, 40),
+    "Case transforms affect the advance and preserve the original character count");
+
+  test(() => assert_equals(document.querySelector("#astral").getNumberOfChars(), 2),
+    "Character counts use UTF-16 code units");
+
+  done();
+});
+</script>

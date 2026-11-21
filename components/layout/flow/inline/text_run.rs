@@ -880,7 +880,7 @@ impl TextRun {
 /// Cursive scripts do not admit gaps between their letters for either justification
 /// or letter-spacing. The following Unicode scripts are included: Arabic, Hanifi
 /// Rohingya, Mandaic, Mongolian, N’Ko, Phags Pa, Syriac
-fn is_cursive_script(script: Script) -> bool {
+pub(crate) fn is_cursive_script(script: Script) -> bool {
     matches!(
         script,
         Script::Arabic |
@@ -896,7 +896,7 @@ fn is_cursive_script(script: Script) -> bool {
 /// Whether or not this character should be able to change the font during segmentation.  Certain
 /// character are not rendered at all, so it doesn't matter what font we use to render them. They
 /// should just be added to the current segment.
-fn character_cannot_change_font(character: char) -> bool {
+pub(crate) fn character_cannot_change_font(character: char) -> bool {
     if character.is_control() {
         return true;
     }
