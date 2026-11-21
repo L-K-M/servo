@@ -114,6 +114,23 @@ promise_test(async t => {
   assert_equals(watched.request.status, 0);
 }, "document.open() during a planned form navigation stops loading and ends the document's requests");
 
+for (const [stop, how] of [
+  [frame => frame.contentWindow.stop(), "window.stop()"],
+  [frame => { frame.contentDocument.open(); frame.contentDocument.close(); }, "document.open()"],
+]) {
+  promise_test(async t => {
+    const frame = await loadedFrame(t);
+    const response = frame.contentWindow.fetch(slowURL());
+    const watched = watchedRequest(frame.contentWindow, slowURL());
+    frame.contentWindow.location.href = "/common/slow.py?delay=6000";
+    // By now the navigation has terminated the document's requests.
+    await delay(t, 500);
+    stop(frame);
+    await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response, "the fetch"));
+    assert_equals(await settledWithin(t, watched.ended, "the request"), "abort");
+  }, `${how} in a later task than the navigation it stops ends the requests the navigation terminated`);
+}
+
 promise_test(async t => {
   const frame = await loadedFrame(t);
   const doc = frame.contentDocument;

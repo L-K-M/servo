@@ -146,13 +146,26 @@ type TerminationSteps = Box<dyn FnOnce(&GlobalScope, RequestId, bool)>;
 pub(crate) enum TerminatedRequests {
     /// The document stays in use, as after `window.stop()` or `document.open()` during a
     /// navigation: its scripts are told how their requests ended, `fetch()` rejecting and
-    /// `XMLHttpRequest` firing `abort`, instead of waiting for them forever.
+    /// `XMLHttpRequest` firing `abort`, instead of waiting for them forever. Requests that a
+    /// navigation start held settle too.
     Settle,
-    /// The document is going away: its navigable is destroyed or navigates. Its requests end
-    /// silently. The standard would settle them when a navigation starts too, but their
-    /// handlers would then run while the next document loads, and a handler that navigates
-    /// could replace the navigation.
+    /// A navigation started, and the document stays until the next one replaces it. Its
+    /// requests end silently for now: the standard settles them at once, but their handlers
+    /// would then run while the next document loads, and a handler that navigates could
+    /// replace the navigation. If the navigation is stopped instead, stopping loading settles
+    /// them; a new document in the same window drops them.
+    Hold,
+    /// The document is going away with its navigable. Its requests end silently, and so do
+    /// those a navigation start held.
     Drop,
+}
+
+/// The termination steps of a fetch that a navigation start terminated, kept until the
+/// document either stops loading or goes away (see [`TerminatedRequests::Hold`]).
+struct HeldTermination {
+    request_id: RequestId,
+    response_processed: bool,
+    steps: TerminationSteps,
 }
 
 /// <https://fetch.spec.whatwg.org/#fetch-record>
@@ -186,6 +199,9 @@ pub(crate) struct FetchGroup {
     pub(crate) deferred_fetch_records: FxHashMap<DeferredFetchRecordId, QueuedDeferredFetchRecord>,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
     pub(crate) fetch_records: FxHashMap<RequestId, FetchRecord>,
+    /// Fetches terminated when a navigation started, in the order they were terminated.
+    #[ignore_malloc_size_of = "closures"]
+    held_terminations: Vec<HeldTermination>,
 }
 
 impl FetchGroup {
@@ -194,6 +210,7 @@ impl FetchGroup {
             core_resource_thread,
             deferred_fetch_records: Default::default(),
             fetch_records: Default::default(),
+            held_terminations: Default::default(),
         }
     }
 
@@ -284,6 +301,16 @@ impl FetchGroup {
         // Step 1. For each fetch record record of fetchGroup’s fetch records,
         // if record’s controller is non-null and record’s request’s done flag
         // is unset and keepalive is false, terminate record’s controller.
+        match terminated_requests {
+            TerminatedRequests::Settle => {
+                for held in self.held_terminations.drain(..) {
+                    (held.steps)(global, held.request_id, held.response_processed);
+                }
+            },
+            TerminatedRequests::Hold => {},
+            TerminatedRequests::Drop => self.held_terminations.clear(),
+        }
+
         let mut cancelled_any = false;
         self.fetch_records.retain(|request_id, fetch_record| {
             let Some(controller) = fetch_record.controller.as_mut() else {
@@ -294,10 +321,18 @@ impl FetchGroup {
             }
             if !controller.keep_alive() {
                 controller.terminate();
-                if let Some(termination_steps) = fetch_record.termination_steps.take() &&
-                    terminated_requests == TerminatedRequests::Settle
-                {
-                    termination_steps(global, *request_id, fetch_record.response_processed);
+                if let Some(steps) = fetch_record.termination_steps.take() {
+                    match terminated_requests {
+                        TerminatedRequests::Settle => {
+                            steps(global, *request_id, fetch_record.response_processed)
+                        },
+                        TerminatedRequests::Hold => self.held_terminations.push(HeldTermination {
+                            request_id: *request_id,
+                            response_processed: fetch_record.response_processed,
+                            steps,
+                        }),
+                        TerminatedRequests::Drop => {},
+                    }
                 }
                 cancelled_any = true;
                 return false;
@@ -345,6 +380,11 @@ impl FetchGroup {
             NetworkListener::new(fetch_later_listener, task_source, global),
         );
         // Step 4 is handled by caller
+    }
+
+    /// Drops what a navigation start held, when a new document takes over the window.
+    pub(crate) fn drop_held_terminations(&mut self) {
+        self.held_terminations.clear();
     }
 
     pub(crate) fn mark_fetch_response_as_processed(&mut self, request_id: &RequestId) {

@@ -4245,8 +4245,10 @@ impl Window {
         global.set_creation_url(creation_url);
         global.set_top_level_creation_url(top_level_creation_url);
 
-        // The navigation that replaces the initial about:blank document is complete.
+        // The navigation that replaces the initial about:blank document is complete, and the
+        // requests it held for that document are over.
         self.clear_ongoing_navigation();
+        global.fetch_group_mut().drop_held_terminations();
 
         self.Document().detach_window();
     }
