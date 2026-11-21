@@ -7027,15 +7027,24 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             return Ok(DomRoot::from_ref(self));
         }
 
+        // A document has no node navigable once it is no longer its navigable's active
+        // document. A frame's initial about:blank document that a same origin-domain
+        // document replaced still has a browsing context, but its window now belongs to
+        // the replacement: that document's navigation start and fetches are not this
+        // document's to reset or to stop.
+        let has_node_navigable = self.is_active();
+
         // TODO: prompt to unload.
         // TODO: set unload_event_start and unload_event_end
 
-        self.window().set_navigation_start();
+        if has_node_navigable {
+            self.window().set_navigation_start();
+        }
 
         // Step 8. If document's node navigable is non-null and document's node navigable's
         // ongoing navigation is a navigation ID, then stop loading document's node navigable.
         // TODO: https://github.com/servo/servo/issues/21937
-        if self.has_browsing_context() {
+        if has_node_navigable {
             // spec says "stop document loading",
             // which is a process that does more than just abort
             self.abort(cx);
@@ -7120,11 +7129,17 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         target: DOMString,
         features: DOMString,
     ) -> Fallible<Option<DomRoot<WindowProxy>>> {
-        self.browsing_context()
-            .ok_or(Error::InvalidAccess(Some(
+        if self.is_fully_active() {
+            self.browsing_context()
+                .ok_or(Error::InvalidAccess(Some(
+                    "Failed to get browsing context".into(),
+                )))?
+                .open(cx, url, target, features)
+        } else {
+            Err(Error::InvalidAccess(Some(
                 "Document is not fully active".into(),
-            )))?
-            .open(cx, url, target, features)
+            )))
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-document-write>
