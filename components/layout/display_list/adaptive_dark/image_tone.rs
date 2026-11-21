@@ -597,6 +597,7 @@ mod tests {
             },
             format: PixelFormat::RGBA8,
             id: None,
+            load_time: None,
             cors_status: pixels::CorsStatus::Safe,
             bytes: std::sync::Arc::new(frame.repeat(frames)),
             frames: (0..frames)

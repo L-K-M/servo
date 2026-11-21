@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>A preserved newline at the end of editable text adds no line</title>
+<link rel="help" href="https://www.w3.org/TR/css-text-3/#white-space-phase-2">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+pre, div { margin: 0; font: 20px/20px monospace; }
+div { white-space: pre-wrap; }
+</style>
+<pre id="plain">ABC
+</pre>
+<pre id="editable" contenteditable>ABC
+</pre>
+<div id="wrapped" contenteditable>ABC
+</div>
+<pre id="with-br" contenteditable>ABC
+<br></pre>
+<script>
+test(() => {
+  assert_equals(document.getElementById("plain").offsetHeight, 20);
+}, "Text that is not editable has one line");
+
+test(() => {
+  assert_equals(document.getElementById("editable").offsetHeight, 20);
+  assert_equals(document.getElementById("wrapped").offsetHeight, 20);
+}, "The caret position after the newline creates no line in editable text");
+
+test(() => {
+  const element = document.getElementById("with-br");
+  element.focus();
+  getSelection().collapse(element.firstChild, 4);
+  assert_equals(element.offsetHeight, 40);
+}, "A caret on the line of a following <br> does not change its height");
+</script>

@@ -180,7 +180,6 @@ pub(crate) fn axis_source(
             own_fallback.cloned()
         },
         style::values::generics::grid::GenericGridTemplateComponent::None => None,
-        style::values::generics::grid::GenericGridTemplateComponent::Masonry => None,
     }
 }
 

@@ -41,11 +41,11 @@ use net::test::HttpState;
 use net::test_util::{
     create_generic_embedder_proxy, make_body, make_server, make_ssl_server, replace_host_table,
 };
+use net_traits::FetchTaskTarget;
 use net_traits::blob_url_store::BlobTokenCommunicator;
 use net_traits::filemanager_thread::FileTokenCheck;
 use net_traits::request::Request;
 use net_traits::response::Response;
-use net_traits::{FetchTaskTarget, ResourceFetchTiming, ResourceTimingType};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use servo_url::{ImmutableOrigin, ServoUrl};
@@ -120,6 +120,7 @@ fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> Http
         hsts_list: RwLock::new(net::hsts::HstsList::default()),
         cookie_jar: RwLock::new(net::cookie_storage::CookieStorage::new(150)),
         auth_cache: RwLock::new(net::resource_thread::AuthCache::default()),
+        cors_cache: RwLock::new(net::fetch::cors_cache::CorsCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: net::http_cache::HttpCache::new(net::http_cache::HttpCacheAssignment::Public),
         client: create_http_client(tls_config.clone(), ConnectionReuse::Pooled),
@@ -143,7 +144,6 @@ fn new_fetch_context(
         file_token: FileTokenCheck::NotRequired,
         request_interceptor: Arc::new(TokioMutex::new(RequestInterceptor::new(sender))),
         cancellation_listener: Arc::new(Default::default()),
-        timing: ResourceFetchTiming::new(ResourceTimingType::Navigation).into(),
         protocols: Arc::new(ProtocolRegistry::with_internal_protocols()),
         websocket_chan: None,
         ca_certificates: CACertificates::Default,
@@ -182,10 +182,17 @@ fn fetch_with_cors_cache(request: Request, cache: &mut CorsCache) -> Response {
         sender: Some(sender),
     };
     let mut fetch_context = new_fetch_context(None, None);
-    spawn_blocking_task(async move {
-        methods::fetch_with_cors_cache(request, cache, &mut target, &mut fetch_context).await;
-        receiver.await.unwrap()
-    })
+    // Pre-seed the shared CORS cache in the context, then read it back after.
+    *fetch_context.state.cors_cache.write() = cache.clone();
+    let (response, new_cors_cache) = spawn_blocking_task(async move {
+        methods::fetch(request, &mut target, &mut fetch_context).await;
+        (
+            receiver.await.unwrap(),
+            fetch_context.state.cors_cache.read().clone(),
+        )
+    });
+    *cache = new_cors_cache;
+    response
 }
 
 pub(crate) fn mock_origin() -> ImmutableOrigin {

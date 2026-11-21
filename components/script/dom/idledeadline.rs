@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 
 use crate::dom::bindings::callback::{ExceptionHandling, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::RequestIdleCallbackBinding::{
@@ -63,7 +63,8 @@ impl IdleDeadline {
         start: Instant,
         did_timeout: bool,
     ) -> DomRoot<IdleDeadline> {
-        reflect_dom_object_with_cx(
+        reflect_dom_object(
+            cx,
             Box::new(IdleDeadline {
                 reflector_: Reflector::new(),
                 window: Dom::from_ref(window),
@@ -71,7 +72,6 @@ impl IdleDeadline {
                 did_timeout,
             }),
             window,
-            cx,
         )
     }
 

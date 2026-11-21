@@ -434,6 +434,7 @@ impl IntersectionObserver {
     fn disconnect_from_owner(&self) {
         if self.connected_to_document.get() {
             self.owner_doc.remove_intersection_observer(self);
+            self.connected_to_document.set(false);
         }
     }
 
@@ -521,6 +522,7 @@ impl IntersectionObserver {
     /// <https://www.w3.org/TR/intersection-observer/>
     fn maybe_compute_intersection_output(
         &self,
+        cx: &mut JSContext,
         target: &Element,
         maybe_root_bounds: Option<Rect<Au, CSSPixel>>,
     ) -> IntersectionObservationOutput {
@@ -574,6 +576,7 @@ impl IntersectionObserver {
         // > Let intersectionRect be the result of running the compute the intersection algorithm on
         // > target and observer’s intersection root.
         let maybe_intersection_rect = compute_the_intersection(
+            cx,
             target,
             &root_intersection,
             root_bounds,
@@ -676,7 +679,8 @@ impl IntersectionObserver {
             registration.last_update_time.set(time);
 
             // step 4-14
-            let intersection_output = self.maybe_compute_intersection_output(target, root_bounds);
+            let intersection_output =
+                self.maybe_compute_intersection_output(cx, target, root_bounds);
 
             // Step 15-17
             // > 15. Let previousThresholdIndex be the registration’s previousThresholdIndex property.
@@ -921,6 +925,7 @@ fn intersect_rectangle(
 /// space of the target's owning [`Document`]. Additionally, we assume that both the target and the root is connected.
 /// <https://w3c.github.io/IntersectionObserver/#compute-the-intersection>
 fn compute_the_intersection(
+    cx: &mut JSContext,
     target: &Element,
     root: &ElementOrDocument,
     root_bounds: Rect<Au, CSSPixel>,
@@ -967,7 +972,7 @@ fn compute_the_intersection(
                     // `display: none` after its document was laid out, is not rendered, so nothing
                     // inside it intersects the root.
                     let frame_node = frame_container.upcast::<Node>();
-                    let frame_padding_box = frame_node.padding_box().or_else(|| {
+                    let frame_padding_box = frame_node.padding_box(cx).or_else(|| {
                         frame_node.owner_window().box_area_query_without_reflow(
                             frame_node,
                             BoxAreaType::Padding,
