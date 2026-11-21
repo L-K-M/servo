@@ -3,6 +3,7 @@
 <meta name="timeout" content="long">
 <title>document.open() on a frame's replaced initial about:blank document</title>
 <link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-document-open">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#dom-document-open-window">
 <link rel="help" href="https://html.spec.whatwg.org/multipage/#initialise-the-document-object">
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
@@ -95,4 +96,21 @@ promise_test(async t => {
   await animationFrame(frame.contentWindow);
   assert_greater_than_equal(newDocument.timeline.currentTime, before);
 }, "document.open() on a replaced initial document does not restart its replacement's timeline");
+
+promise_test(async t => {
+  const { frame, initialDocument } = frameWithInitialDocument(t);
+  const newDocument = await replaceInitialDocument(frame);
+
+  let error = null;
+  try {
+    initialDocument.open("/common/blank.html", "_self", "");
+  } catch (e) {
+    error = e;
+  }
+  assert_not_equals(error, null, "open(url, name, features) throws");
+  assert_equals(error.name, "InvalidAccessError");
+
+  await new Promise(resolve => t.step_timeout(resolve, 500));
+  assert_equals(frame.contentDocument, newDocument, "the frame still shows the replacement");
+}, "document.open(url, name, features) on a replaced initial document throws instead of navigating its frame");
 </script>
