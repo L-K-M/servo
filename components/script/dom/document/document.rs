@@ -1133,6 +1133,9 @@ impl Document {
 
         if activity != DocumentActivity::FullyActive {
             if !self.window_detached() {
+                // Whatever navigation made this document inactive is over for its navigable
+                // by the time the document is shown again.
+                self.window().clear_ongoing_navigation();
                 self.window().suspend(cx);
             }
             media.suspend(&client_context_id);
@@ -7050,11 +7053,9 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
         // Step 8. If document's node navigable is non-null and document's node navigable's
         // ongoing navigation is a navigation ID, then stop loading document's node navigable.
-        // TODO: https://github.com/servo/servo/issues/21937
-        if has_node_navigable {
-            // spec says "stop document loading",
-            // which is a process that does more than just abort
-            self.abort(cx, TerminatedRequests::Settle);
+        // A document that is not navigating keeps its fetches.
+        if has_node_navigable && self.window().has_ongoing_navigation() {
+            self.window().stop_loading(cx);
         }
 
         // Step 9. For each shadow-including inclusive descendant node of document,

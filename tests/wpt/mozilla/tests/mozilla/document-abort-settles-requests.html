@@ -1,15 +1,19 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="timeout" content="long">
-<title>Requests that stopping a document's loading terminates</title>
+<title>Requests that stopping a document's loading terminates, and document.open() without a navigation</title>
 <link rel="help" href="https://html.spec.whatwg.org/multipage/#abort-a-document">
 <link rel="help" href="https://html.spec.whatwg.org/multipage/#nav-stop">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#document-open-steps">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#navigate-to-a-javascript:-url">
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <body>
 <script>
 // A request that stopping its document's loading terminates must settle
-// rather than hang, while one whose document is going away ends silently.
+// rather than hang, and document.open() stops loading only during a
+// navigation, so links that do not navigate to a new document must not leave
+// one behind.
 
 function slowURL() {
   return `/common/slow.py?${Math.random()}`;
@@ -65,6 +69,52 @@ promise_test(async t => {
   frame.contentWindow.stop();
   await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response.text(), "the body"));
 }, "window.stop() fails the body of a fetch() whose response arrived");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const doc = frame.contentDocument;
+  const form = doc.body.appendChild(doc.createElement("form"));
+  form.action = "/common/blank.html?submitted";
+  const response = frame.contentWindow.fetch(slowURL());
+  form.submit();
+  doc.open();
+  doc.close();
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response, "the fetch"));
+}, "document.open() during a planned form navigation stops loading and rejects the document's fetches");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const doc = frame.contentDocument;
+  const link = doc.body.appendChild(doc.createElement("a"));
+  link.href = "#somewhere";
+  const navigated = new Promise(resolve => frame.contentWindow.onhashchange = resolve);
+  link.click();
+  await settledWithin(t, navigated, "the fragment navigation");
+
+  const response = frame.contentWindow.fetch(slowURL());
+  doc.open();
+  doc.close();
+  const { status } = await settledWithin(t, response, "the fetch");
+  assert_equals(status, 200);
+}, "A fragment link leaves no ongoing navigation for document.open() to stop");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const doc = frame.contentDocument;
+  const link = doc.body.appendChild(doc.createElement("a"));
+  link.href = "javascript:void(window.evaluated = true)";
+  link.click();
+  for (let waited = 0; !frame.contentWindow.evaluated; waited += 50) {
+    assert_less_than(waited, 10000, "the javascript: URL is evaluated");
+    await delay(t, 50);
+  }
+
+  const response = frame.contentWindow.fetch(slowURL());
+  doc.open();
+  doc.close();
+  const { status } = await settledWithin(t, response, "the fetch");
+  assert_equals(status, 200);
+}, "A javascript: URL that yields no document leaves no ongoing navigation for document.open() to stop");
 
 promise_test(async t => {
   const frame = await loadedFrame(t);

@@ -475,7 +475,7 @@ pub(crate) fn navigate(
     // Step 18. If navigable's ongoing navigation is "traversal", then:
     // TODO
     // Step 19. Set the ongoing navigation for navigable to navigationId.
-    // TODO
+    window.note_ongoing_navigation();
 
     // Step 20. If url's scheme is "javascript", then:
     if load_data.url.scheme() == "javascript" {
@@ -499,6 +499,9 @@ pub(crate) fn navigate(
             // Important re security. See https://github.com/servo/servo/issues/23373
             let target_window = target_window.root();
             let initiator_window = initiator_window.root();
+            // <https://html.spec.whatwg.org/multipage/#navigate-to-a-javascript:-url>
+            // Step 3. Set the ongoing navigation for targetNavigable to null.
+            target_window.clear_ongoing_navigation();
             if ScriptThread::navigate_to_javascript_url(cx, initiator_window.upcast(), target_window.upcast(), &mut load_data, None, None) {
                 target_window
                     .as_global_scope()
