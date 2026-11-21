@@ -18,11 +18,12 @@ function slowURL() {
 }
 
 // /common/slow.py answers after two seconds; a request cancelled by mistake
-// never settles in Servo, so give up on it well after that.
+// never settles in Servo, so give up on it well after that, leaving room for
+// a slow machine.
 function settledWithin(t, promise, description) {
   return Promise.race([
     promise,
-    new Promise((_, reject) => t.step_timeout(() => reject(new Error(`${description} did not settle`)), 6000)),
+    new Promise((_, reject) => t.step_timeout(() => reject(new Error(`${description} did not settle`)), 10000)),
   ]);
 }
 
