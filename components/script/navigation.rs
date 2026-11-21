@@ -475,8 +475,7 @@ pub(crate) fn navigate(
     // Step 18. If navigable's ongoing navigation is "traversal", then:
     // TODO
     // Step 19. Set the ongoing navigation for navigable to navigationId.
-    let earlier_navigation_was_ongoing = window.has_ongoing_navigation();
-    window.note_ongoing_navigation();
+    let earlier_navigation_had_started = window.note_ongoing_navigation();
 
     // Step 20. If url's scheme is "javascript", then:
     if load_data.url.scheme() == "javascript" {
@@ -550,8 +549,8 @@ pub(crate) fn navigate(
         // TODO
         // The standard keeps navigationId as the ongoing navigation, but none goes on, and
         // `document.open()` would stop the document's loading for it.
-        if !earlier_navigation_was_ongoing {
-            window.clear_ongoing_navigation();
+        if !earlier_navigation_had_started {
+            window.clear_started_navigation();
         }
         // Step 24.2.2. Abort these steps.
         return;

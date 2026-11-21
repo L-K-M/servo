@@ -908,14 +908,20 @@ impl Window {
     }
 
     /// Notes that this window's navigable now has an ongoing navigation that is a navigation
-    /// ID, as step 19 of <https://html.spec.whatwg.org/multipage/#navigate> sets it.
-    pub(crate) fn note_ongoing_navigation(&self) {
-        self.navigation_is_ongoing.set(true);
+    /// ID, as step 19 of <https://html.spec.whatwg.org/multipage/#navigate> sets it. Returns
+    /// whether a navigation already started, independently of the queue.
+    pub(crate) fn note_ongoing_navigation(&self) -> bool {
+        self.navigation_is_ongoing.replace(true)
+    }
+
+    /// Clears the started navigation while keeping any queued navigations.
+    pub(crate) fn clear_started_navigation(&self) {
+        self.navigation_is_ongoing.set(false);
     }
 
     /// Sets this window's navigable's ongoing navigation to null.
     pub(crate) fn clear_ongoing_navigation(&self) {
-        self.navigation_is_ongoing.set(false);
+        self.clear_started_navigation();
         self.queued_navigations.set(0);
     }
 
