@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="timeout" content="long">
+<title>Requests that stopping a document's loading terminates</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#abort-a-document">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#nav-stop">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<script>
+// A request that stopping its document's loading terminates must settle
+// rather than hang, while one whose document is going away ends silently.
+
+function slowURL() {
+  return `/common/slow.py?${Math.random()}`;
+}
+
+// /common/slow.py answers after two seconds; a request that is never told how
+// it ended does not settle, so give up on it well after that.
+function settledWithin(t, promise, description) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => t.step_timeout(() => reject(new Error(`${description} did not settle`)), 10000)),
+  ]);
+}
+
+function delay(t, ms) {
+  return new Promise(resolve => t.step_timeout(resolve, ms));
+}
+
+async function loadedFrame(t) {
+  const frame = document.createElement("iframe");
+  t.add_cleanup(() => frame.remove());
+  const loaded = new Promise(resolve => frame.onload = resolve);
+  frame.src = "/common/blank.html";
+  document.body.append(frame);
+  await loaded;
+  return frame;
+}
+
+// Records the first event that ends a request, or null while none has.
+function watchedRequest(window, url) {
+  const request = new window.XMLHttpRequest();
+  const watched = { ending: null };
+  for (const type of ["load", "error", "abort", "timeout"]) {
+    request.addEventListener(type, () => watched.ending ??= type);
+  }
+  request.open("GET", url);
+  request.send();
+  return watched;
+}
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const response = frame.contentWindow.fetch(slowURL());
+  frame.contentWindow.stop();
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response, "the fetch"));
+}, "window.stop() rejects a fetch() whose response has not arrived");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  // Headers after a tenth of a second, then a line every tenth of a second.
+  const response = await settledWithin(
+    t, frame.contentWindow.fetch("/fetch/api/resources/trickle.py?ms=100&count=100"), "the response");
+  frame.contentWindow.stop();
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response.text(), "the body"));
+}, "window.stop() fails the body of a fetch() whose response arrived");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const request = watchedRequest(frame.contentWindow, slowURL());
+  let fetchEnding = null;
+  frame.contentWindow.fetch(slowURL()).then(() => fetchEnding = "resolved", () => fetchEnding = "rejected");
+  // The new document takes three seconds to arrive, longer than the requests would.
+  frame.contentWindow.location.href = "/common/slow.py?delay=3000";
+  await delay(t, 1000);
+  assert_equals(request.ending, null, "the request");
+  assert_equals(fetchEnding, null, "the fetch");
+}, "A navigation that starts ends the requests of the document it leaves silently");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const request = watchedRequest(frame.contentWindow, slowURL());
+  frame.remove();
+  await delay(t, 1000);
+  assert_equals(request.ending, null);
+}, "Removing a frame ends its document's requests silently");
+</script>

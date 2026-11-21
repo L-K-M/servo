@@ -45,7 +45,7 @@ use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::dom::windowproxy::WindowProxy;
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::FetchCanceller;
+use crate::fetch::fetch::{FetchCanceller, TerminatedRequests};
 use crate::messaging::MainThreadScriptMsg;
 
 #[derive(Clone)]
@@ -556,7 +556,9 @@ pub(crate) fn navigate(
         .task_manager()
         .navigation_and_traversal_task_source()
         .queue(task!(abort_a_document_and_its_descendants: move |cx| {
-            trusted_document.root().abort_a_document_and_its_descendants(cx);
+            trusted_document
+                .root()
+                .abort_a_document_and_its_descendants(cx, TerminatedRequests::Drop);
         }));
 
     // Step 24.9. Attempt to populate the history entry's document for historyEntry,

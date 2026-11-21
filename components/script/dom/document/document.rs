@@ -224,7 +224,7 @@ use crate::dom::{FlatTreeParent, RootedPromise, WeakRangeVec};
 use crate::event_loop::document_loader::{DocumentLoader, LoadType};
 use crate::event_loop::script_thread::{ScriptThread, SharedRwLocks};
 use crate::event_loop::timers::{OneshotTimerCallback, OneshotTimers};
-use crate::fetch::fetch::{DeferredFetchRecordInvokeState, FetchCanceller};
+use crate::fetch::fetch::{DeferredFetchRecordInvokeState, FetchCanceller, TerminatedRequests};
 use crate::fetch::network_listener::FetchResponseListener;
 use crate::mime::{APPLICATION, CHARSET};
 use crate::modules::script_module::{ModuleRequest, ModuleStatus};
@@ -2956,7 +2956,8 @@ impl Document {
     pub(crate) fn destroy(&self, cx: &mut JSContext) {
         let exited_window = self.window();
         // Step 2. Abort document.
-        self.abort(cx);
+        // Its requests' outcomes would only reach a document that is gone.
+        self.abort(cx, TerminatedRequests::Drop);
         // Step 3. Set document's salvageable state to false.
         self.salvageable.set(false);
         // Step 4. Let ports be the list of MessagePorts whose relevant
@@ -3004,7 +3005,7 @@ impl Document {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#abort-a-document>
-    pub(crate) fn abort(&self, cx: &mut JSContext) {
+    pub(crate) fn abort(&self, cx: &mut JSContext, terminated_requests: TerminatedRequests) {
         // We need to inhibit the loader before anything else.
         self.loader.borrow_mut().inhibit_events();
 
@@ -3023,7 +3024,9 @@ impl Document {
         self.deferred_scripts.clear();
 
         let global = self.window.as_global_scope();
-        let loads_cancelled = global.fetch_group_mut().terminate(global);
+        let loads_cancelled = global
+            .fetch_group_mut()
+            .terminate(global, terminated_requests);
         let event_sources_canceled = global.close_event_sources();
 
         if loads_cancelled || event_sources_canceled {
@@ -3054,7 +3057,11 @@ impl Document {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#abort-a-document-and-its-descendants>
-    pub(crate) fn abort_a_document_and_its_descendants(&self, cx: &mut JSContext) {
+    pub(crate) fn abort_a_document_and_its_descendants(
+        &self,
+        cx: &mut JSContext,
+        terminated_requests: TerminatedRequests,
+    ) {
         // Step 1. Assert: this is running as part of a task queued on document's relevant agent's event loop.
         // TODO
 
@@ -3073,7 +3080,7 @@ impl Document {
                     .queue(task!(abort_iframe_document: move |cx| {
                         let descendant_document = trusted_descendant_document.root();
                         // Step 3.1. Abort descendantNavigable's active document.
-                        descendant_document.abort(cx);
+                        descendant_document.abort(cx, terminated_requests);
                         // Step 3.2. If descendantNavigable's active document's salvageable is false, then set document's salvageable to false.
                         if !descendant_document.salvageable.get() {
                             document.root().salvageable.set(false);
@@ -3083,7 +3090,7 @@ impl Document {
         }
 
         // Step 4. Abort document.
-        self.abort(cx);
+        self.abort(cx, terminated_requests);
     }
 
     pub(crate) fn notify_constellation_load(&self) {
@@ -7047,7 +7054,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         if has_node_navigable {
             // spec says "stop document loading",
             // which is a process that does more than just abort
-            self.abort(cx);
+            self.abort(cx, TerminatedRequests::Settle);
         }
 
         // Step 9. For each shadow-including inclusive descendant node of document,
