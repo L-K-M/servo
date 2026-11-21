@@ -113,4 +113,17 @@ promise_test(async t => {
   await new Promise(resolve => t.step_timeout(resolve, 500));
   assert_equals(frame.contentDocument, newDocument, "the frame still shows the replacement");
 }, "document.open(url, name, features) on a replaced initial document throws instead of navigating its frame");
+promise_test(async t => {
+  await new Promise(resolve => t.step_timeout(resolve, 200));
+  await animationFrame(window);
+  const before = document.timeline.currentTime;
+  assert_greater_than(before, 0, "this document's timeline has advanced");
+
+  const created = document.implementation.createHTMLDocument("");
+  created.open();
+  created.write("<p>Written</p>");
+  created.close();
+  await animationFrame(window);
+  assert_greater_than_equal(document.timeline.currentTime, before);
+}, "document.open() on a document without a browsing context does not restart its creator's timeline");
 </script>
