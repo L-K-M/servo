@@ -1,0 +1,191 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="timeout" content="long">
+<title>Requests that stopping a document's loading terminates, and document.open() without a navigation</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#abort-a-document">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#nav-stop">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#document-open-steps">
+<link rel="help" href="https://html.spec.whatwg.org/multipage/#navigate-to-a-javascript:-url">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<script>
+// A request that stopping its document's loading terminates must settle
+// rather than hang, and document.open() stops loading only during a
+// navigation, so links that do not navigate to a new document must not leave
+// one behind.
+
+function slowURL() {
+  return `/common/slow.py?${Math.random()}`;
+}
+
+// /common/slow.py answers after two seconds; a request that is never told how
+// it ended does not settle, so give up on it well after that.
+function settledWithin(t, promise, description) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => t.step_timeout(() => reject(new Error(`${description} did not settle`)), 10000)),
+  ]);
+}
+
+function delay(t, ms) {
+  return new Promise(resolve => t.step_timeout(resolve, ms));
+}
+
+async function loadedFrame(t) {
+  const frame = document.createElement("iframe");
+  t.add_cleanup(() => frame.remove());
+  const loaded = new Promise(resolve => frame.onload = resolve);
+  frame.src = "/common/blank.html";
+  document.body.append(frame);
+  await loaded;
+  return frame;
+}
+
+// Records the first event that ends a request, or null while none has, and
+// resolves `ended` with it.
+function watchedRequest(window, url) {
+  const request = new window.XMLHttpRequest();
+  const watched = { request, ending: null };
+  watched.ended = new Promise(resolve => {
+    for (const type of ["load", "error", "abort", "timeout"]) {
+      request.addEventListener(type, () => {
+        watched.ending ??= type;
+        resolve(watched.ending);
+      });
+    }
+  });
+  request.open("GET", url);
+  request.send();
+  return watched;
+}
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const response = frame.contentWindow.fetch(slowURL());
+  frame.contentWindow.stop();
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response, "the fetch"));
+}, "window.stop() rejects a fetch() whose response has not arrived");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  // Headers after a tenth of a second, then a line every tenth of a second.
+  const response = await settledWithin(
+    t, frame.contentWindow.fetch("/fetch/api/resources/trickle.py?ms=100&count=100"), "the response");
+  frame.contentWindow.stop();
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response.text(), "the body"));
+}, "window.stop() fails the body of a fetch() whose response arrived");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const response = frame.contentWindow.fetch("/common/redirect.py?location=/common/blank.html", { redirect: "error" });
+  // Stop before the failed fetch is done.
+  const stopped = response.catch(error => {
+    frame.contentWindow.stop();
+    throw error;
+  });
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, stopped, "the fetch"));
+  await delay(t, 200);
+}, "window.stop() leaves a fetch() that failed rejected");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const response = await settledWithin(
+    t, frame.contentWindow.fetch("/fetch/api/resources/trickle.py?ms=100&count=100"), "the response");
+  await response.body.cancel();
+  frame.contentWindow.stop();
+  await delay(t, 200);
+  assert_true(response.bodyUsed);
+}, "window.stop() leaves the cancelled body of a fetch() as it is");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const doc = frame.contentDocument;
+  const form = doc.body.appendChild(doc.createElement("form"));
+  form.action = "/common/blank.html?submitted";
+  const response = frame.contentWindow.fetch(slowURL());
+  const watched = watchedRequest(frame.contentWindow, slowURL());
+  form.submit();
+  doc.open();
+  doc.close();
+  await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response, "the fetch"));
+  assert_equals(await settledWithin(t, watched.ended, "the request"), "abort");
+  assert_equals(watched.request.readyState, XMLHttpRequest.DONE);
+  assert_equals(watched.request.status, 0);
+}, "document.open() during a planned form navigation stops loading and ends the document's requests");
+
+for (const [stop, how] of [
+  [frame => frame.contentWindow.stop(), "window.stop()"],
+  [frame => { frame.contentDocument.open(); frame.contentDocument.close(); }, "document.open()"],
+]) {
+  promise_test(async t => {
+    const frame = await loadedFrame(t);
+    const response = frame.contentWindow.fetch(slowURL());
+    const watched = watchedRequest(frame.contentWindow, slowURL());
+    frame.contentWindow.location.href = "/common/slow.py?delay=6000";
+    // By now the navigation has terminated the document's requests.
+    await delay(t, 500);
+    stop(frame);
+    await promise_rejects_js(t, frame.contentWindow.TypeError, settledWithin(t, response, "the fetch"));
+    assert_equals(await settledWithin(t, watched.ended, "the request"), "abort");
+  }, `${how} in a later task than the navigation it stops ends the requests the navigation terminated`);
+}
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const doc = frame.contentDocument;
+  const link = doc.body.appendChild(doc.createElement("a"));
+  link.href = "#somewhere";
+  const navigated = new Promise(resolve => frame.contentWindow.onhashchange = resolve);
+  link.click();
+  await settledWithin(t, navigated, "the fragment navigation");
+
+  const response = frame.contentWindow.fetch(slowURL());
+  doc.open();
+  doc.close();
+  const { status } = await settledWithin(t, response, "the fetch");
+  assert_equals(status, 200);
+}, "A fragment link leaves no ongoing navigation for document.open() to stop");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const doc = frame.contentDocument;
+  const link = doc.body.appendChild(doc.createElement("a"));
+  link.href = "javascript:void(window.evaluated = true)";
+  link.click();
+  for (let waited = 0; !frame.contentWindow.evaluated; waited += 50) {
+    assert_less_than(waited, 10000, "the javascript: URL is evaluated");
+    await delay(t, 50);
+  }
+
+  const response = frame.contentWindow.fetch(slowURL());
+  doc.open();
+  doc.close();
+  const { status } = await settledWithin(t, response, "the fetch");
+  assert_equals(status, 200);
+}, "A javascript: URL that yields no document leaves no ongoing navigation for document.open() to stop");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const request = watchedRequest(frame.contentWindow, slowURL());
+  let fetchEnding = null;
+  frame.contentWindow.fetch(slowURL()).then(() => fetchEnding = "resolved", () => fetchEnding = "rejected");
+  // The new document takes six seconds to arrive. The requests would have ended
+  // after two if the navigation had left them running.
+  frame.contentWindow.location.href = "/common/slow.py?delay=6000";
+  await delay(t, 3500);
+  assert_equals(request.ending, null, "the request");
+  assert_equals(fetchEnding, null, "the fetch");
+}, "A navigation that starts ends the requests of the document it leaves silently");
+
+promise_test(async t => {
+  const frame = await loadedFrame(t);
+  const request = watchedRequest(frame.contentWindow, slowURL());
+  let fetchEnding = null;
+  frame.contentWindow.fetch(slowURL()).then(() => fetchEnding = "resolved", () => fetchEnding = "rejected");
+  frame.remove();
+  await delay(t, 3500);
+  assert_equals(request.ending, null, "the request");
+  assert_equals(fetchEnding, null, "the fetch");
+}, "Removing a frame ends its document's requests silently");
+</script>

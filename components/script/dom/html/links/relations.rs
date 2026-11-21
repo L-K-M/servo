@@ -499,10 +499,15 @@ pub(crate) fn follow_hyperlink(
             document.has_trustworthy_ancestor_origin(),
             document.creation_sandboxing_flag_set_considering_parent_iframe(),
         );
+        // The specification navigates at once; until this task runs, the queued navigation
+        // counts as the target's ongoing navigation.
+        target_window.note_queued_navigation();
         let target = Trusted::new(target_window);
         let task = task!(navigate_follow_hyperlink: move |cx| {
             debug!("following hyperlink to {}", load_data.url);
-            navigate(cx, &target.root(), history_handling, false, load_data);
+            let target = target.root();
+            target.note_queued_navigation_started();
+            navigate(cx, &target, history_handling, false, load_data);
         });
         target_document
             .owner_global()

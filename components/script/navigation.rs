@@ -45,7 +45,7 @@ use crate::dom::node::node::NodeTraits;
 use crate::dom::window::Window;
 use crate::dom::windowproxy::WindowProxy;
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::FetchCanceller;
+use crate::fetch::fetch::{FetchCanceller, TerminatedRequests};
 use crate::messaging::MainThreadScriptMsg;
 
 #[derive(Clone)]
@@ -475,7 +475,7 @@ pub(crate) fn navigate(
     // Step 18. If navigable's ongoing navigation is "traversal", then:
     // TODO
     // Step 19. Set the ongoing navigation for navigable to navigationId.
-    // TODO
+    let earlier_navigation_had_started = window.note_ongoing_navigation();
 
     // Step 20. If url's scheme is "javascript", then:
     if load_data.url.scheme() == "javascript" {
@@ -499,6 +499,9 @@ pub(crate) fn navigate(
             // Important re security. See https://github.com/servo/servo/issues/23373
             let target_window = target_window.root();
             let initiator_window = initiator_window.root();
+            // <https://html.spec.whatwg.org/multipage/#navigate-to-a-javascript:-url>
+            // Step 3. Set the ongoing navigation for targetNavigable to null.
+            target_window.clear_ongoing_navigation();
             if ScriptThread::navigate_to_javascript_url(cx, initiator_window.upcast(), target_window.upcast(), &mut load_data, None, None) {
                 target_window
                     .as_global_scope()
@@ -544,6 +547,11 @@ pub(crate) fn navigate(
         // and a new WebDriver BiDi navigation status whose id is navigationId,
         // status is "canceled", and url is url.
         // TODO
+        // The standard keeps navigationId as the ongoing navigation, but none goes on, and
+        // `document.open()` would stop the document's loading for it.
+        if !earlier_navigation_had_started {
+            window.clear_started_navigation();
+        }
         // Step 24.2.2. Abort these steps.
         return;
     }
@@ -556,7 +564,9 @@ pub(crate) fn navigate(
         .task_manager()
         .navigation_and_traversal_task_source()
         .queue(task!(abort_a_document_and_its_descendants: move |cx| {
-            trusted_document.root().abort_a_document_and_its_descendants(cx);
+            trusted_document
+                .root()
+                .abort_a_document_and_its_descendants(cx, TerminatedRequests::Hold);
         }));
 
     // Step 24.9. Attempt to populate the history entry's document for historyEntry,
