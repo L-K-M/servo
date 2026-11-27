@@ -1095,6 +1095,8 @@ impl HTMLFormElement {
         // that has already started (here the task is queued, but the navigation starts only
         // in the task). See <https://github.com/whatwg/html/issues/11562>.
         let ongoing_navigation = target.set_ongoing_navigation();
+        // Until the task below runs, the planned navigation counts as an ongoing one.
+        target.note_queued_navigation();
 
         let referrer_policy = document.get_referrer_policy();
         load_data.referrer = referrer;
@@ -1115,6 +1117,8 @@ impl HTMLFormElement {
         let form = Trusted::new(self);
         let window = Trusted::new(target);
         let task = task!(navigate_to_form_planned_navigation: move |cx| {
+            window.root().note_queued_navigation_started();
+
             // 4.1 Set the form's planned navigation to null.
             // Note: we implement the equivalent by incrementing the counter above,
             // and checking it here.

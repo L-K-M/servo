@@ -236,6 +236,50 @@ pub enum SvgTextTransform {
     Unsupported,
 }
 
+impl SvgTextTransform {
+    /// `text` with this transform applied, or `None` when it leaves the text
+    /// unchanged.
+    pub fn apply(self, text: &str) -> Option<String> {
+        match self {
+            SvgTextTransform::Uppercase => Some(text.to_uppercase()),
+            SvgTextTransform::Lowercase => Some(text.to_lowercase()),
+            SvgTextTransform::Capitalize => Some(capitalize_words(text)),
+            SvgTextTransform::None | SvgTextTransform::Unsupported => None,
+        }
+    }
+}
+
+/// Uppercase the first typographic letter of every word. Approximates CSS
+/// `text-transform: capitalize` (CSS Text 4): a word boundary is a run of
+/// non-alphanumeric characters, except that apostrophes between letters
+/// ("don't") do not start a new word, and digits do not consume the word
+/// start ("2abc" becomes "2Abc").
+fn capitalize_words(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut at_word_start = true;
+    let mut previous_is_letter = false;
+
+    for character in text.chars() {
+        if character.is_alphabetic() {
+            if at_word_start {
+                result.extend(character.to_uppercase());
+                at_word_start = false;
+                previous_is_letter = true;
+                continue;
+            }
+            previous_is_letter = true;
+        } else if matches!(character, '\'' | '\u{2019}') && previous_is_letter {
+            // A word-internal apostrophe: keep the word going.
+        } else if !character.is_numeric() {
+            at_word_start = true;
+            previous_is_letter = false;
+        }
+        result.push(character);
+    }
+
+    result
+}
+
 /// The computed presentation styles of one element in a rasterized SVG
 /// subtree, resolved through the document's full CSS cascade.
 #[derive(Clone, Debug, Default)]
@@ -528,6 +572,17 @@ pub trait Layout {
 
     fn query_accesskit_node(&self, node: TrustedNodeAddress) -> Option<accesskit::Node>;
 
+    /// The advance of each string when shaped in the computed font of its node's element,
+    /// with that element's `letter-spacing` and `word-spacing` and after its
+    /// [`SvgTextTransform`], in CSS pixels. Script
+    /// measures SVG text this way, which the rasterizer lays out with the same fonts. Called
+    /// after a reflow has styled the tree.
+    fn query_text_advances(
+        &self,
+        runs: &[(TrustedNodeAddress, String)],
+        animations: DocumentAnimationSet,
+        animation_timeline_value: f64,
+    ) -> Vec<f32>;
     fn query_resolved_font_style(
         &self,
         node: TrustedNodeAddress,
@@ -726,6 +781,7 @@ pub enum QueryMsg {
     ResolvedStyleQuery(PropertyId),
     SvgPresentationStylesQuery,
     ScrollingAreaOrOffsetQuery,
+    TextAdvancesQuery,
     StyleQuery,
     TextIndexOrSegmentQuery,
     PaddingQuery,

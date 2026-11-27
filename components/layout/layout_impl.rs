@@ -99,6 +99,7 @@ use crate::query::{
     process_node_scroll_area_request, process_offset_parent_query, process_padding_request,
     process_resolved_font_style_query, process_resolved_style_request,
     process_scroll_container_query, process_svg_presentation_styles_request,
+    process_text_advances_request,
 };
 use crate::selection::PositionInInlineFormattingContext;
 use crate::traversal::{RecalcStyle, compute_damage_and_rebuild_box_tree};
@@ -630,6 +631,41 @@ impl Layout for LayoutThread {
             );
 
             process_svg_presentation_styles_request(&shared_style_context, node)
+        })
+    }
+
+    #[servo_tracing::instrument(skip_all)]
+    fn query_text_advances(
+        &self,
+        runs: &[(TrustedNodeAddress, String)],
+        animations: DocumentAnimationSet,
+        animation_timeline_value: f64,
+    ) -> Vec<f32> {
+        let Some((first_node, _)) = runs.first() else {
+            return Vec::new();
+        };
+        with_layout_state(|| {
+            let first_node = unsafe { ServoLayoutNode::new(first_node) };
+            let document = unsafe { first_node.dangerous_style_node() }.owner_doc();
+            let shared_locks = document.shared_style_locks();
+            let guards = StylesheetGuards {
+                author: &shared_locks.author.read(),
+                ua_or_user: &shared_locks.ua_or_user.read(),
+            };
+            let snapshot_map = SnapshotMap::new();
+
+            let shared_style_context = self.build_shared_style_context(
+                guards,
+                &snapshot_map,
+                animation_timeline_value,
+                &animations,
+                TraversalFlags::empty(),
+            );
+
+            let runs = runs
+                .iter()
+                .map(|(node, text)| (unsafe { ServoLayoutNode::new(node) }, text.as_str()));
+            process_text_advances_request(&shared_style_context, &self.font_context, runs)
         })
     }
 
@@ -2245,7 +2281,8 @@ impl ReflowPhases {
                 QueryMsg::ResolvedFontStyleQuery |
                 QueryMsg::ScrollParentQuery |
                 QueryMsg::StyleQuery |
-                QueryMsg::SvgPresentationStylesQuery => Self::empty(),
+                QueryMsg::SvgPresentationStylesQuery |
+                QueryMsg::TextAdvancesQuery => Self::empty(),
             },
             ReflowGoal::UpdateScrollNode(..) | ReflowGoal::UpdateTheRendering => {
                 Self::StackingContextTreeConstruction | Self::DisplayListConstruction

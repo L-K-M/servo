@@ -114,7 +114,11 @@ impl Response {
     }
 
     pub(crate) fn error_stream(&self, cx: &mut js::context::JSContext, error: Error) {
-        if let Some(body) = self.fetch_body_stream.get() {
+        // A body that already failed, ended or was cancelled stays as it is, as when a
+        // stream's controller errors it.
+        if let Some(body) = self.fetch_body_stream.get() &&
+            body.is_readable()
+        {
             body.error_native(cx, error);
         }
     }

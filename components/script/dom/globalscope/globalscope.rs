@@ -149,7 +149,7 @@ use crate::event_loop::timers::{
     IsInterval, JsTimerTaskData, OneshotTimerCallback, OneshotTimerHandle, OneshotTimers,
     RootedInternalTimerCallback, TimerCallback, TimerEventId, TimerSource,
 };
-use crate::fetch::fetch::FetchGroup;
+use crate::fetch::fetch::{FetchGroup, TerminatedRequests};
 use crate::fetch::network_listener::{FetchResponseListener, NetworkListener};
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoopSender};
 use crate::realms::enter_auto_realm;
@@ -342,7 +342,8 @@ pub(crate) struct GlobalScope {
 impl GlobalScope {
     /// Terminate any ongoing fetches, close event source, and clear loaded script modules.
     pub(crate) fn tear_down(&self) {
-        self.fetch_group_mut().terminate(self);
+        self.fetch_group_mut()
+            .terminate(self, TerminatedRequests::Drop);
         self.close_event_sources();
         self.with_module_map(|module_map| std::mem::take(&mut *module_map.borrow_mut()));
     }

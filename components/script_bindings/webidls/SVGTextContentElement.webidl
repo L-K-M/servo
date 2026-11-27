@@ -12,8 +12,8 @@ interface SVGTextContentElement : SVGGraphicsElement {
   // [SameObject] readonly attribute SVGAnimatedLength textLength;
   // [SameObject] readonly attribute SVGAnimatedEnumeration lengthAdjust;
 
-  // long getNumberOfChars();
-  // float getComputedTextLength();
+  long getNumberOfChars();
+  float getComputedTextLength();
   // float getSubStringLength(unsigned long charnum, unsigned long nchars);
   // DOMPoint getStartPositionOfChar(unsigned long charnum);
   // DOMPoint getEndPositionOfChar(unsigned long charnum);

@@ -334,6 +334,14 @@ pub(crate) struct Window {
     /// <https://html.spec.whatwg.org/multipage/#ongoing-navigation>
     ongoing_navigation: Cell<OngoingNavigation>,
 
+    /// Whether this window's navigable's ongoing navigation is a navigation ID rather than
+    /// null; see [`Window::has_ongoing_navigation`].
+    navigation_is_ongoing: Cell<bool>,
+
+    /// Hyperlink and form navigations queued for this window that have not started yet. The
+    /// specification starts them at once, so they count as ongoing navigations.
+    queued_navigations: Cell<u32>,
+
     /// <https://w3c.github.io/ServiceWorker/#global-caches-attribute>
     caches: MutNullableDom<CacheStorage>,
 
@@ -915,6 +923,52 @@ impl Window {
         OngoingNavigation(new_value)
     }
 
+    /// Whether this window's navigable's ongoing navigation is a navigation ID rather than
+    /// null, which decides whether `document.open()` stops loading.
+    ///
+    /// Servo only sees the navigations that start in this event loop: [`navigate`], an iframe
+    /// that loads a new document into this window's navigable, and queued hyperlink and form
+    /// navigations. The navigation is forgotten when loading stops, when a `javascript:` URL
+    /// navigation starts, when it brings this window its next document, and when the document
+    /// becomes inactive. One that the constellation ends without a document (a 204 response,
+    /// a download) stays ongoing, so `document.open()` then stops loading, as it always did
+    /// before this was tracked.
+    ///
+    /// [`navigate`]: crate::navigation::navigate
+    pub(crate) fn has_ongoing_navigation(&self) -> bool {
+        self.navigation_is_ongoing.get() || self.queued_navigations.get() > 0
+    }
+
+    /// Notes that this window's navigable now has an ongoing navigation that is a navigation
+    /// ID, as step 19 of <https://html.spec.whatwg.org/multipage/#navigate> sets it. Returns
+    /// whether a navigation already started, independently of the queue.
+    pub(crate) fn note_ongoing_navigation(&self) -> bool {
+        self.navigation_is_ongoing.replace(true)
+    }
+
+    /// Clears the started navigation while keeping any queued navigations.
+    pub(crate) fn clear_started_navigation(&self) {
+        self.navigation_is_ongoing.set(false);
+    }
+
+    /// Sets this window's navigable's ongoing navigation to null.
+    pub(crate) fn clear_ongoing_navigation(&self) {
+        self.clear_started_navigation();
+        self.queued_navigations.set(0);
+    }
+
+    /// Notes a hyperlink or form navigation queued for this window, which counts as ongoing
+    /// until its task calls [`Window::note_queued_navigation_started`].
+    pub(crate) fn note_queued_navigation(&self) {
+        self.queued_navigations
+            .set(self.queued_navigations.get().saturating_add(1));
+    }
+
+    pub(crate) fn note_queued_navigation_started(&self) {
+        self.queued_navigations
+            .set(self.queued_navigations.get().saturating_sub(1));
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#nav-stop>
     pub(crate) fn stop_loading(&self, cx: &mut JSContext) {
         // 1. Let document be navigable's active document.
@@ -929,10 +983,18 @@ impl Window {
         //
         // TODO: This should also send a `AbortLoadUrl` message (in case the navigation already
         // started at the constellation).
+        // The ongoing navigation that `document.open()` checks becomes null, though the
+        // constellation still completes a navigation that already reached it.
         self.set_ongoing_navigation();
+        self.clear_ongoing_navigation();
 
         // 3. Abort a document and its descendants given document.
-        document.abort_a_document_and_its_descendants(cx, AbortReason::StopLoading);
+        // The document stays in use, so the scripts waiting for its requests hear how they ended.
+        document.abort_a_document_and_its_descendants(
+            cx,
+            AbortReason::StopLoading,
+            fetch::TerminatedRequests::Settle,
+        );
 
         // This is not in the specification, but when a load is aborted in a frame, parent
         // frames need to be notified that this frame is no longer blocking the load.
@@ -3302,6 +3364,20 @@ impl Window {
         self.layout.borrow().query_accesskit_node(element)
     }
 
+    /// The advance of each string in the computed font of its node's element, in CSS
+    /// pixels; see [`layout_api::Layout::query_text_advances`].
+    pub(crate) fn text_advances_query(&self, runs: &[(TrustedNodeAddress, String)]) -> Vec<f32> {
+        self.layout_reflow_deprecated(QueryMsg::TextAdvancesQuery);
+
+        let document = self.Document();
+        let animations = document.animation_manager().sets();
+        self.layout.borrow().query_text_advances(
+            runs,
+            animations,
+            document.current_animation_timeline_value(),
+        )
+    }
+
     /// If the given |browsing_context_id| refers to an `<iframe>` that is an element
     /// in this [`Window`] and that `<iframe>` has been laid out, return its size.
     /// Otherwise, return `None`.
@@ -4280,6 +4356,8 @@ impl Window {
             ),
             caches: Default::default(),
             ongoing_navigation: Default::default(),
+            navigation_is_ongoing: Default::default(),
+            queued_navigations: Default::default(),
             script_chan,
             layout: RefCell::new(layout),
             image_cache_sender,
@@ -4414,6 +4492,11 @@ impl Window {
         let global = self.upcast::<GlobalScope>();
         global.set_creation_url(creation_url);
         global.set_top_level_creation_url(top_level_creation_url);
+
+        // The navigation that replaces the initial about:blank document is complete, and the
+        // requests it held for that document are over.
+        self.clear_ongoing_navigation();
+        global.fetch_group_mut().drop_held_terminations();
 
         self.Document().detach_window();
     }

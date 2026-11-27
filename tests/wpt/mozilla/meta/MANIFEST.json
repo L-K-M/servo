@@ -14524,6 +14524,15 @@
       {}
      ]
     ],
+    "document-abort-settles-requests.html": [
+     "ff5bcbd8a88df7303f43ef384faf3597824c48da",
+     [
+      null,
+      {
+       "timeout": "long"
+      }
+     ]
+    ],
     "document-activeElement.html": [
      "92a8e399adb4b463c3f4a257f879e10314723582",
      [
@@ -15946,6 +15955,13 @@
     ],
     "svg-inline-overflow-hidden.html": [
      "6e97ccbb483c45e16209d77bce186bbaf459e771",
+     [
+      null,
+      {}
+     ]
+    ],
+    "svg-text-length.html": [
+     "97b3131a23517ffb4f3771cb4abb2828545a01a9",
      [
       null,
       {}

@@ -308,6 +308,11 @@ impl HTMLIFrameElement {
                 });
             },
             PipelineType::Navigation => {
+                // The content navigable's ongoing navigation, when its window lives in this
+                // event loop.
+                if let Some(content_window) = old_pipeline_id.and_then(ScriptThread::find_window) {
+                    content_window.note_ongoing_navigation();
+                }
                 let load_info = IFrameLoadInfoWithData {
                     info: load_info,
                     load_data,

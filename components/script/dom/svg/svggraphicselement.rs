@@ -173,7 +173,7 @@ pub(crate) fn computed_value(element: &Element, longhand: LonghandId) -> String 
 /// in servo.css), which is not their rendered state; as when serializing
 /// for the rasterizer, a computed `none` on such a child counts only if the
 /// element sets `display` itself.
-fn is_display_none(element: &Element) -> bool {
+pub(crate) fn is_display_none(element: &Element) -> bool {
     if computed_value(element, LonghandId::Display) != "none" {
         return false;
     }
@@ -266,7 +266,7 @@ fn switch_child(switch: &Element) -> Option<DomRoot<Element>> {
 /// or container element inside an `svg` element, it and its ancestors
 /// render their children and are not `display: none`, each `switch` on the
 /// way chose it, and CSS lays out its outermost `svg` element.
-fn is_rendered(element: &Element) -> bool {
+pub(crate) fn is_rendered(element: &Element) -> bool {
     let node = element.upcast::<Node>();
     if !node.is_connected() ||
         !(is_rendering_element(element) || is_text_content_child(element)) ||
@@ -489,8 +489,9 @@ fn viewport_bounds(element: &Element) -> Option<Rect> {
 /// A length attribute in user units: a number, optionally in `px`. Other
 /// units and percentages count as missing, as for the geometry attributes
 /// of shapes.
-fn length_attribute(element: &Element, name: &LocalName) -> Option<f64> {
-    let value = element.get_attribute_string_value(name)?;
+pub(crate) fn length_attribute(element: &Element, name: &LocalName) -> Option<f64> {
+    // SVG attribute names such as `textLength` are not lowercase.
+    let value = element.get_attribute_string_value_with_namespace(&ns!(), name)?;
     let value = value.trim();
     parse_number(value.strip_suffix("px").unwrap_or(value))
 }

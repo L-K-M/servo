@@ -621,6 +621,12 @@ impl Request {
             fetch_call_state.process_response_eof(cx, response);
         }
     }
+
+    pub(crate) fn process_termination(&self, cx: &mut JSContext, response_processed: bool) {
+        if let Some(fetch_call_state) = &self.state {
+            fetch_call_state.process_termination(cx, response_processed);
+        }
+    }
 }
 
 fn net_request_from_global(global: &GlobalScope, url: ServoUrl) -> NetTraitsRequest {

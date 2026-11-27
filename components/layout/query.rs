@@ -13,6 +13,8 @@ use app_units::Au;
 use bitflags::bitflags;
 use embedder_traits::UntrustedNodeAddress;
 use euclid::{Point2D, Rect, Size2D};
+use fonts::{FontContext, FontRef, ShapingFlags, ShapingOptions};
+use icu_locale_core::subtags::Language;
 use layout_api::{
     AxesOverflow, BoxAreaType, CSSPixelRectVec, DangerousStyleElementOf, LayoutElement,
     LayoutElementType, LayoutNode, LayoutNodeType, OffsetParentResponse, PhysicalSides,
@@ -20,13 +22,15 @@ use layout_api::{
     SvgElementStyle, SvgTextTransform,
 };
 use paint_api::display_list::ScrollTree;
-use script::layout_dom::ServoLayoutNode;
+use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutElement, ServoLayoutNode};
 use servo_arc::Arc as ServoArc;
 use servo_base::text::Utf32CodeUnits;
 use servo_geometry::{FastLayoutTransform, au_rect_to_f32_rect, f32_rect_to_au_rect};
 use servo_url::ServoUrl;
 use style::Zero;
+use style::computed_values::direction::T as Direction;
 use style::computed_values::display::T as Display;
+use style::computed_values::font_kerning::T as FontKerning;
 use style::computed_values::position::T as Position;
 use style::computed_values::visibility::T as Visibility;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapseValue;
@@ -43,18 +47,23 @@ use style::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use style::stylist::RuleInclusion;
 use style::traversal::resolve_style;
 use style::values::computed::transform::Matrix3D;
-use style::values::computed::{Float, Size};
+use style::values::computed::{Float, FontVariantLigatures, Size};
 use style::values::generics::font::LineHeight;
 use style::values::generics::position::AspectRatio;
 use style::values::specified::GenericGridTemplateComponent;
 use style::values::specified::box_::DisplayInside;
 use style::values::specified::text::TextTransformCase;
 use style_traits::{CSSPixel, ParsingMode, ToCss};
+use unicode_bidi::{BidiInfo, Level};
+use unicode_script::Script;
 use webrender_api::units::LayoutPixel;
 
 use crate::cell::RefOrAtomicRef;
 use crate::display_list::{ClosestFragmentSearch, StackingContextTree, au_rect_to_length_rect};
 use crate::dom::NodeExt;
+use crate::flow::inline::text_run::{
+    character_cannot_change_font, is_cursive_script, script_is_specific,
+};
 use crate::flow::inline::text_transform::TextTransformationIterator;
 use crate::fragment_tree::{
     BoxFragment, Fragment, FragmentFlags, FragmentTree, SpecificLayoutInfo,
@@ -944,7 +953,6 @@ pub(crate) fn process_scroll_container_query(
 /// attributes and stylesheets inside the subtree. This resolves the
 /// document's full CSS cascade (including `var()` references) into
 /// declarations that survive that serialization.
-#[expect(unsafe_code)]
 pub fn process_svg_presentation_styles_request(
     context: &SharedStyleContext,
     root: ServoLayoutNode<'_>,
@@ -956,26 +964,7 @@ pub fn process_svg_presentation_styles_request(
     // Preorder walk over elements, matching the script-side clone walk.
     while let Some(node) = stack.pop() {
         if let Some(element) = node.as_element() {
-            // SVG children sit in a `display: none` subtree (svg > * in
-            // servo.css), which the style traversal does not descend into,
-            // so resolve their styles on demand like a style query does.
-            let computed;
-            let style = if element.style_data().is_some() {
-                &*element.style(context)
-            } else {
-                let mut style_context = StyleContext {
-                    shared: context,
-                    thread_local: &mut tlc,
-                };
-                computed = resolve_style(
-                    &mut style_context,
-                    unsafe { element.dangerous_style_element() },
-                    RuleInclusion::All,
-                    None,
-                    None,
-                );
-                computed.primary()
-            };
+            let style = &*svg_element_style(context, &mut tlc, element);
 
             let mut declarations = String::new();
             for longhand_id in SVG_RASTER_STYLE_LONGHANDS {
@@ -990,13 +979,7 @@ pub fn process_svg_presentation_styles_request(
 
             styles.push(SvgElementStyle {
                 declarations,
-                text_transform: match style.get_inherited_text().text_transform.case() {
-                    TextTransformCase::None => SvgTextTransform::None,
-                    TextTransformCase::Uppercase => SvgTextTransform::Uppercase,
-                    TextTransformCase::Lowercase => SvgTextTransform::Lowercase,
-                    TextTransformCase::Capitalize => SvgTextTransform::Capitalize,
-                    TextTransformCase::MathAuto => SvgTextTransform::Unsupported,
-                },
+                text_transform: svg_text_transform(style),
             });
         }
 
@@ -1006,6 +989,172 @@ pub fn process_svg_presentation_styles_request(
     }
 
     styles
+}
+
+/// The case transform that script applies to an SVG element's text for the
+/// rasterizer, which does not support `text-transform`.
+fn svg_text_transform(style: &ComputedValues) -> SvgTextTransform {
+    match style.get_inherited_text().text_transform.case() {
+        TextTransformCase::None => SvgTextTransform::None,
+        TextTransformCase::Uppercase => SvgTextTransform::Uppercase,
+        TextTransformCase::Lowercase => SvgTextTransform::Lowercase,
+        TextTransformCase::Capitalize => SvgTextTransform::Capitalize,
+        TextTransformCase::MathAuto => SvgTextTransform::Unsupported,
+    }
+}
+
+/// An element's style, resolved on demand when layout left it unstyled. SVG
+/// children sit in a `display: none` subtree (svg > * in servo.css), which
+/// the style traversal does not descend into, so resolve their styles like a
+/// style query does.
+#[expect(unsafe_code)]
+fn svg_element_style<'dom>(
+    context: &SharedStyleContext,
+    thread_local: &mut ThreadLocalStyleContext<ServoDangerousStyleElement<'dom>>,
+    element: ServoLayoutElement<'dom>,
+) -> ServoArc<ComputedValues> {
+    if element.style_data().is_some() {
+        return element.style(context);
+    }
+    let mut style_context = StyleContext {
+        shared: context,
+        thread_local,
+    };
+    resolve_style(
+        &mut style_context,
+        unsafe { element.dangerous_style_element() },
+        RuleInclusion::All,
+        None,
+        None,
+    )
+    .primary()
+    .clone()
+}
+
+/// The advance of each string when shaped in the computed font of its node's
+/// element, with that element's `letter-spacing` and `word-spacing` and after
+/// its case transform, in CSS pixels; 0 for a node that is not an element.
+/// Script measures SVG text this way, which the rasterizer lays out with the
+/// same fonts.
+pub fn process_text_advances_request<'dom, 'text>(
+    context: &SharedStyleContext,
+    font_context: &FontContext,
+    runs: impl Iterator<Item = (ServoLayoutNode<'dom>, &'text str)>,
+) -> Vec<f32> {
+    let mut thread_local = ThreadLocalStyleContext::new();
+    runs.map(|(node, text)| {
+        let Some(element) = node.as_element() else {
+            return 0.;
+        };
+        let style = svg_element_style(context, &mut thread_local, element);
+        let transformed = svg_text_transform(&style).apply(text);
+        text_advance(font_context, &style, transformed.as_deref().unwrap_or(text))
+    })
+    .collect()
+}
+
+/// Shapes `text` in the font of `style`, which falls back per character as for
+/// inline text, and sums the advances of the glyphs in CSS pixels.
+fn text_advance(font_context: &FontContext, style: &ComputedValues, text: &str) -> f32 {
+    let font_style = style.clone_font();
+    let font_size = font_style.font_size.computed_size().into();
+    let language = font_style._x_lang.0.parse().unwrap_or(Language::UNKNOWN);
+    let inherited_text_style = style.get_inherited_text();
+    let letter_spacing = inherited_text_style
+        .letter_spacing
+        .0
+        .to_used_value(font_size);
+    let word_spacing = inherited_text_style.word_spacing.to_used_value(font_size);
+    let flags = if font_style.font_kerning == FontKerning::None {
+        ShapingFlags::DISABLE_KERNING_SHAPING_FLAG
+    } else {
+        ShapingFlags::empty()
+    };
+    let shaping_options = |script, level: Level| {
+        let letter_spacing = if is_cursive_script(script) {
+            Au::zero()
+        } else {
+            letter_spacing
+        };
+        ShapingOptions {
+            letter_spacing,
+            word_spacing,
+            script,
+            language,
+            flags: if level.is_rtl() {
+                flags | ShapingFlags::RTL_FLAG
+            } else {
+                flags
+            },
+            ligatures: if letter_spacing.is_zero() {
+                font_style.font_variant_ligatures
+            } else {
+                FontVariantLigatures::NONE
+            },
+            numeric: font_style.font_variant_numeric,
+            east_asian: font_style.font_variant_east_asian,
+            feature_settings: font_style.font_feature_settings.clone(),
+            position: font_style.font_variant_position,
+            alternates: Default::default(),
+        }
+    };
+    let font_group = font_context.font_group(font_style.clone());
+
+    let base_level = if style.get_inherited_box().direction == Direction::Rtl {
+        Level::rtl()
+    } else {
+        Level::ltr()
+    };
+    let bidi = BidiInfo::new(text, Some(base_level));
+
+    // Segment by font, script and direction as for inline text. The visual
+    // order of the segments does not affect the sum of their advances.
+    let mut segments: Vec<(usize, FontRef, Script, Level)> = Vec::new();
+    for (index, character) in text.char_indices() {
+        let level = bidi.levels[index];
+        let (font, script) = if character_cannot_change_font(character) {
+            (None, Script::Common)
+        } else {
+            let next_character = text[index + character.len_utf8()..].chars().next();
+            (
+                font_group.find_by_codepoint(font_context, character, next_character, language),
+                Script::from(character),
+            )
+        };
+        if let Some((_, segment_font, segment_script, segment_level)) = segments.last_mut() &&
+            *segment_level == level &&
+            font.as_ref().is_none_or(|font| font == segment_font) &&
+            (!script_is_specific(*segment_script) ||
+                !script_is_specific(script) ||
+                *segment_script == script)
+        {
+            if !script_is_specific(*segment_script) {
+                *segment_script = script;
+            }
+            continue;
+        }
+        let Some(font) = font.or_else(|| font_group.first(font_context)) else {
+            continue;
+        };
+        segments.push((index, font, script, level));
+    }
+
+    let ends = segments
+        .iter()
+        .skip(1)
+        .map(|(start, ..)| *start)
+        .chain(std::iter::once(text.len()));
+    segments
+        .iter()
+        .zip(ends)
+        .map(|((start, font, script, level), end)| {
+            let shaped = font.shape_text(&text[*start..end], &shaping_options(*script, *level));
+            shaped
+                .glyphs()
+                .map(|glyph| glyph.advance().to_f64_px())
+                .sum::<f64>()
+        })
+        .sum::<f64>() as f32
 }
 
 /// <https://html.spec.whatwg.org/multipage/#get-the-text-steps>

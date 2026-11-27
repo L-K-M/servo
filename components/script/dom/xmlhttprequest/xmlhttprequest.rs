@@ -71,6 +71,7 @@ use crate::dom::headers::is_forbidden_request_header;
 use crate::dom::node::Node;
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
 use crate::dom::progressevent::ProgressEvent;
+use crate::dom::request::Request;
 use crate::dom::servoparser::ServoParser;
 use crate::dom::servoparser::html::HtmlSerialize;
 use crate::dom::stream::readablestream::ReadableStream;
@@ -175,6 +176,21 @@ impl FetchResponseListener for XHRContext {
 
     fn should_invoke(&self) -> bool {
         self.xhr.root().generation_id.get() == self.gen_id
+    }
+
+    /// A request that its document's abort terminated fails as an aborted one, as in other
+    /// browsers: `abort` and `loadend` fire after `readyState` turns `DONE` with status 0.
+    fn process_termination(
+        self,
+        cx: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        _: bool,
+        _: Option<&Request>,
+    ) {
+        self.xhr
+            .root()
+            .process_partial_response(cx, XHRProgress::Errored(self.gen_id, ErrorType::Abort));
     }
 }
 

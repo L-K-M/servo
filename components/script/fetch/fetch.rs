@@ -80,6 +80,37 @@ impl Default for DeferredFetchRecordId {
 
 pub(crate) type QueuedDeferredFetchRecord = Rc<DeferredFetchRecord>;
 
+/// Queues [`FetchResponseListener::process_termination`] for a terminated fetch, given the
+/// fetch group's global, the request and whether its response was processed.
+type TerminationSteps = Box<dyn FnOnce(&GlobalScope, RequestId, bool)>;
+
+/// What becomes of the requests that aborting a document terminates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TerminatedRequests {
+    /// The document stays in use, as after `window.stop()` or `document.open()` during a
+    /// navigation: its scripts are told how their requests ended, `fetch()` rejecting and
+    /// `XMLHttpRequest` firing `abort`, instead of waiting for them forever. Requests that a
+    /// navigation start held settle too.
+    Settle,
+    /// A navigation started, and the document stays until the next one replaces it. Its
+    /// requests end silently for now: the standard settles them at once, but their handlers
+    /// would then run while the next document loads, and a handler that navigates could
+    /// replace the navigation. If the navigation is stopped instead, stopping loading settles
+    /// them; a new document in the same window drops them.
+    Hold,
+    /// The document is going away with its navigable. Its requests end silently, and so do
+    /// those a navigation start held.
+    Drop,
+}
+
+/// The termination steps of a fetch that a navigation start terminated, kept until the
+/// document either stops loading or goes away (see [`TerminatedRequests::Hold`]).
+struct HeldTermination {
+    request_id: RequestId,
+    response_processed: bool,
+    steps: TerminationSteps,
+}
+
 /// <https://fetch.spec.whatwg.org/#fetch-record>
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
@@ -90,6 +121,15 @@ pub(crate) struct FetchRecord {
     /// If this record was created by a call to `fetch()`, this holds the [`Request`]
     /// that started this operation.
     request: Option<Dom<Request>>,
+    /// Whether the listener has processed the response, so that a terminated fetch knows
+    /// whether its outcome is the response or its body.
+    response_processed: bool,
+    /// Tells the listener that the fetch was terminated, since the tasks that would have
+    /// delivered the network's answer are discarded with it. Dropped with the record once
+    /// the request is done.
+    #[ignore_malloc_size_of = "closure"]
+    #[no_trace]
+    termination_steps: Option<TerminationSteps>,
 }
 
 /// <https://fetch.spec.whatwg.org/#concept-fetch-group>
@@ -105,6 +145,10 @@ pub(crate) struct FetchGroup {
     pub(crate) deferred_fetch_records: FxHashMap<DeferredFetchRecordId, QueuedDeferredFetchRecord>,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
     pub(crate) fetch_records: FxHashMap<NoTrace<RequestId>, FetchRecord>,
+    /// Fetches terminated when a navigation started, in the order they were terminated.
+    #[ignore_malloc_size_of = "closures"]
+    #[no_trace]
+    held_terminations: Vec<HeldTermination>,
 }
 
 impl FetchGroup {
@@ -113,6 +157,7 @@ impl FetchGroup {
             core_resource_thread,
             deferred_fetch_records: Default::default(),
             fetch_records: Default::default(),
+            held_terminations: Default::default(),
         }
     }
 
@@ -122,6 +167,39 @@ impl FetchGroup {
         listener: NetworkListener<Listener>,
         request_object: Option<&Request>,
     ) {
+        let context = listener.context.clone();
+        // The record is gone by the time the steps run, so they keep the `fetch()` call's
+        // request themselves.
+        let fetch_call_request = request_object.map(Trusted::new);
+        let termination_steps: TerminationSteps =
+            Box::new(move |global, request_id, response_processed| {
+                // Not a networking task: the abort cancels those after terminating the fetch,
+                // and a later abort, such as the one a navigation that started earlier queued,
+                // cancels them again.
+                global.task_manager().dom_manipulation_task_source().queue(
+                    task!(process_fetch_termination: move |cx| {
+                        // Take the listener out before running it, so that steps it triggers
+                        // (an abort signal that locks the same context) find it gone.
+                        let Some(listener) = context.lock().unwrap().take() else {
+                            return;
+                        };
+                        let Some(global) = GlobalScope::current() else {
+                            return;
+                        };
+                        if listener.should_invoke() {
+                            let fetch_call_request =
+                                fetch_call_request.as_ref().map(Trusted::root);
+                            listener.process_termination(
+                                cx,
+                                &global,
+                                request_id,
+                                response_processed,
+                                fetch_call_request.as_deref(),
+                            );
+                        }
+                    }),
+                );
+            });
         self.fetch_records.insert(
             NoTrace(request.id),
             FetchRecord {
@@ -131,6 +209,8 @@ impl FetchGroup {
                     self.core_resource_thread.clone(),
                 )),
                 request: request_object.map(Dom::from_ref),
+                response_processed: false,
+                termination_steps: Some(termination_steps),
             },
         );
         fetch_async(
@@ -184,7 +264,11 @@ impl FetchGroup {
     /// <https://fetch.spec.whatwg.org/#concept-fetch-group-terminate>
     ///
     /// Returns `true` if any fetches were cancelled and `false` otherwise.
-    pub(crate) fn terminate(&mut self, global: &GlobalScope) -> bool {
+    pub(crate) fn terminate(
+        &mut self,
+        global: &GlobalScope,
+        terminated_requests: TerminatedRequests,
+    ) -> bool {
         // Step 1. For each fetch record record of fetchGroup’s fetch records,
         // if record’s controller is non-null and record’s request’s done flag
         // is unset and keepalive is false, terminate record’s controller.
@@ -192,13 +276,36 @@ impl FetchGroup {
         // Fetches that are done are removed from our set of fetch records as soon as they finish,
         // so they do not need to be skipped here. This approach differs from the specification
         // text, but is behaviorally identical.
+        match terminated_requests {
+            TerminatedRequests::Settle => {
+                for held in self.held_terminations.drain(..) {
+                    (held.steps)(global, held.request_id, held.response_processed);
+                }
+            },
+            TerminatedRequests::Hold => {},
+            TerminatedRequests::Drop => self.held_terminations.clear(),
+        }
+
         let mut cancelled_any = false;
-        self.fetch_records.retain(|_, fetch_record| {
+        self.fetch_records.retain(|request_id, fetch_record| {
             let Some(controller) = fetch_record.controller.as_mut() else {
                 return false;
             };
             if !controller.keep_alive() {
                 controller.terminate();
+                if let Some(steps) = fetch_record.termination_steps.take() {
+                    match terminated_requests {
+                        TerminatedRequests::Settle => {
+                            steps(global, request_id.0, fetch_record.response_processed)
+                        },
+                        TerminatedRequests::Hold => self.held_terminations.push(HeldTermination {
+                            request_id: request_id.0,
+                            response_processed: fetch_record.response_processed,
+                            steps,
+                        }),
+                        TerminatedRequests::Drop => {},
+                    }
+                }
                 cancelled_any = true;
                 return false;
             }
@@ -245,6 +352,17 @@ impl FetchGroup {
             None, /* state */
         );
         // Step 4 is handled by caller
+    }
+
+    /// Drops what a navigation start held, when a new document takes over the window.
+    pub(crate) fn drop_held_terminations(&mut self) {
+        self.held_terminations.clear();
+    }
+
+    pub(crate) fn mark_fetch_response_as_processed(&mut self, request_id: &RequestId) {
+        if let Some(fetch_record) = self.fetch_records.get_mut(&NoTrace(*request_id)) {
+            fetch_record.response_processed = true;
+        }
     }
 
     pub(crate) fn mark_fetch_request_as_done(&mut self, request_id: &RequestId) {
@@ -703,6 +821,24 @@ impl FetchCallState {
         // TODO
         // ... trailerObject is not supported in Servo yet.
     }
+
+    /// A terminated fetch ends with a network error: before the response, `fetch()`
+    /// rejects with a `TypeError`; after it, reading the body fails.
+    pub(crate) fn process_termination(&self, cx: &mut JSContext, response_processed: bool) {
+        // An abort signal already settled this fetch.
+        if self.locally_aborted.get() {
+            return;
+        }
+        if !response_processed {
+            self.process_response(cx, Err(NetworkError::LoadCancelled));
+            return;
+        }
+        let mut realm = enter_auto_realm(cx, &*self.response);
+        let cx = &mut realm.current_realm();
+        self.response
+            .error_stream(cx, Error::Type(c"Network error occurred".to_owned()));
+        self.response.finish(cx);
+    }
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -770,6 +906,19 @@ impl FetchResponseListener for FetchContext {
         violations: Vec<Violation>,
     ) {
         global.report_csp_violations(cx, violations, None, None);
+    }
+
+    fn process_termination(
+        self,
+        cx: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        response_processed: bool,
+        fetch_call_request: Option<&Request>,
+    ) {
+        if let Some(request) = fetch_call_request {
+            request.process_termination(cx, response_processed);
+        }
     }
 }
 

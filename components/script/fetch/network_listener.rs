@@ -20,6 +20,7 @@ use crate::dom::performance::performanceentry::PerformanceEntry;
 use crate::dom::performance::performanceresourcetiming::{
     InitiatorType, PerformanceResourceTiming,
 };
+use crate::dom::request::Request;
 use crate::tasks::task_source::SendableTaskSource;
 
 pub(crate) trait ResourceTimingListener {
@@ -126,6 +127,30 @@ pub(crate) trait FetchResponseListener: Send + 'static {
     );
 
     fn process_content_length(&mut self, _request_id: RequestId, _size: usize) {}
+
+    /// Runs in a task of its own after the fetch group terminated this fetch for a document
+    /// that stays in use, as `window.stop()` and `document.open()` during a navigation do
+    /// (see [`TerminatedRequests::Settle`]). The abort discards the fetch's queued tasks and
+    /// any further data from the network, so the listener is told nothing else;
+    /// `response_processed` says whether `process_response` already ran. Listeners whose
+    /// callers wait for an outcome, a promise or request events, settle it here. By default
+    /// the fetch ends silently, as for elements whose document the abort stops loading.
+    ///
+    /// [`TerminatedRequests::Settle`]: crate::fetch::fetch::TerminatedRequests::Settle
+    ///
+    /// `fetch_call_request` is the request of the `fetch()` call that started the fetch, if
+    /// one did: the fetch group has dropped the record that led to it.
+    fn process_termination(
+        self,
+        _cx: &mut JSContext,
+        _global: &GlobalScope,
+        _request_id: RequestId,
+        _response_processed: bool,
+        _fetch_call_request: Option<&Request>,
+    ) where
+        Self: Sized,
+    {
+    }
 }
 
 /// An off-thread sink for async network event tasks. All such events are forwarded to
@@ -161,6 +186,11 @@ impl<Listener: FetchResponseListener> NetworkListener<Listener> {
 
                 let is_eof = matches!(message, FetchResponseMsg::ProcessResponseEOF(..));
                 let request_id = message.request_id();
+                if matches!(message, FetchResponseMsg::ProcessResponse(..)) {
+                    global
+                        .fetch_group_mut()
+                        .mark_fetch_response_as_processed(&request_id);
+                }
 
                 if fetch_listener.should_invoke() {
                     match message {
