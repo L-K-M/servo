@@ -1574,6 +1574,15 @@ impl KnownFontFaceRules {
             if let Some(index_of_existing_entry_for_this_rule) =
                 index_of_existing_entry_for_this_rule
             {
+                if known_font_faces_for_family[index_of_existing_entry_for_this_rule].generation ==
+                    self.generation
+                {
+                    // This update already handled this very rule. Style sheets with identical
+                    // text share their rules, so a rule can be in the cascade more than once,
+                    // and its own entry is not a conflicting declaration.
+                    continue;
+                }
+
                 // This @font-face rule was already present in the cascade prior to this update.
                 // But if during this update we inserted a rule with higher priority that overrides this one
                 // then we should not update its generation so it will be dropped at the end.
