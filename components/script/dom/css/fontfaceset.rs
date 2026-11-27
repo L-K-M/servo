@@ -334,7 +334,9 @@ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
 
         // Step 1. Remove all non-CSS-connected items from the FontFaceSet’s set entries,
         // its [[LoadedFonts]] list, and its [[FailedFonts]] list.
-        self.set_entries.borrow_mut().clear();
+        self.set_entries
+            .borrow_mut()
+            .retain(|font_face| font_face.is_css_connected());
 
         // TODO Step 2. If the FontFaceSet’s [[LoadingFonts]] list is non-empty, remove all items from it,
         // then switch the FontFaceSet to loaded.

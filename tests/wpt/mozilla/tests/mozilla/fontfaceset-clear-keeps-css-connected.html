@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>FontFaceSet.clear() keeps CSS-connected faces, and their rule can be removed afterwards</title>
+<link rel="help" href="https://www.w3.org/TR/css-font-loading-3/#dom-fontfaceset-clear">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style id="sheet">
+@font-face { font-family: "clear-test-font"; src: local("Times New Roman"); }
+</style>
+<div id="log"></div>
+<script>
+promise_test(async () => {
+  const manual = new FontFace("clear-test-manual", "local(Arial)");
+  document.fonts.add(manual);
+  assert_equals(document.fonts.size, 2, "one CSS-connected and one script-added face");
+
+  document.fonts.clear();
+  assert_equals(document.fonts.size, 1, "clear() removes only the script-added face");
+  assert_false(document.fonts.has(manual), "the script-added face is gone");
+  const [connected] = document.fonts;
+  assert_equals(connected.family, "clear-test-font", "the CSS-connected face stays");
+
+  // The set still knows the face when its rule goes away. Reaching the end of
+  // the test shows that the next style flush found it.
+  document.getElementById("sheet").remove();
+  document.body.offsetWidth;
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  assert_false(document.fonts.has(manual), "the set is still usable");
+}, "clear() keeps CSS-connected faces until their rule is removed");
+</script>
