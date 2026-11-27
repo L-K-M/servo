@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>The same @font-face rule in two style elements with identical text</title>
+<link rel="help" href="https://www.w3.org/TR/css-font-loading-3/#font-face-css-connection">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style id="first">
+@font-face { font-family: "identical-sheets-font"; src: local("Times New Roman"); }
+</style>
+<style id="second">
+@font-face { font-family: "identical-sheets-font"; src: local("Times New Roman"); }
+</style>
+<div id="log"></div>
+<script>
+function familiesInDocumentFonts() {
+  return [...document.fonts].map(face => face.family.replace(/"/g, ""));
+}
+
+promise_test(async () => {
+  document.body.offsetWidth;
+  assert_in_array("identical-sheets-font", familiesInDocumentFonts(),
+                  "the rule has a face in document.fonts");
+
+  // The remaining style element still declares the face.
+  document.getElementById("first").remove();
+  document.body.offsetWidth;
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  assert_in_array("identical-sheets-font", familiesInDocumentFonts(),
+                  "one of the two rules is left");
+}, "A font face declared by two identical style elements stays in document.fonts");
+</script>

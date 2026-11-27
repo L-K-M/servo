@@ -14847,6 +14847,13 @@
       {}
      ]
     ],
+    "font-face-rule-in-identical-style-elements.html": [
+     "92f3238e07c5a5df3df47cf3a2e855c8e5a8afd0",
+     [
+      null,
+      {}
+     ]
+    ],
     "fontfaceset-clear-keeps-css-connected.html": [
      "6f81206a3e04eb70560e8e55b974979cd4689ac5",
      [
