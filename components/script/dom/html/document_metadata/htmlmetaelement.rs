@@ -312,6 +312,11 @@ impl HTMLMetaElementMethods<crate::DomTypeHolder> for HTMLMetaElement {
     // https://html.spec.whatwg.org/multipage/#dom-meta-httpequiv
     make_atomic_setter!(SetHttpEquiv, "http-equiv");
 
+    // https://html.spec.whatwg.org/multipage/#dom-meta-media
+    make_getter!(Media, "media");
+    // https://html.spec.whatwg.org/multipage/#dom-meta-media
+    make_setter!(SetMedia, "media");
+
     // https://html.spec.whatwg.org/multipage/#dom-meta-scheme
     make_getter!(Scheme, "scheme");
     // https://html.spec.whatwg.org/multipage/#dom-meta-scheme

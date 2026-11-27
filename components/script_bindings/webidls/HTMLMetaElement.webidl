@@ -13,6 +13,8 @@ interface HTMLMetaElement : HTMLElement {
              attribute DOMString httpEquiv;
   [CEReactions]
              attribute DOMString content;
+  [CEReactions]
+             attribute DOMString media;
 
   // also has obsolete members
 };
