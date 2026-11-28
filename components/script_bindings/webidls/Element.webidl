@@ -104,6 +104,8 @@ partial interface Element {
   [NewObject]
   DOMRect getBoundingClientRect();
 
+  boolean checkVisibility(optional CheckVisibilityOptions options = {});
+
   undefined scrollIntoView(optional (boolean or ScrollIntoViewOptions) arg = {});
   undefined scroll(optional ScrollToOptions options = {});
   undefined scroll(unrestricted double x, unrestricted double y);
@@ -137,6 +139,15 @@ partial interface Element {
 dictionary GetHTMLOptions {
   boolean serializableShadowRoots = false;
   sequence<ShadowRoot> shadowRoots = [];
+};
+
+// https://drafts.csswg.org/cssom-view/#dictdef-checkvisibilityoptions
+dictionary CheckVisibilityOptions {
+  boolean checkOpacity = false;
+  boolean checkVisibilityCSS = false;
+  boolean contentVisibilityAuto = false;
+  boolean opacityProperty = false;
+  boolean visibilityProperty = false;
 };
 
 // https://drafts.csswg.org/cssom-view/#dictdef-scrollintoviewoptions
