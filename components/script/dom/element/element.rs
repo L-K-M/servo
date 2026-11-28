@@ -48,6 +48,7 @@ use selectors::sink::Push;
 use servo_arc::Arc as ServoArc;
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
+use style::computed_values::visibility::T as Visibility;
 use style::context::QuirksMode;
 use style::invalidation::element::restyle_hints::RestyleHint;
 use style::properties::longhands::{
@@ -88,7 +89,8 @@ use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::AttrBinding::AttrMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::{
-    ElementMethods, GetHTMLOptions, ScrollIntoViewContainer, ScrollLogicalPosition, ShadowRootInit,
+    CheckVisibilityOptions, ElementMethods, GetHTMLOptions, ScrollIntoViewContainer,
+    ScrollLogicalPosition, ShadowRootInit,
 };
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull;
 use crate::dom::bindings::codegen::Bindings::FunctionBinding::Function;
@@ -3718,6 +3720,54 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         // Step 11. Scroll the element to x,scrollTop, with the scroll behavior being
         // "auto".
         window.scroll_an_element(cx, self, x, self.ScrollTop() as f32, behavior);
+    }
+
+    /// <https://drafts.csswg.org/cssom-view/#dom-element-checkvisibility>
+    fn CheckVisibility(&self, cx: &mut JSContext, options: &CheckVisibilityOptions) -> bool {
+        // Step 1. If this does not have an associated box, return false.
+        // An element in a `display: none` subtree, or outside of the flat tree, has no style.
+        let Some(style) = self.style() else {
+            return false;
+        };
+        let display = style.get_box().display;
+        if display.is_none() || display.is_contents() {
+            return false;
+        }
+
+        // Step 2. If an ancestor of this in the flat tree has content-visibility: hidden,
+        // return false.
+        // TODO: `content-visibility` is not supported, so its value is always `visible`.
+
+        // Step 3. If either the opacityProperty or the checkOpacity dictionary members of
+        // options are true, and this, or an ancestor of this in the flat tree, has a computed
+        // opacity value of 0, return false.
+        if options.opacityProperty || options.checkOpacity {
+            // The style query above made the styles of the ancestors current as well.
+            let has_transparent_inclusive_ancestor = self
+                .upcast::<Node>()
+                .inclusive_ancestors_in_flat_tree_unrooted(cx.no_gc())
+                .filter_map(|ancestor| ancestor.downcast::<Element>()?.style_without_reflow())
+                .any(|style| style.get_effects().opacity == 0.0);
+            if has_transparent_inclusive_ancestor {
+                return false;
+            }
+        }
+
+        // Step 4. If either the visibilityProperty or the checkVisibilityCSS dictionary members
+        // of options are true, and this is invisible, return false.
+        if (options.visibilityProperty || options.checkVisibilityCSS) &&
+            style.get_inherited_box().visibility != Visibility::Visible
+        {
+            return false;
+        }
+
+        // Step 5. If the contentVisibilityAuto dictionary member of options is true and an
+        // ancestor of this in the flat tree skips its contents due to content-visibility: auto,
+        // return false.
+        // TODO: `content-visibility` is not supported, so no element skips its contents.
+
+        // Step 6. Return true.
+        true
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>

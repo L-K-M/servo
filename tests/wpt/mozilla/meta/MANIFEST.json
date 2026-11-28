@@ -14380,6 +14380,13 @@
       {}
      ]
     ],
+    "check-visibility-after-style-change.html": [
+     "baf55b0bc7298a720b4e5766af7da7692618ac72",
+     [
+      null,
+      {}
+     ]
+    ],
     "child-reparenting.html": [
      "502a493ebb72ed14c74c09ef9d0257038e4d81de",
      [

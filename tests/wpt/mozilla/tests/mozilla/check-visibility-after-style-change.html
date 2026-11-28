@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Element.checkVisibility() after a style change in an ancestor</title>
+<link rel="help" href="https://www.w3.org/TR/cssom-view-1/#dom-element-checkvisibility">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<div id="outer">
+  <div id="middle">
+    <span id="inner">text</span>
+  </div>
+</div>
+<details id="details" open>
+  <summary>summary</summary>
+  <div id="content">content</div>
+</details>
+<div id="host"><span id="slotted">slotted</span></div>
+<div id="fading"><span id="faded">text</span></div>
+<script>
+test(() => {
+  const outer = document.getElementById("outer");
+  const middle = document.getElementById("middle");
+  const inner = document.getElementById("inner");
+  assert_true(inner.checkVisibility(), "before");
+  outer.style.display = "none";
+  assert_false(outer.checkVisibility(), "the element itself");
+  assert_false(middle.checkVisibility(), "child");
+  assert_false(inner.checkVisibility(), "grandchild");
+  outer.style.display = "";
+  assert_true(inner.checkVisibility(), "shown again");
+}, "An ancestor that becomes display: none");
+
+test(() => {
+  const outer = document.getElementById("outer");
+  const inner = document.getElementById("inner");
+  outer.style.display = "contents";
+  assert_false(outer.checkVisibility(), "display: contents has no box");
+  assert_true(inner.checkVisibility(), "its descendants keep theirs");
+  outer.style.display = "";
+  assert_true(outer.checkVisibility(), "shown again");
+}, "An element that becomes display: contents");
+
+test(() => {
+  const details = document.getElementById("details");
+  const content = document.getElementById("content");
+  assert_true(content.checkVisibility(), "open");
+  details.open = false;
+  assert_false(content.checkVisibility(), "closed");
+  details.open = true;
+  assert_true(content.checkVisibility(), "open again");
+}, "The content of a details element that closes");
+
+test(() => {
+  const host = document.getElementById("host");
+  const slotted = document.getElementById("slotted");
+  assert_true(slotted.checkVisibility(), "light tree child");
+  const root = host.attachShadow({ mode: "open" });
+  assert_false(slotted.checkVisibility(), "not assigned to a slot");
+  const slot = document.createElement("slot");
+  root.appendChild(slot);
+  assert_true(slotted.checkVisibility(), "assigned to a slot");
+  slot.style.display = "none";
+  assert_false(slotted.checkVisibility(), "assigned to a display: none slot");
+  slot.style.display = "";
+  slot.remove();
+  assert_false(slotted.checkVisibility(), "slot removed");
+}, "An element that leaves and enters the flat tree");
+
+test(() => {
+  const fading = document.getElementById("fading");
+  const faded = document.getElementById("faded");
+  assert_true(faded.checkVisibility({ opacityProperty: true }), "before");
+  fading.style.opacity = "0";
+  assert_false(faded.checkVisibility({ opacityProperty: true }), "opacityProperty");
+  assert_false(faded.checkVisibility({ checkOpacity: true }), "checkOpacity");
+  assert_true(faded.checkVisibility(), "opacity is not checked by default");
+  fading.style.opacity = "";
+  fading.style.visibility = "hidden";
+  assert_false(faded.checkVisibility({ visibilityProperty: true }), "visibilityProperty");
+  assert_false(faded.checkVisibility({ checkVisibilityCSS: true }), "checkVisibilityCSS");
+  assert_true(faded.checkVisibility(), "visibility is not checked by default");
+  faded.style.visibility = "visible";
+  assert_true(faded.checkVisibility({ visibilityProperty: true }), "visible in a hidden parent");
+}, "Opacity and visibility that change in an ancestor");
+
+test(() => {
+  const element = document.createElement("div");
+  assert_false(element.checkVisibility(), "disconnected");
+  document.body.appendChild(element);
+  assert_true(element.checkVisibility(), "connected");
+  element.remove();
+  assert_false(element.checkVisibility(), "removed");
+}, "An element that is inserted and removed");
+</script>
