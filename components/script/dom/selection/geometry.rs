@@ -15,7 +15,7 @@ impl Selection {
     /// and revalidate its original context before applying the returned DOM position.
     pub(super) fn layout_caret_position(
         &self,
-        _cx: &mut JSContext,
+        cx: &mut JSContext,
         node: &Node,
         offset: u32,
         movement: CaretMovement,
@@ -26,7 +26,7 @@ impl Selection {
         let preferred = vertical.then(|| self.preferred_caret_x.get()).flatten();
         let (target, offset, x, prefer_upstream) = node
             .owner_window()
-            .caret_movement_query(&host, &node, offset, movement, preferred)?;
+            .caret_movement_query(cx, &host, &node, offset, movement, preferred)?;
         if target.editing_host_of().as_ref() != Some(&host) || !target.is_editable_or_editing_host()
         {
             return None;

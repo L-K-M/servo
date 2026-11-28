@@ -4,7 +4,7 @@
 
 //! Selector parsing for stateless DOM queries, independently of stylesheet support.
 
-use cssparser::{CowRcStr, Parser as CssParser};
+use cssparser::Parser as CssParser;
 use selectors::parser::{ParseRelative, Parser, SelectorList};
 use style::selector_parser::{NonTSPseudoClass, PseudoElement, SelectorImpl, SelectorParser};
 use style::stylesheets::{Namespaces, Origin, UrlExtraData};
@@ -71,16 +71,13 @@ impl<'i> Parser<'i> for DomSelectorParser<'_> {
         self.0.allow_forgiving_selectors()
     }
 
-    fn parse_non_ts_pseudo_class(
-        &self,
-        name: CowRcStr<'i>,
-    ) -> Result<NonTSPseudoClass, ParseError> {
+    fn parse_non_ts_pseudo_class(&self, name: &str) -> Result<NonTSPseudoClass, ParseError> {
         self.0.parse_non_ts_pseudo_class(name)
     }
 
     fn parse_non_ts_functional_pseudo_class(
         &self,
-        name: CowRcStr<'i>,
+        name: &str,
         parser: &mut CssParser<'i>,
         after_part: bool,
     ) -> Result<NonTSPseudoClass, ParseError> {
@@ -88,13 +85,13 @@ impl<'i> Parser<'i> for DomSelectorParser<'_> {
             .parse_non_ts_functional_pseudo_class(name, parser, after_part)
     }
 
-    fn parse_pseudo_element(&self, name: CowRcStr<'i>) -> Result<PseudoElement, ParseError> {
+    fn parse_pseudo_element(&self, name: &str) -> Result<PseudoElement, ParseError> {
         self.0.parse_pseudo_element(name)
     }
 
     fn parse_functional_pseudo_element(
         &self,
-        name: CowRcStr<'i>,
+        name: &str,
         arguments: &mut CssParser<'i>,
     ) -> Result<PseudoElement, ParseError> {
         self.0.parse_functional_pseudo_element(name, arguments)

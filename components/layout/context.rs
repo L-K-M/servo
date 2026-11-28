@@ -14,6 +14,7 @@ use layout_api::{
 };
 use net_traits::image_cache::{
     Image as CachedImage, ImageCache, ImageCacheResult, ImageOrMetadataAvailable, PendingImageId,
+    RasterizationResult,
 };
 use net_traits::request::InternalRequest;
 use parking_lot::{Mutex, RwLock};
@@ -87,6 +88,7 @@ pub enum ResolvedImage<'a> {
     Image {
         image: CachedImage,
         size: DeviceSize,
+        url: ServoUrl,
     },
 }
 
@@ -170,7 +172,7 @@ impl ImageResolver {
         // Check for available image or start tracking.
         let cache_result =
             self.image_cache
-                .get_cached_image_status(url.clone(), self.origin.clone(), None);
+                .get_cached_image_status(url.clone(), &self.origin, None);
 
         match cache_result {
             ImageCacheResult::Available(img_or_meta) => {
@@ -263,19 +265,23 @@ impl ImageResolver {
         node: OpaqueNode,
         svg_id: Option<Uuid>,
     ) -> Option<RasterImage> {
-        let result = self
+        match self
             .image_cache
-            .rasterize_vector_image(image_id, size, svg_id);
-        if result.is_none() {
-            self.pending_rasterization_images
-                .lock()
-                .push(PendingRasterizationImage {
-                    id: image_id,
-                    node: node.into(),
-                    size,
-                });
+            .rasterize_vector_image(image_id, size, svg_id)
+        {
+            RasterizationResult::Image(raster_image) => Some(raster_image),
+            RasterizationResult::PendingRasterization => {
+                self.pending_rasterization_images
+                    .lock()
+                    .push(PendingRasterizationImage {
+                        id: image_id,
+                        node: node.into(),
+                        size,
+                    });
+                None
+            },
+            RasterizationResult::InvalidSvgParameters => None,
         }
-        result
     }
 
     /// Resolve a cached image to a WebRender [`ImageKey`] and the pixels it stands for: a
@@ -351,7 +357,11 @@ impl ImageResolver {
                 )?;
                 let metadata = image.metadata();
                 let size = Size2D::new(metadata.width, metadata.height).to_f32();
-                Ok(ResolvedImage::Image { image, size })
+                Ok(ResolvedImage::Image {
+                    image,
+                    size,
+                    url: image_url.clone().into(),
+                })
             },
             Image::ImageSet(image_set) => {
                 image_set
@@ -363,6 +373,7 @@ impl ImageResolver {
                             .map(|info| match info {
                                 ResolvedImage::Image {
                                     image: cached_image,
+                                    url,
                                     ..
                                 } => {
                                     // From <https://drafts.csswg.org/css-images-4/#image-set-notation>:
@@ -386,6 +397,7 @@ impl ImageResolver {
                                     ResolvedImage::Image {
                                         image: cached_image,
                                         size,
+                                        url,
                                     }
                                 },
                                 _ => info,

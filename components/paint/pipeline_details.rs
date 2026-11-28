@@ -9,7 +9,7 @@ use paint_api::display_list::{PaintTimingInfo, ScrollTree};
 use paint_api::viewport_description::ViewportDescription;
 use paint_api::{CompositionPipeline, PipelineExitSource};
 use servo_base::Epoch;
-use servo_base::id::{LCPCandidateID, PipelineId};
+use servo_base::id::{ContainerTimingID, LCPCandidateID, PipelineId};
 use style_traits::CSSPixel;
 use webrender_api::Epoch as WebRenderEpoch;
 use webrender_api::units::DevicePixel;
@@ -48,6 +48,9 @@ pub(crate) struct PipelineDetails {
 
     /// LCP candidates waiting to be presented, in order by [WebRenderEpoch]
     pub lcp_candidates: VecDeque<(WebRenderEpoch, (LCPCandidateID, usize), PaintTimingInfo)>,
+
+    /// Container Timing updates waiting to be presented, in order by [WebRenderEpoch].
+    pub container_timing_candidates: VecDeque<(WebRenderEpoch, Vec<ContainerTimingID>)>,
 
     /// The CSS pixel to device pixel scale of the viewport of this pipeline, including
     /// page zoom, but not including any pinch zoom amount. This is used to detect
@@ -104,6 +107,7 @@ impl PipelineDetails {
             first_paint_metric: PaintMetricState::Waiting,
             first_contentful_paint_metric: PaintMetricState::Waiting,
             lcp_candidates: VecDeque::new(),
+            container_timing_candidates: VecDeque::new(),
             exited: PipelineExitSource::empty(),
             display_list_epoch: None,
             animations: Default::default(),

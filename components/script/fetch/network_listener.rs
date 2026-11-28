@@ -15,22 +15,21 @@ use net_traits::{
 use servo_url::ServoUrl;
 
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::root::DomRoot;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::performance::performanceentry::PerformanceEntry;
 use crate::dom::performance::performanceresourcetiming::{
     InitiatorType, PerformanceResourceTiming,
 };
+use crate::dom::request::Request;
 use crate::tasks::task_source::SendableTaskSource;
 
 pub(crate) trait ResourceTimingListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl);
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope>;
 }
 
 pub(crate) fn submit_timing<T: ResourceTimingListener>(
     cx: &mut JSContext,
+    global: &GlobalScope,
     listener: &T,
     result: &Result<(), NetworkError>,
     resource_timing: &ResourceFetchTiming,
@@ -71,13 +70,7 @@ pub(crate) fn submit_timing<T: ResourceTimingListener>(
         return;
     }
 
-    submit_timing_data(
-        cx,
-        &listener.resource_timing_global(),
-        url,
-        initiator_type,
-        resource_timing,
-    );
+    submit_timing_data(cx, global, url, initiator_type, resource_timing);
 }
 
 pub(crate) fn submit_timing_data(
@@ -102,17 +95,25 @@ pub(crate) trait FetchResponseListener: Send + 'static {
         true
     }
 
-    fn process_request_body(&mut self, request_id: RequestId);
+    fn process_request_body(&mut self, global: &GlobalScope, request_id: RequestId);
     fn process_response(
         &mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     );
-    fn process_response_chunk(&mut self, cx: &mut JSContext, request_id: RequestId, chunk: Bytes);
+    fn process_response_chunk(
+        &mut self,
+        cx: &mut JSContext,
+        global: &GlobalScope,
+        request_id: RequestId,
+        chunk: Bytes,
+    );
     fn process_response_eof(
         self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -120,6 +121,7 @@ pub(crate) trait FetchResponseListener: Send + 'static {
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         violations: Vec<Violation>,
     );
@@ -135,11 +137,16 @@ pub(crate) trait FetchResponseListener: Send + 'static {
     /// the fetch ends silently, as for elements whose document the abort stops loading.
     ///
     /// [`TerminatedRequests::Settle`]: crate::fetch::fetch::TerminatedRequests::Settle
+    ///
+    /// `fetch_call_request` is the request of the `fetch()` call that started the fetch, if
+    /// one did: the fetch group has dropped the record that led to it.
     fn process_termination(
         self,
         _cx: &mut JSContext,
+        _global: &GlobalScope,
         _request_id: RequestId,
         _response_processed: bool,
+        _fetch_call_request: Option<&Request>,
     ) where
         Self: Sized,
     {
@@ -151,68 +158,67 @@ pub(crate) trait FetchResponseListener: Send + 'static {
 pub(crate) struct NetworkListener<Listener: FetchResponseListener> {
     pub(crate) context: Arc<Mutex<Option<Listener>>>,
     pub(crate) task_source: SendableTaskSource,
-    /// The [`GlobalScope`] this [`NetworkListener`] was created for.
-    pub(crate) global_scope: Trusted<GlobalScope>,
 }
 
 impl<Listener: FetchResponseListener> NetworkListener<Listener> {
-    pub(crate) fn new(
-        context: Listener,
-        task_source: SendableTaskSource,
-        global_scope: &GlobalScope,
-    ) -> Self {
+    pub(crate) fn new(context: Listener, task_source: SendableTaskSource) -> Self {
         Self {
             context: Arc::new(Mutex::new(Some(context))),
             task_source,
-            global_scope: Trusted::new(global_scope),
         }
     }
 
     pub(crate) fn notify(&mut self, message: FetchResponseMsg) {
         let context = self.context.clone();
-        let global_scope = self.global_scope.clone();
+
         self.task_source
             .queue(task!(network_listener_response: move |cx| {
-                match &message {
-                    FetchResponseMsg::ProcessResponse(request_id, _) => global_scope
-                        .root()
-                        .fetch_group_mut()
-                        .mark_fetch_response_as_processed(request_id),
-                    FetchResponseMsg::ProcessResponseEOF(request_id, ..) => global_scope
-                        .root()
-                        .fetch_group_mut()
-                        .mark_fetch_request_as_done(request_id),
-                    _ => {},
-                }
-
                 let mut context = context.lock().unwrap();
                 let Some(fetch_listener) = &mut *context else {
                     return;
                 };
 
-                if !fetch_listener.should_invoke() {
+                // Note: This relies on the task queue to properly enter the realm of the global
+                // scope of a task before running it.
+                let Some(global) = GlobalScope::current() else {
                     return;
+                };
+
+                let is_eof = matches!(message, FetchResponseMsg::ProcessResponseEOF(..));
+                let request_id = message.request_id();
+                if matches!(message, FetchResponseMsg::ProcessResponse(..)) {
+                    global
+                        .fetch_group_mut()
+                        .mark_fetch_response_as_processed(&request_id);
                 }
 
-                match message {
-                    FetchResponseMsg::ProcessRequestBody(request_id) => {
-                        fetch_listener.process_request_body(request_id)
-                    },
-                    FetchResponseMsg::ProcessResponse(request_id, meta) => {
-                        fetch_listener.process_response(cx, request_id, meta)
-                    },
-                    FetchResponseMsg::ProcessResponseChunk(request_id, data) => {
-                        fetch_listener.process_response_chunk(cx, request_id, data)
-                    },
-                    FetchResponseMsg::ProcessResponseEOF(request_id, result, timing) => {
-                        if let Some(fetch_listener) = context.take() {
-                            fetch_listener.process_response_eof(cx, request_id, result, timing);
-                        };
-                    },
-                    FetchResponseMsg::ProcessCspViolations(request_id, violations) => {
-                        fetch_listener.process_csp_violations(cx, request_id, violations)
-                    },
-                    FetchResponseMsg::ProcessContentLength(request_id, size) => { fetch_listener.process_content_length(request_id, size) },
+                if fetch_listener.should_invoke() {
+                    match message {
+                        FetchResponseMsg::ProcessRequestBody(request_id) => {
+                            fetch_listener.process_request_body(&global, request_id)
+                        },
+                        FetchResponseMsg::ProcessResponse(request_id, meta) => {
+                            fetch_listener.process_response(cx, &global, request_id, meta)
+                        },
+                        FetchResponseMsg::ProcessResponseChunk(request_id, data) => {
+                            fetch_listener.process_response_chunk(cx, &global, request_id, data)
+                        },
+                        FetchResponseMsg::ProcessResponseEOF(request_id, result, timing) => {
+                            if let Some(fetch_listener) = context.take() {
+                                fetch_listener.process_response_eof(cx, &global, request_id, result, timing);
+                            };
+                        },
+                        FetchResponseMsg::ProcessCspViolations(request_id, violations) => {
+                            fetch_listener.process_csp_violations(cx, &global, request_id, violations)
+                        },
+                        FetchResponseMsg::ProcessContentLength(request_id, size) => { fetch_listener.process_content_length(request_id, size) },
+                    }
+                }
+
+                if is_eof {
+                    global
+                        .fetch_group_mut()
+                        .mark_fetch_request_as_done(&request_id);
                 }
             }));
     }

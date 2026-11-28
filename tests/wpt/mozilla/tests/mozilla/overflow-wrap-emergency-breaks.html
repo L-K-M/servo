@@ -27,6 +27,8 @@
 <div id="min-content-anywhere" class="anywhere min-content">XXXXX</div>
 <div id="min-content-boxes" class="anywhere min-content"><span>X</span><span>X</span></div>
 <div id="min-content-break-word" class="break-word min-content">XXXXX</div>
+<div id="pre-wrap-spaces" class="box anywhere" style="white-space: pre-wrap">XXXXXXXX       X</div>
+<div id="min-content-spaces" class="anywhere min-content" style="white-space: pre-wrap; word-spacing: 30px">XX   </div>
 <script>
   const height = id => document.getElementById(id).getBoundingClientRect().height;
   const width = id => document.getElementById(id).getBoundingClientRect().width;
@@ -109,4 +111,17 @@
     assert_equals(width("min-content-break-word"), 50, "break-word");
     assert_equals(width("min-content-boxes"), 10, "anywhere across inline boxes");
   }, "Only the break opportunities of anywhere count for min-content sizes");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    // "XXXXX" / "XXX" plus seven hanging spaces / "X": every preserved space after the
+    // broken word hangs, not only the last one.
+    assert_equals(height("pre-wrap-spaces"), 30);
+  }, "Preserved spaces after a broken word all hang");
+
+  promise_test(async () => {
+    await document.fonts.ready;
+    // The widened spaces hang, so the widest piece is a single "X".
+    assert_equals(width("min-content-spaces"), 10);
+  }, "Preserved spaces after a broken word do not count for min-content sizes");
 </script>

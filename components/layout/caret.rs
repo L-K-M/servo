@@ -20,7 +20,7 @@ use style_traits::CSSPixel;
 
 use crate::dom::NodeExt;
 use crate::fragment_tree::{
-    BoxFragment, ContainingBlockCalculation, Fragment, FragmentFlags, TextFragment,
+    BoxFragment, CumulativeContentRectCalculation, Fragment, FragmentFlags, TextFragment,
 };
 
 /// Tags originate in DOM nodes kept alive throughout layout; no script or GC can run here.
@@ -35,9 +35,9 @@ fn tagged_node(fragment: &BoxFragment) -> Option<ServoLayoutNode<'_>> {
 
 fn text_end_advance(text: &TextFragment) -> Au {
     text.glyphs.iter().fold(Au::zero(), |advance, store| {
-        advance
-            + store.total_advance()
-            + text.justification_adjustment * store.total_word_separators() as i32
+        advance +
+            store.total_advance() +
+            text.justification_adjustment * store.total_word_separators() as i32
     })
 }
 
@@ -66,8 +66,8 @@ fn neighbor_rect(
         let current = match fragment {
             Fragment::Text(text) if matches => Some(Rect::new(
                 Point2D::new(
-                    origin.x
-                        + if end {
+                    origin.x +
+                        if end {
                             text_end_advance(text)
                         } else {
                             Au::zero()
@@ -227,8 +227,8 @@ impl VisualPosition {
 }
 
 fn has_text(fragment: &Fragment) -> bool {
-    matches!(fragment, Fragment::Text(_))
-        || fragment
+    matches!(fragment, Fragment::Text(_)) ||
+        fragment
             .children()
             .is_some_and(|children| children.iter().any(has_text))
 }
@@ -256,11 +256,11 @@ fn collect_positions(
     if let Fragment::Box(box_fragment) = fragment {
         if let Some(node) = tagged_node(box_fragment) {
             let current = node.element_caret();
-            let empty = !box_fragment.base.flags.contains(FragmentFlags::IS_REPLACED)
-                && !box_fragment.with_style().is_inline_box()
-                && node.text_node_paints_caret()
-                && !box_fragment.children.iter().any(has_text)
-                && !box_fragment
+            let empty = !box_fragment.base.flags.contains(FragmentFlags::IS_REPLACED) &&
+                !box_fragment.with_style().is_inline_box() &&
+                node.text_node_paints_caret() &&
+                !box_fragment.children.iter().any(has_text) &&
+                !box_fragment
                     .children
                     .iter()
                     .any(|child| matches!(child, Fragment::Box(_) | Fragment::Float(_)));
@@ -269,8 +269,8 @@ fn collect_positions(
             let line_break = box_fragment
                 .base
                 .flags
-                .contains(FragmentFlags::IS_BR_ELEMENT)
-                && node.text_node_paints_caret();
+                .contains(FragmentFlags::IS_BR_ELEMENT) &&
+                node.text_node_paints_caret();
             if current.is_some() || empty || line_break {
                 let caret = current.unwrap_or(ElementCaret {
                     offset: 0,
@@ -315,7 +315,7 @@ pub(crate) fn move_caret(
             .map(|fragment| {
                 fragment
                     .cumulative_content_box_rect(
-                        ContainingBlockCalculation::AlreadyDoneWithStackingContextTree,
+                        CumulativeContentRectCalculation::AlreadyDoneWithStackingContextTree,
                     )
                     .origin
             })
